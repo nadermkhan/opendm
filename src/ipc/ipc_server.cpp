@@ -166,14 +166,22 @@ void IpcServer::server_loop() {
 }
 
 std::string IpcServer::handle_request(const std::string& request) {
+    std::string req = request;
+    while (!req.empty() && (req.front() == '\"' || req.front() == ' ' || req.front() == '\t' || req.front() == '\r' || req.front() == '\n')) {
+        req.erase(0, 1);
+    }
+    while (!req.empty() && (req.back() == '\"' || req.back() == ' ' || req.back() == '\t' || req.back() == '\r' || req.back() == '\n')) {
+        req.pop_back();
+    }
+
     // Check if message is Tonec wire protocol format (from Chrome/Firefox IDM extension)
-    if (request.rfind("MSG#", 0) == 0 || request.find("6=") != std::string::npos) {
-        std::string url = extract_tonec_field(request, 6);
+    if (req.rfind("MSG#", 0) == 0 || req.find("6=") != std::string::npos) {
+        std::string url = extract_tonec_field(req, 6);
         if (!url.empty()) {
-            std::string filename = extract_tonec_field(request, 100);
-            std::string referer = extract_tonec_field(request, 50);
-            std::string cookies = extract_tonec_field(request, 51);
-            std::string user_agent = extract_tonec_field(request, 54);
+            std::string filename = extract_tonec_field(req, 100);
+            std::string referer = extract_tonec_field(req, 50);
+            std::string cookies = extract_tonec_field(req, 51);
+            std::string user_agent = extract_tonec_field(req, 54);
 
             std::string path = (std::filesystem::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string();
             if (filename.empty()) {
@@ -197,11 +205,15 @@ std::string IpcServer::handle_request(const std::string& request) {
             if (!user_agent.empty()) session->set_header("User-Agent", user_agent);
 
             QueueManager::instance().get_main_queue().add_session(session, true);
+            std::cout << "OpenDM IPC: Intercepted download from browser: " << url << " -> " << dest_file << std::endl;
             return "{\"status\": \"ok\", \"id\": \"" + id + "\", \"filename\": \"" + filename + "\"}";
         }
     }
 
-    std::string action = extract_json_field(request, "action");
+    std::string action = extract_json_field(req, "action");
+    if (action == "ping") {
+        return "{\"status\": \"ok\", \"message\": \"pong\"}";
+    }
 
     if (action == "download") {
         std::string url = extract_json_field(request, "url");
