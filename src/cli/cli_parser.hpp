@@ -18,6 +18,7 @@ struct CliOptions {
     uint64_t speed_limit_kb{0}; // 0 = unlimited
     std::string import_file;
     bool is_daemon{false};
+    std::string screenshot_path;
     bool show_help{false};
     bool show_version{false};
     bool show_gui{true};

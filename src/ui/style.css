@@ -1,166 +1,331 @@
-/* OpenDM - Authentic IDM Visual Theme */
+/* OpenDM - Modern Native GTK4 Desktop Theme (Adwaita Dark Aesthetic) */
 
-window {
-    background-color: #F0F2F5;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    font-size: 12px;
+window, .idm-main-window {
+    background-color: #242424;
+    color: #eeeeee;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Cantarell, Ubuntu, sans-serif;
+    font-size: 13px;
 }
 
-/* Classic Menu Bar */
+paned > separator {
+    background-color: #303030;
+    min-width: 1px;
+    border: none;
+    margin: 0;
+}
+
+scrolledwindow, viewport {
+    background-color: transparent;
+    color: #eeeeee;
+    border: none;
+}
+
+/* Modern GTK Menubar */
 menubar {
-    background-color: #F8F9FA;
-    border-bottom: 1px solid #DDE2E5;
-    padding: 0 4px;
+    background-color: #2e2e2e;
+    color: #e0e0e0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    padding: 2px 8px;
+    font-size: 12px;
 }
 
 menubar > menuitem {
-    padding: 4px 8px;
-    font-size: 12px;
+    padding: 4px 10px;
+    color: #d0d0d0;
+    border-radius: 4px;
+    transition: background-color 120ms ease;
 }
 
 menubar > menuitem:hover {
-    background-color: #E2E8F0;
-    border-radius: 3px;
+    background-color: rgba(255, 255, 255, 0.1);
+    color: #ffffff;
 }
 
-/* Iconic IDM Toolbar */
+/* Modern GTK Toolbar */
 .idm-toolbar-box {
-    background: linear-gradient(to bottom, #FFFFFF 0%, #ECEFF1 100%);
-    border-bottom: 1px solid #CFD8DC;
-    padding: 4px 6px;
-    min-height: 64px;
+    background-color: #2e2e2e;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 6px 12px;
+    min-height: 52px;
 }
 
 .idm-toolbar-btn {
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 3px;
-    padding: 4px 6px;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 12px;
     margin: 0 2px;
-    transition: all 120ms ease-in-out;
+    box-shadow: none;
+    transition: background-color 150ms ease, transform 100ms ease;
+    color: #eeeeee;
 }
 
 .idm-toolbar-btn:hover {
-    background: linear-gradient(to bottom, #FFFFFF 0%, #E3F2FD 100%);
-    border: 1px solid #90CAF9;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+    background-color: rgba(255, 255, 255, 0.09);
+    color: #ffffff;
 }
 
 .idm-toolbar-btn:active {
-    background: linear-gradient(to bottom, #BBDEFB 0%, #E3F2FD 100%);
-    border: 1px solid #64B5F6;
-    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.15);
+    background-color: rgba(255, 255, 255, 0.16);
+}
+
+.idm-toolbar-btn:disabled {
+    opacity: 0.35;
+}
+
+.idm-toolbar-btn.suggested-action {
+    background-color: #3584e4;
+    color: #ffffff;
+}
+
+.idm-toolbar-btn.suggested-action:hover {
+    background-color: #4791ea;
+}
+
+.idm-toolbar-btn.suggested-action:active {
+    background-color: #1c71d8;
 }
 
 .idm-toolbar-label {
     font-size: 11px;
     font-weight: 500;
-    color: #263238;
-    margin-top: 2px;
+    color: inherit;
+    margin-top: 3px;
+}
+
+.idm-toolbar-chevron {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.6);
+    margin-left: 2px;
 }
 
 .idm-toolbar-separator {
-    background-color: #CFD8DC;
-    width: 1px;
-    margin: 6px 4px;
+    background-color: rgba(255, 255, 255, 0.12);
+    min-width: 1px;
+    margin: 6px 6px;
 }
 
-/* Left Sidebar - Category Tree */
-.idm-sidebar {
-    background-color: #FFFFFF;
-    border-right: 1px solid #CFD8DC;
+/* Modern GTK Navigation Sidebar */
+.idm-sidebar-frame {
+    background-color: #1e1e1e;
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 8px 0;
 }
 
-.idm-category-header {
-    background: linear-gradient(to bottom, #ECEFF1, #E0E0E0);
-    border-bottom: 1px solid #CFD8DC;
-    padding: 6px 10px;
-    font-weight: bold;
+.idm-category-header-box {
+    padding: 4px 14px 8px 14px;
+}
+
+.idm-category-header-label {
     font-size: 11px;
-    color: #37474F;
+    font-weight: 700;
+    text-transform: uppercase;
     letter-spacing: 0.5px;
+    color: #888888;
+}
+
+.idm-sidebar-close-btn {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 2px 6px;
+    color: #888888;
+    font-size: 14px;
+    transition: background-color 150ms ease, color 150ms ease;
+}
+
+.idm-sidebar-close-btn:hover {
+    color: #ffffff;
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+.idm-category-list {
+    padding: 0 6px;
 }
 
 .idm-tree-row {
-    padding: 4px 8px;
-    min-height: 24px;
-    border-radius: 2px;
+    padding: 6px 10px;
+    margin: 1px 0;
+    border-radius: 6px;
+    color: #cccccc;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background-color 120ms ease, color 120ms ease;
 }
 
-.idm-tree-row:selected, .idm-tree-row:selected:focus {
-    background-color: #0078D7;
-    color: #FFFFFF;
+.idm-tree-row:hover:not(.selected) {
+    background-color: rgba(255, 255, 255, 0.06);
+    color: #ffffff;
 }
 
-.idm-tree-row:hover:not(:selected) {
-    background-color: #F1F5F9;
+.idm-tree-row.selected {
+    background-color: #3584e4;
+    color: #ffffff;
 }
 
-/* Right Pane - Downloads List View */
+.idm-tree-arrow-btn {
+    background: transparent;
+    border: none;
+    padding: 0 4px;
+    min-width: 16px;
+    font-size: 10px;
+    color: #888888;
+}
+
+.idm-tree-arrow-btn:hover {
+    color: #ffffff;
+}
+
+/* Downloads Table Frame */
+.idm-table-frame {
+    background-color: #242424;
+}
+
 .idm-table-header {
-    background: linear-gradient(to bottom, #FFFFFF 0%, #E0E0E0 100%);
-    border-bottom: 1px solid #B0BEC5;
-    font-weight: 600;
+    background-color: #242424;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    min-height: 32px;
+    padding: 0 8px;
+}
+
+.idm-col-header {
+    padding: 6px 8px;
     font-size: 11px;
-    color: #37474F;
-    padding: 4px 6px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: #9a9996;
 }
 
 .idm-download-row {
-    min-height: 26px;
-    border-bottom: 1px solid #ECEFF1;
-    padding: 3px 6px;
+    min-height: 40px;
+    padding: 0 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    background-color: transparent;
+    transition: background-color 100ms ease;
 }
 
-.idm-download-row:nth-child(even) {
-    background-color: #FAFAFA;
+.idm-download-row:hover:not(.selected) {
+    background-color: rgba(255, 255, 255, 0.04);
 }
 
-.idm-download-row:selected {
-    background-color: #CCE8FF;
-    color: #000000;
-    border: 1px solid #99D1FF;
+.idm-download-row.selected {
+    background-color: rgba(53, 132, 228, 0.25);
+    border-bottom: 1px solid rgba(53, 132, 228, 0.4);
+}
+
+.idm-download-cell {
+    padding: 4px 8px;
+    font-size: 13px;
+    color: #eeeeee;
+}
+
+/* Empty State */
+.idm-empty-state-box {
+    padding: 80px 20px;
+}
+
+.idm-empty-state-icon {
+    opacity: 0.25;
+    color: #ffffff;
+    margin-bottom: 16px;
+}
+
+.idm-empty-state-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #ffffff;
+    margin-bottom: 6px;
+}
+
+.idm-empty-state-subtitle {
+    font-size: 13px;
+    color: #9a9996;
+    margin-bottom: 20px;
+}
+
+/* Status Badges */
+.idm-badge {
+    border-radius: 12px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.idm-badge-complete {
+    background-color: rgba(46, 194, 126, 0.15);
+    color: #57e389;
+}
+
+.idm-badge-downloading {
+    background-color: rgba(53, 132, 228, 0.2);
+    color: #62a0ea;
+}
+
+.idm-badge-paused {
+    background-color: rgba(246, 97, 81, 0.15);
+    color: #ff7b63;
+}
+
+.idm-badge-queued {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: #c0bfbc;
 }
 
 /* Bottom Status Bar */
 .idm-statusbar {
-    background: #ECEFF1;
-    border-top: 1px solid #B0BEC5;
-    min-height: 24px;
-    padding: 2px 8px;
+    background-color: #1e1e1e;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    min-height: 28px;
+    padding: 2px 12px;
 }
 
 .idm-status-panel {
-    border-right: 1px solid #CFD8DC;
-    padding: 0 10px;
-    font-size: 11px;
-    color: #455A64;
+    padding: 2px 8px;
+    font-size: 12px;
+    color: #9a9996;
+}
+
+.idm-status-panel-btn {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 2px 10px;
+    color: #9a9996;
+    font-size: 12px;
+    transition: background-color 150ms ease, color 150ms ease;
+}
+
+.idm-status-panel-btn:hover {
+    color: #ffffff;
+    background-color: rgba(255, 255, 255, 0.08);
 }
 
 /* Progress Dialog Multi-track Visualizer */
 .idm-visualizer-canvas {
     background-color: #1A1A1A;
     border: 1px solid #37474F;
-    border-radius: 3px;
+    border-radius: 6px;
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
 .idm-progress-header {
-    background-color: #FFFFFF;
-    border: 1px solid #CFD8DC;
-    border-radius: 3px;
+    background-color: #252526;
+    border: 1px solid #3E3E42;
+    border-radius: 6px;
     padding: 10px 14px;
+    color: #D4D4D4;
 }
 
 progressbar > trough {
-    min-height: 18px;
-    border-radius: 3px;
-    background-color: #E0E0E0;
-    border: 1px solid #B0BEC5;
+    min-height: 12px;
+    border-radius: 6px;
+    background-color: #2D2D30;
+    border: none;
 }
 
 progressbar > progress {
-    border-radius: 2px;
-    background: linear-gradient(to bottom, #66BB6A 0%, #43A047 100%);
-    border: 1px solid #2E7D32;
+    border-radius: 6px;
+    background-color: #3584e4;
+    border: none;
 }

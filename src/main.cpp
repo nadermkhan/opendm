@@ -143,7 +143,7 @@ int main(int argc, char* argv[]) {
             std::unique_ptr<opendm::MainWindow> main_win;
         } ctx{opts, nullptr};
 
-        g_signal_connect(app, "activate", G_CALLBACK(+[](GtkApplication* a, gpointer user_data) {
+        g_signal_connect(app, "activate", (GCallback)(+[](GtkApplication* a, gpointer user_data) {
             auto* context = static_cast<AppContext*>(user_data);
             context->main_win = std::make_unique<opendm::MainWindow>(a);
             context->main_win->present();
@@ -151,6 +151,25 @@ int main(int argc, char* argv[]) {
             if (!context->opts.url.empty()) {
                 context->main_win->add_download_url(
                     context->opts.url, context->opts.path, context->opts.filename, !context->opts.add_only);
+            }
+
+            if (!context->opts.screenshot_path.empty()) {
+                struct SnapData {
+                    AppContext* ctx;
+                    int ticks;
+                };
+                auto* snap_data = new SnapData{context, 0};
+                gtk_widget_add_tick_callback(context->main_win->get_widget(), +[](GtkWidget*, GdkFrameClock*, gpointer d) -> gboolean {
+                    auto* sd = static_cast<SnapData*>(d);
+                    sd->ticks++;
+                    if (sd->ticks >= 10) {
+                        sd->ctx->main_win->save_snapshot(sd->ctx->opts.screenshot_path);
+                        g_application_quit(G_APPLICATION(g_application_get_default()));
+                        delete sd;
+                        return G_SOURCE_REMOVE;
+                    }
+                    return G_SOURCE_CONTINUE;
+                }, snap_data, nullptr);
             }
         }), &ctx);
 

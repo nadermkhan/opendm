@@ -21,6 +21,8 @@ public:
     void add_download_url(const std::string& url, const std::string& path = "",
                           const std::string& filename = "", bool start_now = true);
 
+    bool save_snapshot(const std::string& filename);
+
 private:
     void setup_ui();
     void setup_menubar(GtkWidget* parent_box);
@@ -45,12 +47,14 @@ private:
     void on_scheduler_clicked();
     void on_zip_preview_clicked();
     void on_site_grabber_clicked();
+    void on_sidebar_toggle_clicked();
     void on_category_selected(const std::string& category);
     void on_row_activated(const std::string& session_id);
     void on_row_right_clicked(GtkGestureClick* gesture, int n_press, double x, double y, const std::string& session_id);
 
     GtkApplication* app_{nullptr};
     GtkWidget* window_{nullptr};
+    GtkWidget* sidebar_vbox_{nullptr};
     GtkWidget* sidebar_list_{nullptr};
     GtkWidget* downloads_container_{nullptr};
     GtkWidget* status_panel_count_{nullptr};
@@ -59,6 +63,13 @@ private:
 
     std::string current_category_{"All Downloads"};
     std::string selected_session_id_;
+
+    // Category tree expansion state: category -> is_expanded
+    std::map<std::string, bool> category_expanded_;
+    // Category row widgets: category -> GtkWidget* row
+    std::map<std::string, GtkWidget*> category_rows_;
+    // Category child list: parent -> list of child categories
+    std::map<std::string, std::vector<std::string>> category_children_;
 
     guint refresh_timer_id_{0};
 

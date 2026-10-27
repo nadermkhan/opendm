@@ -49,6 +49,10 @@ CliOptions CliParser::parse(int argc, char* argv[]) {
             opts.show_gui = false;
         } else if (arg == "--no-gui") {
             opts.show_gui = false;
+        } else if (arg == "--screenshot") {
+            if (i + 1 < argc) {
+                opts.screenshot_path = argv[++i];
+            }
         } else if (arg == "-h" || arg == "--help" || arg == "/?") {
             opts.show_help = true;
         } else if (arg == "-v" || arg == "--version") {
