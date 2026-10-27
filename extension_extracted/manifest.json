@@ -11,14 +11,11 @@
 
     "background"               : { "scripts": [ "background.js" ] },
     "content_scripts"          : [ { "js": [ "content.js" ], "matches": [ "*://*/*" ], "all_frames": true, "run_at": "document_start" } ],
-    "web_accessible_resources" : [ { "resources": [ "document.js", "debug.js", "captured.js", "captured.html" ], "matches": [ "*://*/*" ], "use_dynamic_url": false } ],
-
-    "permissions"              : [ "scripting", "tabs", "cookies", "contextMenus", "webNavigation", "webRequest", "declarativeNetRequest", "downloads", "downloads.shelf", "downloads.ui", "management", "storage", "proxy", "nativeMessaging" ],
-    "optional_permissions"     : [ "notifications", "system.display" ],
+    "web_accessible_resources" : [ { "resources": [ "document.js", "debug.js", "captured.js", "captured.html" ], "matches": [ "*://*/*" ] } ],
+    "permissions"              : [ "scripting", "tabs", "cookies", "contextMenus", "webNavigation", "webRequest", "declarativeNetRequest", "downloads", "management", "storage", "proxy", "nativeMessaging" ],
+    "optional_permissions"     : [ "notifications" ],
     "host_permissions"         : [ "<all_urls>" ],
-    "externally_connectable"   : { "matches": [ "*://*.internetdownloadmanager.com/*", "*://*.tonec.com/*" ] },
 
-    "minimum_chrome_version"   : "109.0",
     "browser_specific_settings": {
         "gecko": {
             "id": "mozilla_cc@tonec.com",
