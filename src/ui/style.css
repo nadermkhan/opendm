@@ -10,14 +10,14 @@ window, .idm-main-window {
 paned > separator {
     background-color: #303030;
     min-width: 1px;
-    border: none;
+    border-style: none;
     margin: 0;
 }
 
 scrolledwindow, viewport {
     background-color: transparent;
     color: #eeeeee;
-    border: none;
+    border-style: none;
 }
 
 /* Modern GTK Menubar */
@@ -45,44 +45,55 @@ menubar > menuitem:hover {
 .idm-toolbar-box {
     background-color: #2e2e2e;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    padding: 6px 12px;
+    padding: 5px 8px;
     min-height: 52px;
 }
 
+window.idm-main-window .idm-toolbar-box button,
+window.idm-main-window button.idm-toolbar-btn,
 .idm-toolbar-btn {
-    background: transparent;
-    border: none;
+    background: none;
+    background-color: transparent;
+    border-style: none;
+    border-width: 0;
     border-radius: 6px;
-    padding: 6px 12px;
-    margin: 0 2px;
+    padding: 5px 8px;
+    margin: 0 1px;
     box-shadow: none;
+    outline-style: none;
     transition: background-color 150ms ease, transform 100ms ease;
     color: #eeeeee;
 }
 
-.idm-toolbar-btn:hover {
+window.idm-main-window .idm-toolbar-box button:hover,
+window.idm-main-window button.idm-toolbar-btn:hover {
     background-color: rgba(255, 255, 255, 0.09);
     color: #ffffff;
 }
 
-.idm-toolbar-btn:active {
+window.idm-main-window .idm-toolbar-box button:active,
+window.idm-main-window button.idm-toolbar-btn:active {
     background-color: rgba(255, 255, 255, 0.16);
 }
 
-.idm-toolbar-btn:disabled {
+window.idm-main-window .idm-toolbar-box button:disabled,
+window.idm-main-window button.idm-toolbar-btn:disabled {
     opacity: 0.35;
 }
 
-.idm-toolbar-btn.suggested-action {
+window.idm-main-window .idm-toolbar-box button.suggested-action,
+window.idm-main-window button.idm-toolbar-btn.suggested-action {
     background-color: #3584e4;
     color: #ffffff;
 }
 
-.idm-toolbar-btn.suggested-action:hover {
+window.idm-main-window .idm-toolbar-box button.suggested-action:hover,
+window.idm-main-window button.idm-toolbar-btn.suggested-action:hover {
     background-color: #4791ea;
 }
 
-.idm-toolbar-btn.suggested-action:active {
+window.idm-main-window .idm-toolbar-box button.suggested-action:active,
+window.idm-main-window button.idm-toolbar-btn.suggested-action:active {
     background-color: #1c71d8;
 }
 
@@ -102,7 +113,7 @@ menubar > menuitem:hover {
 .idm-toolbar-separator {
     background-color: rgba(255, 255, 255, 0.12);
     min-width: 1px;
-    margin: 6px 6px;
+    margin: 6px 4px;
 }
 
 /* Modern GTK Navigation Sidebar */
@@ -113,7 +124,7 @@ menubar > menuitem:hover {
 }
 
 .idm-category-header-box {
-    padding: 4px 14px 8px 14px;
+    padding: 4px 12px 8px 12px;
 }
 
 .idm-category-header-label {
@@ -124,17 +135,24 @@ menubar > menuitem:hover {
     color: #888888;
 }
 
-.idm-sidebar-close-btn {
-    background: transparent;
-    border: none;
+window.idm-main-window .idm-sidebar-close-btn,
+window.idm-main-window button.idm-sidebar-close-btn {
+    background: none;
+    background-color: transparent;
+    border-style: none;
+    border-width: 0;
+    box-shadow: none;
     border-radius: 4px;
     padding: 2px 6px;
     color: #888888;
     font-size: 14px;
+    min-height: 20px;
+    min-width: 20px;
     transition: background-color 150ms ease, color 150ms ease;
 }
 
-.idm-sidebar-close-btn:hover {
+window.idm-main-window .idm-sidebar-close-btn:hover,
+window.idm-main-window button.idm-sidebar-close-btn:hover {
     color: #ffffff;
     background-color: rgba(255, 255, 255, 0.1);
 }
@@ -144,7 +162,7 @@ menubar > menuitem:hover {
 }
 
 .idm-tree-row {
-    padding: 6px 10px;
+    padding: 6px 8px;
     margin: 1px 0;
     border-radius: 6px;
     color: #cccccc;
@@ -163,16 +181,22 @@ menubar > menuitem:hover {
     color: #ffffff;
 }
 
-.idm-tree-arrow-btn {
-    background: transparent;
-    border: none;
+window.idm-main-window .idm-tree-arrow-btn,
+window.idm-main-window button.idm-tree-arrow-btn {
+    background: none;
+    background-color: transparent;
+    border-style: none;
+    border-width: 0;
+    box-shadow: none;
     padding: 0 4px;
     min-width: 16px;
+    min-height: 16px;
     font-size: 10px;
     color: #888888;
 }
 
-.idm-tree-arrow-btn:hover {
+window.idm-main-window .idm-tree-arrow-btn:hover,
+window.idm-main-window button.idm-tree-arrow-btn:hover {
     color: #ffffff;
 }
 
@@ -182,14 +206,17 @@ menubar > menuitem:hover {
 }
 
 .idm-table-header {
-    background-color: #242424;
+    background-color: #2a2a2a;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     min-height: 32px;
     padding: 0 8px;
 }
 
-.idm-col-header {
+.idm-col-header-box {
     padding: 6px 8px;
+}
+
+.idm-col-header {
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
@@ -286,9 +313,13 @@ menubar > menuitem:hover {
     color: #9a9996;
 }
 
-.idm-status-panel-btn {
-    background: transparent;
-    border: none;
+window.idm-main-window .idm-status-panel-btn,
+window.idm-main-window button.idm-status-panel-btn {
+    background: none;
+    background-color: transparent;
+    border-style: none;
+    border-width: 0;
+    box-shadow: none;
     border-radius: 4px;
     padding: 2px 10px;
     color: #9a9996;
@@ -296,7 +327,8 @@ menubar > menuitem:hover {
     transition: background-color 150ms ease, color 150ms ease;
 }
 
-.idm-status-panel-btn:hover {
+window.idm-main-window .idm-status-panel-btn:hover,
+window.idm-main-window button.idm-status-panel-btn:hover {
     color: #ffffff;
     background-color: rgba(255, 255, 255, 0.08);
 }
@@ -321,11 +353,11 @@ progressbar > trough {
     min-height: 12px;
     border-radius: 6px;
     background-color: #2D2D30;
-    border: none;
+    border-style: none;
 }
 
 progressbar > progress {
     border-radius: 6px;
     background-color: #3584e4;
-    border: none;
+    border-style: none;
 }

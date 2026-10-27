@@ -84,6 +84,7 @@ GtkWidget* UiAssets::create_toolbar_button(
     bool has_dropdown) {
 
     GtkWidget* btn = gtk_button_new();
+    gtk_widget_add_css_class(btn, "flat");
     gtk_widget_add_css_class(btn, "idm-toolbar-btn");
     if (is_primary) {
         gtk_widget_add_css_class(btn, "suggested-action");
@@ -123,27 +124,65 @@ GtkWidget* UiAssets::create_toolbar_button(
 
 void UiAssets::apply_theme() {
     std::string css_path = "";
-    if (fs::exists("src/ui/style.css")) {
-        css_path = fs::absolute("src/ui/style.css").string();
-    } else {
-        char self_path[4096];
-        ssize_t len = readlink("/proc/self/exe", self_path, sizeof(self_path) - 1);
-        if (len > 0) {
-            self_path[len] = '\0';
-            fs::path p = fs::path(self_path).parent_path().parent_path() / "src" / "ui" / "style.css";
-            if (fs::exists(p)) css_path = p.string();
+    
+    std::vector<fs::path> candidates;
+    // 1. Current working directory
+    candidates.push_back("src/ui/style.css");
+    candidates.push_back("data/ui_assets/style.css");
+
+    // 2. User local share ~/.local/share/opendm/style.css
+    const char* home = getenv("HOME");
+    if (home) {
+        candidates.push_back(fs::path(home) / ".local" / "share" / "opendm" / "style.css");
+    }
+
+    // 3. Executable-relative paths
+    char self_path[4096];
+    ssize_t len = readlink("/proc/self/exe", self_path, sizeof(self_path) - 1);
+    if (len > 0) {
+        self_path[len] = '\0';
+        fs::path exe_dir = fs::path(self_path).parent_path();
+        candidates.push_back(exe_dir / "style.css");
+        candidates.push_back(exe_dir / "share" / "opendm" / "style.css");
+        candidates.push_back(exe_dir.parent_path() / "share" / "opendm" / "style.css");
+        candidates.push_back(exe_dir.parent_path() / "src" / "ui" / "style.css");
+        candidates.push_back(exe_dir.parent_path().parent_path() / "src" / "ui" / "style.css");
+    }
+
+    // 4. System paths
+    candidates.push_back("/usr/local/share/opendm/style.css");
+    candidates.push_back("/usr/share/opendm/style.css");
+
+    for (const auto& p : candidates) {
+        if (fs::exists(p)) {
+            css_path = fs::absolute(p).string();
+            break;
         }
     }
 
+    GtkCssProvider* provider = gtk_css_provider_new();
     if (!css_path.empty()) {
-        GtkCssProvider* provider = gtk_css_provider_new();
         gtk_css_provider_load_from_path(provider, css_path.c_str());
-        gtk_style_context_add_provider_for_display(
-            gdk_display_get_default(),
-            GTK_STYLE_PROVIDER(provider),
-            GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-        g_object_unref(provider);
+    } else {
+        // Fallback embedded minimal styling to ensure zero unstyled states
+        static const char* fallback_css = R"(
+            window, .idm-main-window { background-color: #242424; color: #eee; }
+            .idm-toolbar-box button, button.idm-toolbar-btn { background: transparent !important; border: none !important; box-shadow: none !important; color: #eee !important; }
+            button.suggested-action { background-color: #3584e4 !important; color: #fff !important; }
+            .idm-sidebar-frame { background-color: #1e1e1e; }
+            .idm-tree-row.selected { background-color: #3584e4; color: #fff; border-radius: 6px; }
+            .idm-table-header { background-color: #2a2a2a; }
+            .idm-col-header-box { padding: 6px 8px; }
+            .idm-col-header { font-size: 11px; font-weight: 600; color: #9a9996; text-transform: uppercase; }
+        )";
+        gtk_css_provider_load_from_string(provider, fallback_css);
     }
+
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(),
+        GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_USER + 20);
+    g_object_unref(provider);
 }
 
 } // namespace opendm

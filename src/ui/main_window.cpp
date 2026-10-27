@@ -172,7 +172,7 @@ void MainWindow::setup_ui() {
 
     // Paned view: Sidebar (Left) + Downloads Table (Right)
     GtkWidget* paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_paned_set_position(GTK_PANED(paned), 180);
+    gtk_paned_set_position(GTK_PANED(paned), 220);
     gtk_widget_set_vexpand(paned, TRUE);
     gtk_box_append(GTK_BOX(main_vbox), paned);
 
@@ -325,7 +325,7 @@ void MainWindow::setup_toolbar(GtkWidget* parent_box) {
 void MainWindow::setup_sidebar(GtkWidget* paned) {
     sidebar_vbox_ = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(sidebar_vbox_, "idm-sidebar-frame");
-    gtk_widget_set_size_request(sidebar_vbox_, 190, -1);
+    gtk_widget_set_size_request(sidebar_vbox_, 210, -1);
 
     // Header label + Close '×' button
     GtkWidget* header_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -338,6 +338,7 @@ void MainWindow::setup_sidebar(GtkWidget* paned) {
     gtk_box_append(GTK_BOX(header_box), header_lbl);
 
     GtkWidget* close_btn = gtk_button_new_with_label("×");
+    gtk_widget_add_css_class(close_btn, "flat");
     gtk_widget_add_css_class(close_btn, "idm-sidebar-close-btn");
     gtk_widget_set_tooltip_text(close_btn, "Hide Categories");
     g_signal_connect(close_btn, "clicked", G_CALLBACK(+[](GtkButton*, gpointer d) {
@@ -395,6 +396,7 @@ void MainWindow::setup_sidebar(GtkWidget* paned) {
         if (item.is_parent) {
             bool exp = category_expanded_[item.name];
             GtkWidget* arrow_btn = gtk_button_new_with_label(exp ? "▾" : "▸");
+            gtk_widget_add_css_class(arrow_btn, "flat");
             gtk_widget_add_css_class(arrow_btn, "idm-tree-arrow-btn");
             
             // Store category name on arrow
@@ -463,18 +465,22 @@ void MainWindow::setup_downloads_view(GtkWidget* paned) {
     gtk_widget_add_css_class(header_box, "idm-table-header");
 
     auto add_col_hdr = [&](const char* title, int width, bool expand = false) {
+        GtkWidget* col_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        gtk_widget_add_css_class(col_box, "idm-col-header-box");
+        if (width > 0) gtk_widget_set_size_request(col_box, width, -1);
+        if (expand) gtk_widget_set_hexpand(col_box, TRUE);
+
         GtkWidget* lbl = gtk_label_new(title);
         gtk_widget_add_css_class(lbl, "idm-col-header");
         gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
-        if (width > 0) gtk_widget_set_size_request(lbl, width, -1);
-        if (expand) gtk_widget_set_hexpand(lbl, TRUE);
-        gtk_box_append(GTK_BOX(header_box), lbl);
+        gtk_box_append(GTK_BOX(col_box), lbl);
+        gtk_box_append(GTK_BOX(header_box), col_box);
     };
 
     add_col_hdr("File Name", 260, true);
     add_col_hdr("Size", 90);
     add_col_hdr("Status", 100);
-    add_col_hdr("Time Left", 80);
+    add_col_hdr("Time Left", 90);
     add_col_hdr("Speed", 100);
     add_col_hdr("Date Added", 110);
     add_col_hdr("Domain", 140);
@@ -508,6 +514,7 @@ void MainWindow::setup_statusbar(GtkWidget* parent_box) {
     gtk_box_append(GTK_BOX(bar), status_panel_speed_);
 
     status_panel_limiter_ = gtk_button_new_with_label("Speed Limiter: OFF");
+    gtk_widget_add_css_class(status_panel_limiter_, "flat");
     gtk_widget_add_css_class(status_panel_limiter_, "idm-status-panel-btn");
     g_signal_connect(status_panel_limiter_, "clicked", G_CALLBACK(+[](GtkButton*, gpointer d) {
         static_cast<MainWindow*>(d)->on_speed_limiter_clicked();
