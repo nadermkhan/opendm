@@ -19,6 +19,7 @@ struct CliOptions {
     std::string import_file;
     bool is_daemon{false};
     std::string screenshot_path;
+    bool show_appreciation{false};
     bool show_help{false};
     bool show_version{false};
     bool show_gui{true};

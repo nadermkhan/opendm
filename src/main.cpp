@@ -4,6 +4,7 @@
 #include "cli/cli_parser.hpp"
 #include "ipc/ipc_server.hpp"
 #include "ui/main_window.hpp"
+#include "ui/appreciation_dialog.hpp"
 #include <curl/curl.h>
 #include <gtk/gtk.h>
 #include <iostream>
@@ -151,6 +152,35 @@ int main(int argc, char* argv[]) {
             if (!context->opts.url.empty()) {
                 context->main_win->add_download_url(
                     context->opts.url, context->opts.path, context->opts.filename, !context->opts.add_only);
+            }
+
+            if (context->opts.show_appreciation) {
+                auto* dlg = opendm::AppreciationDialog::show(GTK_WINDOW(context->main_win->get_widget()));
+                if (context->opts.filename == "refuse") {
+                    dlg->trigger_not_appreciate();
+                } else if (context->opts.filename == "appreciate") {
+                    dlg->trigger_appreciate();
+                }
+                if (!context->opts.screenshot_path.empty()) {
+                    struct ApprecSnapData {
+                        opendm::AppreciationDialog* dlg;
+                        std::string path;
+                        int ticks;
+                    };
+                    auto* asd = new ApprecSnapData{dlg, context->opts.screenshot_path, 0};
+                    gtk_widget_add_tick_callback(dlg->get_widget(), +[](GtkWidget*, GdkFrameClock*, gpointer d) -> gboolean {
+                        auto* data = static_cast<ApprecSnapData*>(d);
+                        data->ticks++;
+                        if (data->ticks >= 10) {
+                            data->dlg->save_snapshot(data->path);
+                            g_application_quit(G_APPLICATION(g_application_get_default()));
+                            delete data;
+                            return G_SOURCE_REMOVE;
+                        }
+                        return G_SOURCE_CONTINUE;
+                    }, asd, nullptr);
+                    return;
+                }
             }
 
             if (!context->opts.screenshot_path.empty()) {

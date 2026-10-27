@@ -351,3 +351,69 @@ progressbar > progress {
     background-color: #3584e4;
     border-style: none;
 }
+
+/* Developer Appreciation Dialog */
+.idm-apprec-window {
+    background-color: #242424;
+    color: #eeeeee;
+}
+
+.idm-apprec-icon {
+    color: #e5a50a;
+}
+
+.idm-apprec-card {
+    background-color: #2a2a2a;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 0.6rem;
+    padding: 1rem 1.2rem;
+}
+
+.idm-apprec-name {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.idm-apprec-role {
+    font-size: 0.88rem;
+    color: #3584e4;
+    font-weight: 600;
+}
+
+.idm-apprec-link {
+    font-size: 0.85rem;
+    color: #9a9996;
+}
+
+.idm-apprec-serial {
+    font-family: monospace;
+    font-size: 0.82rem;
+    background-color: #1e1e1e;
+    color: #57e389;
+    border: 1px dashed rgba(87, 227, 137, 0.4);
+    border-radius: 0.4rem;
+    padding: 0.35rem 0.6rem;
+}
+
+.idm-apprec-feedback {
+    font-size: 0.88rem;
+    font-weight: 500;
+    padding: 0.5rem 0.8rem;
+    border-radius: 0.4rem;
+    background-color: rgba(255, 255, 255, 0.04);
+    color: #d0d0d0;
+}
+
+.idm-apprec-feedback.success {
+    background-color: rgba(46, 194, 126, 0.15);
+    color: #57e389;
+    border: 1px solid rgba(46, 194, 126, 0.3);
+}
+
+.idm-apprec-feedback.error {
+    background-color: rgba(224, 27, 36, 0.15);
+    color: #ff7b63;
+    border: 1px solid rgba(224, 27, 36, 0.3);
+}
+
