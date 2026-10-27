@@ -26,3 +26,7 @@ Makefile
 # Original Windows binary installer & extracted Win32/x64 binaries
 *.exe
 extracted/
+data/extracted_bitmaps/
+data/extracted_icons/
+data/toolbar_icons/
+

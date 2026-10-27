@@ -43,6 +43,8 @@ target_link_libraries(opendm_core PUBLIC
 
 # Main executable (GTK4 + CLI)
 add_executable(opendm
+    src/ui/ui_assets.cpp
+    src/ui/add_url_dialog.cpp
     src/ui/progress_dialog.cpp
     src/ui/zip_preview_dialog.cpp
     src/ui/grabber_dialog.cpp
