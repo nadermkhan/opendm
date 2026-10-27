@@ -93,6 +93,10 @@ MainWindow::~MainWindow() {
         g_source_remove(refresh_timer_id_);
         refresh_timer_id_ = 0;
     }
+    for (auto* sg : col_size_groups_) {
+        if (sg) g_object_unref(sg);
+    }
+    col_size_groups_.clear();
 }
 
 void MainWindow::present() {
@@ -153,7 +157,7 @@ bool MainWindow::save_snapshot(const std::string& filename) {
 void MainWindow::setup_ui() {
     window_ = gtk_application_window_new(app_);
     gtk_window_set_title(GTK_WINDOW(window_), "OpenDM");
-    gtk_window_set_default_size(GTK_WINDOW(window_), 960, 560);
+    gtk_window_set_default_size(GTK_WINDOW(window_), 1260, 660);
     gtk_widget_add_css_class(window_, "idm-main-window");
 
     g_signal_connect(window_, "destroy", G_CALLBACK(+[](GtkWidget*, gpointer d) {
@@ -172,7 +176,10 @@ void MainWindow::setup_ui() {
 
     // Paned view: Sidebar (Left) + Downloads Table (Right)
     GtkWidget* paned = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
-    gtk_paned_set_position(GTK_PANED(paned), 220);
+    gtk_paned_set_position(GTK_PANED(paned), 260);
+    gtk_paned_set_resize_start_child(GTK_PANED(paned), FALSE);
+    gtk_paned_set_resize_end_child(GTK_PANED(paned), TRUE);
+    gtk_widget_set_hexpand(paned, TRUE);
     gtk_widget_set_vexpand(paned, TRUE);
     gtk_box_append(GTK_BOX(main_vbox), paned);
 
@@ -325,7 +332,7 @@ void MainWindow::setup_toolbar(GtkWidget* parent_box) {
 void MainWindow::setup_sidebar(GtkWidget* paned) {
     sidebar_vbox_ = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(sidebar_vbox_, "idm-sidebar-frame");
-    gtk_widget_set_size_request(sidebar_vbox_, 210, -1);
+    gtk_widget_set_size_request(sidebar_vbox_, 250, -1);
 
     // Header label + Close '×' button
     GtkWidget* header_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
@@ -428,6 +435,7 @@ void MainWindow::setup_sidebar(GtkWidget* paned) {
 
         GtkWidget* lbl = gtk_label_new(item.name.c_str());
         gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+        gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
         gtk_widget_set_hexpand(lbl, TRUE);
         gtk_box_append(GTK_BOX(row_box), lbl);
 
@@ -459,40 +467,60 @@ void MainWindow::setup_sidebar(GtkWidget* paned) {
 void MainWindow::setup_downloads_view(GtkWidget* paned) {
     GtkWidget* right_frame = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(right_frame, "idm-table-frame");
+    gtk_widget_set_hexpand(right_frame, TRUE);
 
     // Header row matching authentic IDM columns
-    GtkWidget* header_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    GtkWidget* header_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
     gtk_widget_add_css_class(header_box, "idm-table-header");
+    gtk_widget_set_hexpand(header_box, TRUE);
 
-    auto add_col_hdr = [&](const char* title, int width, bool expand = false) {
-        GtkWidget* col_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-        gtk_widget_add_css_class(col_box, "idm-col-header-box");
-        if (width > 0) gtk_widget_set_size_request(col_box, width, -1);
-        if (expand) gtk_widget_set_hexpand(col_box, TRUE);
+    header_col_widgets_.clear();
 
+    // Col 0: File Name (Header box with indent matching row icon)
+    GtkWidget* col0_hdr = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget* hdr_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_size_request(hdr_spacer, 20, -1);
+    gtk_box_append(GTK_BOX(col0_hdr), hdr_spacer);
+
+    GtkWidget* hdr_name = gtk_label_new("File Name");
+    gtk_widget_add_css_class(hdr_name, "idm-col-header");
+    gtk_label_set_xalign(GTK_LABEL(hdr_name), 0.0f);
+    gtk_label_set_width_chars(GTK_LABEL(hdr_name), 20);
+    gtk_widget_set_hexpand(hdr_name, TRUE);
+    gtk_box_append(GTK_BOX(col0_hdr), hdr_name);
+
+    gtk_widget_set_hexpand(col0_hdr, TRUE);
+    gtk_box_append(GTK_BOX(header_box), col0_hdr);
+
+    auto add_hdr_col = [&](const char* title, int width_chars) {
         GtkWidget* lbl = gtk_label_new(title);
         gtk_widget_add_css_class(lbl, "idm-col-header");
         gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
-        gtk_box_append(GTK_BOX(col_box), lbl);
-        gtk_box_append(GTK_BOX(header_box), col_box);
+        if (width_chars > 0) {
+            gtk_label_set_width_chars(GTK_LABEL(lbl), width_chars);
+        }
+        gtk_box_append(GTK_BOX(header_box), lbl);
+        header_col_widgets_.push_back(lbl);
     };
 
-    add_col_hdr("File Name", 260, true);
-    add_col_hdr("Size", 90);
-    add_col_hdr("Status", 100);
-    add_col_hdr("Time Left", 90);
-    add_col_hdr("Speed", 100);
-    add_col_hdr("Date Added", 110);
-    add_col_hdr("Domain", 140);
+    add_hdr_col("Size", 8);        // Index 0 in header_col_widgets_
+    add_hdr_col("Status", 9);      // Index 1
+    add_hdr_col("Time Left", 9);   // Index 2
+    add_hdr_col("Speed", 9);       // Index 3
+    add_hdr_col("Date Added", 9);  // Index 4
+    add_hdr_col("Domain", 11);     // Index 5
 
     gtk_box_append(GTK_BOX(right_frame), header_box);
 
     // Scrollable downloads list
     GtkWidget* scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_hexpand(scroll, TRUE);
     gtk_widget_set_vexpand(scroll, TRUE);
     gtk_box_append(GTK_BOX(right_frame), scroll);
 
     downloads_container_ = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    gtk_widget_set_hexpand(downloads_container_, TRUE);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), downloads_container_);
 
     gtk_paned_set_end_child(GTK_PANED(paned), right_frame);
@@ -558,6 +586,17 @@ void MainWindow::refresh_downloads_list() {
         child = next;
     }
 
+    // Recreate column size groups for synchronized column widths
+    for (auto* sg : col_size_groups_) {
+        if (sg) g_object_unref(sg);
+    }
+    col_size_groups_.clear();
+    for (size_t i = 0; i < header_col_widgets_.size(); ++i) {
+        GtkSizeGroup* sg = gtk_size_group_new(GTK_SIZE_GROUP_HORIZONTAL);
+        gtk_size_group_add_widget(sg, header_col_widgets_[i]);
+        col_size_groups_.push_back(sg);
+    }
+
     uint64_t total_system_speed = 0;
     size_t active_count = 0;
     size_t rendered_count = 0;
@@ -582,8 +621,9 @@ void MainWindow::refresh_downloads_list() {
         rendered_count++;
 
         // Create row box matching columns
-        GtkWidget* row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+        GtkWidget* row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
         gtk_widget_add_css_class(row_box, "idm-download-row");
+        gtk_widget_set_hexpand(row_box, TRUE);
 
         if (s->get_id() == selected_session_id_) {
             gtk_widget_add_css_class(row_box, "selected");
@@ -593,33 +633,35 @@ void MainWindow::refresh_downloads_list() {
         GtkWidget* col0 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
         gtk_widget_add_css_class(col0, "idm-download-cell");
         gtk_widget_set_hexpand(col0, TRUE);
-        gtk_widget_set_size_request(col0, 260, -1);
         GtkWidget* f_icon = UiAssets::create_image(get_file_icon_name(s->get_filename()), 20, 20, "document-save-symbolic");
         GtkWidget* lbl_name = gtk_label_new(s->get_filename().c_str());
         gtk_label_set_xalign(GTK_LABEL(lbl_name), 0.0f);
+        gtk_label_set_width_chars(GTK_LABEL(lbl_name), 20);
         gtk_label_set_ellipsize(GTK_LABEL(lbl_name), PANGO_ELLIPSIZE_END);
         gtk_box_append(GTK_BOX(col0), f_icon);
         gtk_box_append(GTK_BOX(col0), lbl_name);
         gtk_box_append(GTK_BOX(row_box), col0);
 
-        auto add_col_cell = [&](const std::string& txt, int width, const char* badge_class = nullptr) {
-            GtkWidget* container = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-            gtk_widget_add_css_class(container, "idm-download-cell");
-            gtk_widget_set_size_request(container, width, -1);
-
+        auto add_col_cell = [&](size_t col_idx, const std::string& txt, int width_chars, const char* badge_class = nullptr) {
             GtkWidget* lbl = gtk_label_new(txt.c_str());
+            gtk_widget_add_css_class(lbl, "idm-download-cell");
             if (badge_class) {
                 gtk_widget_add_css_class(lbl, "idm-badge");
                 gtk_widget_add_css_class(lbl, badge_class);
             }
             gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
             gtk_label_set_ellipsize(GTK_LABEL(lbl), PANGO_ELLIPSIZE_END);
-            gtk_box_append(GTK_BOX(container), lbl);
-            gtk_box_append(GTK_BOX(row_box), container);
+            if (width_chars > 0) {
+                gtk_label_set_width_chars(GTK_LABEL(lbl), width_chars);
+            }
+            if (col_idx < col_size_groups_.size() && col_size_groups_[col_idx]) {
+                gtk_size_group_add_widget(col_size_groups_[col_idx], lbl);
+            }
+            gtk_box_append(GTK_BOX(row_box), lbl);
         };
 
         // Col 1: Size
-        add_col_cell(format_bytes(prog.total_size), 90);
+        add_col_cell(0, format_bytes(prog.total_size), 8);
 
         // Col 2: Status with modern badge
         std::string status_str = "Queued";
@@ -640,16 +682,16 @@ void MainWindow::refresh_downloads_list() {
             status_str = "Error";
             badge_class = "idm-badge-paused";
         }
-        add_col_cell(status_str, 100, badge_class);
+        add_col_cell(1, status_str, 9, badge_class);
 
         // Col 3: Time left
-        add_col_cell(format_eta(prog.eta_seconds), 80);
+        add_col_cell(2, format_eta(prog.eta_seconds), 9);
 
         // Col 4: Transfer rate
-        add_col_cell(format_speed(prog.speed_bytes_per_sec), 100);
+        add_col_cell(3, format_speed(prog.speed_bytes_per_sec), 9);
 
         // Col 5: Last Try Date
-        add_col_cell("Today", 110);
+        add_col_cell(4, "Today", 9);
 
         // Col 6: Description (Domain)
         std::string domain = s->get_url();
@@ -659,7 +701,7 @@ void MainWindow::refresh_downloads_list() {
             size_t slash = domain.find('/');
             if (slash != std::string::npos) domain = domain.substr(0, slash);
         }
-        add_col_cell(domain, 140);
+        add_col_cell(5, domain, 11);
 
         // Click gesture for row selection and double-click activation
         GtkGesture* click = gtk_gesture_click_new();

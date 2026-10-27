@@ -73,6 +73,10 @@ private:
 
     guint refresh_timer_id_{0};
 
+    // Synchronized column size groups between header and row cells
+    std::vector<GtkWidget*> header_col_widgets_;
+    std::vector<GtkSizeGroup*> col_size_groups_;
+
     // Tracking active progress dialogs
     std::map<std::string, std::shared_ptr<ProgressDialog>> active_dialogs_;
 };

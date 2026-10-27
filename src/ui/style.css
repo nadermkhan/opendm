@@ -1,10 +1,8 @@
-/* OpenDM - Modern Native GTK4 Desktop Theme (Adwaita Dark Aesthetic) */
+/* OpenDM - Modern Native GTK4 Desktop Theme (Adwaita Dark Aesthetic) - DPI Responsive */
 
 window, .idm-main-window {
     background-color: #242424;
     color: #eeeeee;
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Cantarell, Ubuntu, sans-serif;
-    font-size: 13px;
 }
 
 paned > separator {
@@ -25,14 +23,14 @@ menubar {
     background-color: #2e2e2e;
     color: #e0e0e0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-    padding: 2px 8px;
-    font-size: 12px;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.9rem;
 }
 
 menubar > menuitem {
-    padding: 4px 10px;
+    padding: 0.25rem 0.6rem;
     color: #d0d0d0;
-    border-radius: 4px;
+    border-radius: 0.3rem;
     transition: background-color 120ms ease;
 }
 
@@ -45,8 +43,7 @@ menubar > menuitem:hover {
 .idm-toolbar-box {
     background-color: #2e2e2e;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    padding: 5px 8px;
-    min-height: 52px;
+    padding: 0.35rem 0.5rem;
 }
 
 window.idm-main-window .idm-toolbar-box button,
@@ -56,9 +53,9 @@ window.idm-main-window button.idm-toolbar-btn,
     background-color: transparent;
     border-style: none;
     border-width: 0;
-    border-radius: 6px;
-    padding: 5px 8px;
-    margin: 0 1px;
+    border-radius: 0.4rem;
+    padding: 0.3rem 0.5rem;
+    margin: 0 0.1rem;
     box-shadow: none;
     outline-style: none;
     transition: background-color 150ms ease, transform 100ms ease;
@@ -98,40 +95,40 @@ window.idm-main-window button.idm-toolbar-btn.suggested-action:active {
 }
 
 .idm-toolbar-label {
-    font-size: 11px;
+    font-size: 0.82rem;
     font-weight: 500;
     color: inherit;
-    margin-top: 3px;
+    margin-top: 0.15rem;
 }
 
 .idm-toolbar-chevron {
-    font-size: 10px;
+    font-size: 0.75rem;
     color: rgba(255, 255, 255, 0.6);
-    margin-left: 2px;
+    margin-left: 0.15rem;
 }
 
 .idm-toolbar-separator {
     background-color: rgba(255, 255, 255, 0.12);
     min-width: 1px;
-    margin: 6px 4px;
+    margin: 0.4rem 0.25rem;
 }
 
 /* Modern GTK Navigation Sidebar */
 .idm-sidebar-frame {
     background-color: #1e1e1e;
     border-right: 1px solid rgba(255, 255, 255, 0.06);
-    padding: 8px 0;
+    padding: 0.5rem 0;
 }
 
 .idm-category-header-box {
-    padding: 4px 12px 8px 12px;
+    padding: 0.3rem 0.8rem 0.5rem 0.8rem;
 }
 
 .idm-category-header-label {
-    font-size: 11px;
+    font-size: 0.8rem;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.04rem;
     color: #888888;
 }
 
@@ -142,12 +139,10 @@ window.idm-main-window button.idm-sidebar-close-btn {
     border-style: none;
     border-width: 0;
     box-shadow: none;
-    border-radius: 4px;
-    padding: 2px 6px;
+    border-radius: 0.3rem;
+    padding: 0.15rem 0.4rem;
     color: #888888;
-    font-size: 14px;
-    min-height: 20px;
-    min-width: 20px;
+    font-size: 1rem;
     transition: background-color 150ms ease, color 150ms ease;
 }
 
@@ -158,15 +153,15 @@ window.idm-main-window button.idm-sidebar-close-btn:hover {
 }
 
 .idm-category-list {
-    padding: 0 6px;
+    padding: 0 0.4rem;
 }
 
 .idm-tree-row {
-    padding: 6px 8px;
-    margin: 1px 0;
-    border-radius: 6px;
+    padding: 0.35rem 0.55rem;
+    margin: 0.1rem 0;
+    border-radius: 0.4rem;
     color: #cccccc;
-    font-size: 13px;
+    font-size: 0.95rem;
     font-weight: 500;
     transition: background-color 120ms ease, color 120ms ease;
 }
@@ -188,10 +183,10 @@ window.idm-main-window button.idm-tree-arrow-btn {
     border-style: none;
     border-width: 0;
     box-shadow: none;
-    padding: 0 4px;
-    min-width: 16px;
-    min-height: 16px;
-    font-size: 10px;
+    padding: 0 0.25rem;
+    min-width: 1rem;
+    min-height: 1rem;
+    font-size: 0.75rem;
     color: #888888;
 }
 
@@ -208,25 +203,21 @@ window.idm-main-window button.idm-tree-arrow-btn:hover {
 .idm-table-header {
     background-color: #2a2a2a;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    min-height: 32px;
-    padding: 0 8px;
-}
-
-.idm-col-header-box {
-    padding: 6px 8px;
+    min-height: 2rem;
+    padding: 0.3rem 0.8rem;
 }
 
 .idm-col-header {
-    font-size: 11px;
+    font-size: 0.8rem;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.4px;
+    letter-spacing: 0.04rem;
     color: #9a9996;
 }
 
 .idm-download-row {
-    min-height: 40px;
-    padding: 0 8px;
+    min-height: 2.5rem;
+    padding: 0.25rem 0.8rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
     background-color: transparent;
     transition: background-color 100ms ease;
@@ -242,40 +233,39 @@ window.idm-main-window button.idm-tree-arrow-btn:hover {
 }
 
 .idm-download-cell {
-    padding: 4px 8px;
-    font-size: 13px;
+    font-size: 0.95rem;
     color: #eeeeee;
 }
 
 /* Empty State */
 .idm-empty-state-box {
-    padding: 80px 20px;
+    padding: 4rem 1.5rem;
 }
 
 .idm-empty-state-icon {
     opacity: 0.25;
     color: #ffffff;
-    margin-bottom: 16px;
+    margin-bottom: 1rem;
 }
 
 .idm-empty-state-title {
-    font-size: 18px;
+    font-size: 1.35rem;
     font-weight: 700;
     color: #ffffff;
-    margin-bottom: 6px;
+    margin-bottom: 0.4rem;
 }
 
 .idm-empty-state-subtitle {
-    font-size: 13px;
+    font-size: 0.95rem;
     color: #9a9996;
-    margin-bottom: 20px;
+    margin-bottom: 1.5rem;
 }
 
 /* Status Badges */
 .idm-badge {
-    border-radius: 12px;
-    padding: 2px 8px;
-    font-size: 11px;
+    border-radius: 1rem;
+    padding: 0.15rem 0.55rem;
+    font-size: 0.8rem;
     font-weight: 600;
 }
 
@@ -303,13 +293,13 @@ window.idm-main-window button.idm-tree-arrow-btn:hover {
 .idm-statusbar {
     background-color: #1e1e1e;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
-    min-height: 28px;
-    padding: 2px 12px;
+    min-height: 1.8rem;
+    padding: 0.15rem 0.8rem;
 }
 
 .idm-status-panel {
-    padding: 2px 8px;
-    font-size: 12px;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.85rem;
     color: #9a9996;
 }
 
@@ -320,10 +310,10 @@ window.idm-main-window button.idm-status-panel-btn {
     border-style: none;
     border-width: 0;
     box-shadow: none;
-    border-radius: 4px;
-    padding: 2px 10px;
+    border-radius: 0.3rem;
+    padding: 0.15rem 0.6rem;
     color: #9a9996;
-    font-size: 12px;
+    font-size: 0.85rem;
     transition: background-color 150ms ease, color 150ms ease;
 }
 
@@ -337,27 +327,27 @@ window.idm-main-window button.idm-status-panel-btn:hover {
 .idm-visualizer-canvas {
     background-color: #1A1A1A;
     border: 1px solid #37474F;
-    border-radius: 6px;
+    border-radius: 0.4rem;
     box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
 .idm-progress-header {
     background-color: #252526;
     border: 1px solid #3E3E42;
-    border-radius: 6px;
-    padding: 10px 14px;
+    border-radius: 0.4rem;
+    padding: 0.6rem 0.9rem;
     color: #D4D4D4;
 }
 
 progressbar > trough {
-    min-height: 12px;
-    border-radius: 6px;
+    min-height: 0.8rem;
+    border-radius: 0.4rem;
     background-color: #2D2D30;
     border-style: none;
 }
 
 progressbar > progress {
-    border-radius: 6px;
+    border-radius: 0.4rem;
     background-color: #3584e4;
     border-style: none;
 }
