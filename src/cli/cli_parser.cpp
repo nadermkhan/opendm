@@ -53,7 +53,8 @@ CliOptions CliParser::parse(int argc, char* argv[]) {
             if (i + 1 < argc) {
                 opts.screenshot_path = argv[++i];
             }
-        } else if (arg == "--appreciation" || arg == "--show-appreciation") {
+        } else if (arg == "--about" || arg == "--show-about" || arg == "--appreciation" || arg == "--show-appreciation") {
+            opts.show_about = true;
             opts.show_appreciation = true;
         } else if (arg == "-h" || arg == "--help" || arg == "/?") {
             opts.show_help = true;

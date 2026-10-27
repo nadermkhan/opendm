@@ -45,7 +45,7 @@ target_link_libraries(opendm_core PUBLIC
 add_executable(opendm
     src/ui/ui_assets.cpp
     src/ui/add_url_dialog.cpp
-    src/ui/appreciation_dialog.cpp
+    src/ui/about_dialog.cpp
     src/ui/progress_dialog.cpp
     src/ui/zip_preview_dialog.cpp
     src/ui/grabber_dialog.cpp

@@ -3,7 +3,7 @@
 #include "zip_preview_dialog.hpp"
 #include "grabber_dialog.hpp"
 #include "add_url_dialog.hpp"
-#include "appreciation_dialog.hpp"
+#include "about_dialog.hpp"
 #include "ui_assets.hpp"
 #include <iomanip>
 #include <sstream>
@@ -102,7 +102,6 @@ MainWindow::~MainWindow() {
 
 void MainWindow::present() {
     gtk_window_present(GTK_WINDOW(window_));
-    AppreciationDialog::show(GTK_WINDOW(window_));
 }
 
 bool MainWindow::save_snapshot(const std::string& filename) {
@@ -229,16 +228,9 @@ void MainWindow::setup_menubar(GtkWidget* parent_box) {
 
     // 5. Help Menu
     GMenu* help_menu = g_menu_new();
-    g_menu_append(help_menu, "About OpenDM...", "win.about");
-    g_menu_append(help_menu, "Appreciate Developer (Nader Mahbub Khan)...", "win.appreciation");
+    g_menu_append(help_menu, "About OpenDM", "win.about");
+    g_menu_append(help_menu, "GitHub Repository...", "win.github");
     g_menu_append_submenu(menubar_model, "Help", G_MENU_MODEL(help_menu));
-
-    // 6. Appreciation Menu (Replaces Registration)
-    GMenu* apprec_menu = g_menu_new();
-    g_menu_append(apprec_menu, "Appreciate Developer (Nader Mahbub Khan)...", "win.appreciation");
-    g_menu_append(apprec_menu, "Visit GitHub (github.com/nadermkhan)...", "win.github");
-    g_menu_append(apprec_menu, "Lifetime License: 100% Free Forever", "win.appreciation");
-    g_menu_append_submenu(menubar_model, "Appreciation", G_MENU_MODEL(apprec_menu));
 
     GtkWidget* menubar = gtk_popover_menu_bar_new_from_model(G_MENU_MODEL(menubar_model));
     gtk_box_append(GTK_BOX(parent_box), menubar);
@@ -263,16 +255,16 @@ void MainWindow::setup_menubar(GtkWidget* parent_box) {
     add_win_action("zip_preview", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_zip_preview_clicked(); });
     add_win_action("site_grabber", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_site_grabber_clicked(); });
     add_win_action("toggle_sidebar", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_sidebar_toggle_clicked(); });
-    add_win_action("appreciation", +[](GSimpleAction*, GVariant*, gpointer d) {
-        auto* self = static_cast<MainWindow*>(d);
-        AppreciationDialog::show(GTK_WINDOW(self->get_widget()));
-    });
     add_win_action("github", +[](GSimpleAction*, GVariant*, gpointer) {
         g_app_info_launch_default_for_uri("https://github.com/nadermkhan/", nullptr, nullptr);
     });
     add_win_action("about", +[](GSimpleAction*, GVariant*, gpointer d) {
         auto* self = static_cast<MainWindow*>(d);
-        AppreciationDialog::show(GTK_WINDOW(self->get_widget()));
+        AboutDialog::show(GTK_WINDOW(self->get_widget()));
+    });
+    add_win_action("appreciation", +[](GSimpleAction*, GVariant*, gpointer d) {
+        auto* self = static_cast<MainWindow*>(d);
+        AboutDialog::show(GTK_WINDOW(self->get_widget()));
     });
 }
 

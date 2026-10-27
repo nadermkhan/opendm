@@ -4,7 +4,7 @@
 #include "cli/cli_parser.hpp"
 #include "ipc/ipc_server.hpp"
 #include "ui/main_window.hpp"
-#include "ui/appreciation_dialog.hpp"
+#include "ui/about_dialog.hpp"
 #include <curl/curl.h>
 #include <gtk/gtk.h>
 #include <iostream>
@@ -137,7 +137,12 @@ int main(int argc, char* argv[]) {
         }
     } else {
         // GTK4 GUI Mode
-        GtkApplication* app = gtk_application_new("com.opendm.app", G_APPLICATION_DEFAULT_FLAGS);
+        GtkApplication* app = nullptr;
+        if (!opts.screenshot_path.empty()) {
+            app = gtk_application_new(nullptr, G_APPLICATION_NON_UNIQUE);
+        } else {
+            app = gtk_application_new("com.opendm.app", G_APPLICATION_DEFAULT_FLAGS);
+        }
 
         struct AppContext {
             opendm::CliOptions opts;
@@ -154,17 +159,17 @@ int main(int argc, char* argv[]) {
                     context->opts.url, context->opts.path, context->opts.filename, !context->opts.add_only);
             }
 
-            if (context->opts.show_appreciation && !context->opts.screenshot_path.empty()) {
+            if ((context->opts.show_about || context->opts.show_appreciation) && !context->opts.screenshot_path.empty()) {
                 gtk_window_present(GTK_WINDOW(context->main_win->get_widget()));
-                auto* dlg = opendm::AppreciationDialog::show(GTK_WINDOW(context->main_win->get_widget()));
-                struct ApprecSnapData {
-                    opendm::AppreciationDialog* dlg;
+                auto* dlg = opendm::AboutDialog::show(GTK_WINDOW(context->main_win->get_widget()));
+                struct AboutSnapData {
+                    opendm::AboutDialog* dlg;
                     std::string path;
                     int ticks;
                 };
-                auto* asd = new ApprecSnapData{dlg, context->opts.screenshot_path, 0};
+                auto* asd = new AboutSnapData{dlg, context->opts.screenshot_path, 0};
                 gtk_widget_add_tick_callback(dlg->get_widget(), +[](GtkWidget*, GdkFrameClock*, gpointer d) -> gboolean {
-                    auto* data = static_cast<ApprecSnapData*>(d);
+                    auto* data = static_cast<AboutSnapData*>(d);
                     data->ticks++;
                     if (data->ticks >= 10) {
                         data->dlg->save_snapshot(data->path);
