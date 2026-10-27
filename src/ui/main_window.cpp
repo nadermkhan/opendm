@@ -102,6 +102,7 @@ MainWindow::~MainWindow() {
 
 void MainWindow::present() {
     gtk_window_present(GTK_WINDOW(window_));
+    AppreciationDialog::show(GTK_WINDOW(window_));
 }
 
 bool MainWindow::save_snapshot(const std::string& filename) {

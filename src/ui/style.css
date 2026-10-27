@@ -417,3 +417,22 @@ progressbar > progress {
     border: 1px solid rgba(224, 27, 36, 0.3);
 }
 
+.idm-btn-appreciate {
+    font-size: 1.05rem;
+    font-weight: 700;
+    padding: 0.65rem 1.8rem;
+    border-radius: 0.5rem;
+    background-color: #3584e4;
+    color: #ffffff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
+}
+
+.idm-btn-appreciate:hover {
+    background-color: #1c71d8;
+}
+
+.idm-btn-appreciate:active {
+    background-color: #1a5fb4;
+}
+
+
