@@ -109,4 +109,14 @@ target_link_libraries(test_dash_parser PRIVATE
 )
 add_test(NAME DashParserTest COMMAND test_dash_parser)
 
+# Installation targets
+install(TARGETS opendm opendm-native-host
+    RUNTIME DESTINATION bin
+)
+install(DIRECTORY data/icons/ DESTINATION share/icons/hicolor/scalable/apps)
+install(FILES data/opendm.desktop DESTINATION share/applications)
+install(DIRECTORY data/ui_assets/ DESTINATION share/opendm/ui_assets)
+install(FILES src/ui/style.css DESTINATION share/opendm)
+
+
 
