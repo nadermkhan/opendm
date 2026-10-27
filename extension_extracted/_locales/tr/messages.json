@@ -1,0 +1,29 @@
+{
+   "language_name": {
+      "message": "Turkish"
+   },
+   "extension_desc": {
+      "message": "Bu eklenti, tarayıcıdan başlatılan indirmeleri Internet Download Manager’ın devralmasını sağlar"
+   },
+   "tooltip_title": {
+      "message": "Internet Download Manager"
+   },
+   "tooltip_disabled": {
+      "message": "Internet Download Manager [DEVRE DIŞI]"
+   },
+   "tooltip_text": {
+      "message": "(ilişkilendirmeyi açmak/kapatmak için tıklayın)"
+   },
+   "menu_download_link": {
+      "message": "IDM ile indir"
+   },
+   "menu_download_all": {
+      "message": "Tüm bağlantıları IDM ile indir"
+   },
+   "menu_download_selected": {
+      "message": "Seçilen bağlantıları IDM ile indir"
+   },
+   "menu_download_item": {
+      "message": "İndirmeyi IDM'ye aktarın"
+   }
+}
