@@ -19,5 +19,11 @@
     "externally_connectable"   : { "matches": [ "*://*.internetdownloadmanager.com/*", "*://*.tonec.com/*" ] },
 
     "minimum_chrome_version"   : "109.0",
+    "browser_specific_settings": {
+        "gecko": {
+            "id": "mozilla_cc@tonec.com",
+            "strict_min_version": "109.0"
+        }
+    },
     "manifest_version"         : 3
 }

@@ -29,12 +29,16 @@ echo "Installed icon to ${ICON_DIR}/opendm.svg"
 cp -f "${SCRIPT_DIR}/data/opendm.desktop" "${APP_DIR}/opendm.desktop"
 echo "Installed desktop entry to ${APP_DIR}/opendm.desktop"
 
-# 4. Install authentic IDM UI assets & stylesheet
+# 4. Install authentic IDM UI assets, extension & stylesheet
 SHARE_DIR="${HOME}/.local/share/opendm"
 mkdir -p "${SHARE_DIR}/ui_assets"
 cp -rf "${SCRIPT_DIR}/data/ui_assets/"* "${SHARE_DIR}/ui_assets/"
 cp -f "${SCRIPT_DIR}/src/ui/style.css" "${SHARE_DIR}/style.css"
-echo "Installed authentic IDM assets and stylesheet to ${SHARE_DIR}"
+if [ -f "${SCRIPT_DIR}/opendm_extension.xpi" ]; then
+    cp -f "${SCRIPT_DIR}/opendm_extension.xpi" "${SHARE_DIR}/opendm_extension.xpi"
+fi
+cp -rf "${SCRIPT_DIR}/extension_extracted" "${SHARE_DIR}/extension"
+echo "Installed authentic IDM assets, extension, and stylesheet to ${SHARE_DIR}"
 
 # 4. Update desktop database & icon cache if available
 if command -v update-desktop-database >/dev/null 2>&1; then

@@ -2,11 +2,13 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOST_BIN="${SCRIPT_DIR}/build/opendm-native-host"
-
-if [ ! -f "${HOST_BIN}" ]; then
-    echo "Error: Native messaging host binary not found at ${HOST_BIN}"
-    echo "Please build the project first."
+if [ -f "${HOME}/.local/bin/opendm-native-host" ]; then
+    HOST_BIN="${HOME}/.local/bin/opendm-native-host"
+elif [ -f "${SCRIPT_DIR}/build/opendm-native-host" ]; then
+    HOST_BIN="${SCRIPT_DIR}/build/opendm-native-host"
+else
+    echo "Error: Native messaging host binary not found in ~/.local/bin or build directory."
+    echo "Please build and run ./install_desktop.sh first."
     exit 1
 fi
 
