@@ -1,0 +1,166 @@
+#include "core/download_queue.hpp"
+#include "core/download_session.hpp"
+#include "core/batch_importer.hpp"
+#include "cli/cli_parser.hpp"
+#include "ipc/ipc_server.hpp"
+#include "ui/main_window.hpp"
+#include <curl/curl.h>
+#include <gtk/gtk.h>
+#include <iostream>
+#include <chrono>
+#include <thread>
+#include <csignal>
+#include <atomic>
+
+namespace {
+std::atomic<bool> g_shutdown_requested{false};
+
+void signal_handler(int signum) {
+    g_shutdown_requested = true;
+}
+}
+
+int main(int argc, char* argv[]) {
+    // Initialize libcurl
+    curl_global_init(CURL_GLOBAL_ALL);
+
+    opendm::CliOptions opts = opendm::CliParser::parse(argc, argv);
+
+    if (opts.show_help) {
+        opendm::CliParser::print_help(argv[0]);
+        curl_global_cleanup();
+        return 0;
+    }
+
+    if (opts.show_version) {
+        opendm::CliParser::print_version();
+        curl_global_cleanup();
+        return 0;
+    }
+
+    // Try communicating with an existing instance if URL or action provided
+    if (!opts.url.empty() || opts.start_queue) {
+        std::string req;
+        if (!opts.url.empty()) {
+            req = "{\"action\": \"download\", \"url\": \"" + opts.url + "\"";
+            if (!opts.path.empty()) req += ", \"path\": \"" + opts.path + "\"";
+            if (!opts.filename.empty()) req += ", \"filename\": \"" + opts.filename + "\"";
+            if (opts.add_only) req += ", \"add_only\": \"true\"";
+            req += "}";
+        } else if (opts.start_queue) {
+            req = "{\"action\": \"start_queue\"}";
+        }
+
+        std::string resp = opendm::IpcServer::send_command(req);
+        if (resp.find("Could not connect") == std::string::npos && !resp.empty()) {
+            std::cout << "Forwarded request to running OpenDM instance: " << resp << std::endl;
+            curl_global_cleanup();
+            return 0;
+        }
+    }
+
+    // Process batch file import (.ef2 or text file)
+    if (!opts.import_file.empty()) {
+        std::string err;
+        auto items = opendm::BatchImporter::import_file(opts.import_file, err);
+        if (items.empty()) {
+            std::cerr << "Failed to import batch file: " << err << std::endl;
+        } else {
+            std::cout << "Imported " << items.size() << " downloads from " << opts.import_file << std::endl;
+            for (const auto& item : items) {
+                std::string dest_dir = item.path.empty() ? (opts.path.empty() ? "." : opts.path) : item.path;
+                std::string dest_file = dest_dir + "/" + (item.filename.empty() ? "download.bin" : item.filename);
+                static uint64_t counter = 1;
+                std::string id = "import_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+                auto s = std::make_shared<opendm::DownloadSession>(id, item.url, dest_file);
+                if (!item.referer.empty()) s->set_header("Referer", item.referer);
+                if (!item.cookies.empty()) s->set_header("Cookie", item.cookies);
+                if (!item.user_agent.empty()) s->set_header("User-Agent", item.user_agent);
+                opendm::QueueManager::instance().get_main_queue().add_session(s, opts.start_queue);
+            }
+        }
+    }
+
+    // Start background IPC server for incoming downloads
+    opendm::IpcServer ipc_server;
+    ipc_server.start();
+
+    // Signal handlers for graceful exit
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
+
+    int exit_code = 0;
+
+    if (!opts.show_gui) {
+        // Headless / CLI / Daemon mode
+        std::cout << "OpenDM running in CLI/background mode." << std::endl;
+
+        if (!opts.url.empty()) {
+            std::string dest_dir = opts.path.empty() ? "." : opts.path;
+            std::string dest_file = opts.filename.empty() ? (dest_dir + "/download.bin") : (dest_dir + "/" + opts.filename);
+            
+            auto session = std::make_shared<opendm::DownloadSession>("cli_task", opts.url, dest_file);
+            session->set_max_connections(opts.connections);
+            if (opts.speed_limit_kb > 0) {
+                session->set_speed_limit(opts.speed_limit_kb * 1024);
+                session->enable_speed_limit(true);
+            }
+
+            opendm::QueueManager::instance().get_main_queue().add_session(session, !opts.add_only);
+
+            if (!opts.add_only) {
+                // Monitor progress in terminal
+                while (!g_shutdown_requested &&
+                       session->get_status() != opendm::SessionStatus::COMPLETED &&
+                       session->get_status() != opendm::SessionStatus::ERROR) {
+                    auto p = session->get_progress();
+                    std::cout << "\rProgress: " << static_cast<int>(p.progress_fraction * 100)
+                              << "% [" << (p.downloaded_bytes / 1024) << " KB / " << (p.total_size / 1024) << " KB] "
+                              << "Speed: " << (p.speed_bytes_per_sec / 1024) << " KB/s "
+                              << "Active conns: " << p.active_connections << "    " << std::flush;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                }
+                std::cout << std::endl;
+                if (session->get_status() == opendm::SessionStatus::COMPLETED) {
+                    std::cout << "Download completed successfully: " << dest_file << std::endl;
+                } else if (session->get_status() == opendm::SessionStatus::ERROR) {
+                    std::cerr << "Download failed: " << session->get_progress().error_message << std::endl;
+                    exit_code = 1;
+                }
+            }
+        } else if (opts.is_daemon) {
+            std::cout << "OpenDM daemon active on " << opendm::IpcServer::DEFAULT_SOCKET_PATH << std::endl;
+            while (!g_shutdown_requested) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
+        }
+    } else {
+        // GTK4 GUI Mode
+        GtkApplication* app = gtk_application_new("com.opendm.app", G_APPLICATION_DEFAULT_FLAGS);
+
+        struct AppContext {
+            opendm::CliOptions opts;
+            std::unique_ptr<opendm::MainWindow> main_win;
+        } ctx{opts, nullptr};
+
+        g_signal_connect(app, "activate", G_CALLBACK(+[](GtkApplication* a, gpointer user_data) {
+            auto* context = static_cast<AppContext*>(user_data);
+            context->main_win = std::make_unique<opendm::MainWindow>(a);
+            context->main_win->present();
+
+            if (!context->opts.url.empty()) {
+                context->main_win->add_download_url(
+                    context->opts.url, context->opts.path, context->opts.filename, !context->opts.add_only);
+            }
+        }), &ctx);
+
+        // Run GTK main loop (pass no args to gtk so custom cli flags don't conflict)
+        char* empty_argv[] = {argv[0], nullptr};
+        exit_code = g_application_run(G_APPLICATION(app), 1, empty_argv);
+        g_object_unref(app);
+    }
+
+    ipc_server.stop();
+    curl_global_cleanup();
+    return exit_code;
+}
