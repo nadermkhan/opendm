@@ -1,0 +1,29 @@
+[Desktop Entry]
+Name=OpenDM
+GenericName=Download Manager
+Comment=High-speed dynamic multipart download accelerator for Linux (IDM Architecture)
+Exec=opendm %U
+Icon=opendm
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;GTK;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;application/x-all-downloads;application/x-idm-ef2;
+StartupNotify=true
+StartupWMClass=opendm
+
+Actions=AddDownload;StartQueue;StopQueue;
+
+[Desktop Action AddDownload]
+Name=Add URL...
+Exec=opendm
+Icon=list-add-symbolic
+
+[Desktop Action StartQueue]
+Name=Start Queue
+Exec=opendm -s
+Icon=media-playback-start-symbolic
+
+[Desktop Action StopQueue]
+Name=Stop Queue
+Exec=opendm -q
+Icon=media-playback-stop-symbolic

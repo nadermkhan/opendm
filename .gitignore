@@ -1,0 +1,28 @@
+# Build and binary artifacts
+build/
+bin/
+*.o
+*.a
+*.so
+*.dylib
+
+# CMake cache and generated build files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+Makefile
+
+# Temporary and local runtime files
+*.tmp
+*.log
+*.sock
+*~
+.DS_Store
+.vscode/
+.idea/
+
+# Original Windows binary installer & extracted Win32/x64 binaries
+*.exe
+extracted/
