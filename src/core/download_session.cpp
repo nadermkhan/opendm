@@ -42,16 +42,55 @@ struct WorkerData {
     uint64_t current_speed{0};
 };
 
+int xferinfo_callback(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
+    auto* data = static_cast<WorkerData*>(clientp);
+    if (!data || !data->session) return 1;
+
+    if (data->session->is_stop_requested() || data->session->is_pause_requested() ||
+        data->session->get_status() == SessionStatus::PAUSED ||
+        data->session->get_status() == SessionStatus::IDLE) {
+        return 1; // Abort immediately with CURLE_ABORTED_BY_CALLBACK
+    }
+    return 0;
+}
+
+int probe_xferinfo_callback(void* clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
+    auto* session = static_cast<DownloadSession*>(clientp);
+    if (!session) return 1;
+
+    if (session->is_stop_requested() || session->is_pause_requested() ||
+        session->get_status() == SessionStatus::PAUSED ||
+        session->get_status() == SessionStatus::IDLE) {
+        return 1; // Abort probe immediately
+    }
+    return 0;
+}
+
 size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* data = static_cast<WorkerData*>(userdata);
     size_t bytes = size * nmemb;
 
-    if (data->session->get_status() == SessionStatus::PAUSED ||
+    if (!data || !data->session) return 0;
+
+    if (data->session->is_stop_requested() || data->session->is_pause_requested() ||
+        data->session->get_status() == SessionStatus::PAUSED ||
         data->session->get_status() == SessionStatus::IDLE) {
-        return 0; // Abort transfer cleanly
+        return 0; // Abort transfer cleanly with CURLE_WRITE_ERROR
     }
 
-    if (data->file.is_open()) {
+    // Dynamic chunk boundary enforcement (OnChangeBounds in IDM)
+    int64_t start_off = 0, end_off = -1;
+    if (data->session->get_chunk_bounds(data->chunk_id, start_off, end_off) && end_off >= start_off) {
+        int64_t max_bytes = end_off - start_off + 1;
+        if (data->bytes_received >= max_bytes) {
+            return 0; // Boundary reached, terminate chunk connection cleanly
+        }
+        if (data->bytes_received + static_cast<int64_t>(bytes) > max_bytes) {
+            bytes = static_cast<size_t>(max_bytes - data->bytes_received);
+        }
+    }
+
+    if (data->file.is_open() && bytes > 0) {
         data->file.write(ptr, bytes);
         data->bytes_received += bytes;
         data->bytes_since_last_speed += bytes;
@@ -69,10 +108,27 @@ size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
         data->session->apply_throttle(bytes);
     }
 
+    if (end_off >= start_off) {
+        int64_t max_bytes = end_off - start_off + 1;
+        if (data->bytes_received >= max_bytes) {
+            return 0; // Chunk fully downloaded up to split boundary
+        }
+    }
+
     return bytes;
 }
 
 } // namespace
+
+bool DownloadSession::get_chunk_bounds(int chunk_id, int64_t& start_offset, int64_t& end_offset) const {
+    Chunk c;
+    if (chunk_manager_.get_chunk(chunk_id, c)) {
+        start_offset = c.start_offset;
+        end_offset = c.end_offset;
+        return true;
+    }
+    return false;
+}
 
 void DownloadSession::set_chunk_progress(int chunk_id, int64_t bytes, uint64_t speed) {
     chunk_manager_.update_chunk_progress(chunk_id, bytes, speed);
@@ -135,7 +191,8 @@ void DownloadSession::set_progress_callback(ProgressCallback cb) {
 }
 
 bool DownloadSession::start() {
-    if (status_ == SessionStatus::DOWNLOADING || status_ == SessionStatus::PROBING) {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (status_ == SessionStatus::DOWNLOADING || status_ == SessionStatus::PROBING || status_ == SessionStatus::ASSEMBLING) {
         return false;
     }
 
@@ -152,8 +209,21 @@ bool DownloadSession::start() {
 }
 
 void DownloadSession::pause() {
+    if (status_ == SessionStatus::PAUSED || status_ == SessionStatus::COMPLETED) {
+        return;
+    }
     pause_requested_ = true;
     status_ = SessionStatus::PAUSED;
+    current_speed_ = 0;
+    eta_seconds_ = 0;
+
+    // Reset speeds on chunks for instant feedback
+    auto chunks = chunk_manager_.get_chunks_snapshot();
+    for (const auto& c : chunks) {
+        chunk_manager_.update_chunk_progress(c.id, c.downloaded_bytes, 0);
+    }
+
+    update_speed_and_eta();
 }
 
 void DownloadSession::resume() {
@@ -164,13 +234,17 @@ void DownloadSession::resume() {
 
 void DownloadSession::cancel() {
     stop_requested_ = true;
+    pause_requested_ = false;
     status_ = SessionStatus::IDLE;
+    current_speed_ = 0;
+    eta_seconds_ = 0;
 
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
     if (coordinator_thread_.joinable()) {
         coordinator_thread_.join();
     }
 
-    std::lock_guard<std::mutex> lock(workers_mutex_);
+    std::lock_guard<std::mutex> wlock(workers_mutex_);
     for (auto& t : worker_threads_) {
         if (t.joinable()) {
             t.join();
@@ -191,6 +265,10 @@ bool DownloadSession::probe_resource() {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
     curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, probe_xferinfo_callback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_RANGE, "0-0"); // Probe range support with single byte
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &resp_headers);
@@ -270,6 +348,9 @@ bool DownloadSession::probe_resource() {
 
 void DownloadSession::run_session() {
     if (!probe_resource()) {
+        if (stop_requested_ || pause_requested_) {
+            return;
+        }
         status_ = SessionStatus::ERROR;
         update_speed_and_eta();
         return;
@@ -279,25 +360,44 @@ void DownloadSession::run_session() {
         return;
     }
 
-    // Initialize chunks
-    if (supports_ranges_ && total_size_ > 0) {
-        chunk_manager_.init_first_chunk(total_size_, temp_dir_, id_);
-    } else {
+    // Initialize or resume chunks
+    auto existing_chunks = chunk_manager_.get_chunks_snapshot();
+    if (!supports_ranges_) {
+        // Non-resumable stream: always restart fresh chunk
         chunk_manager_.init_stream_chunk(temp_dir_, id_);
+    } else if (existing_chunks.empty()) {
+        if (total_size_ > 0) {
+            chunk_manager_.init_first_chunk(total_size_, temp_dir_, id_);
+        } else {
+            chunk_manager_.init_stream_chunk(temp_dir_, id_);
+        }
+    }
+
+    if (chunk_manager_.all_chunks_completed()) {
+        assemble_file();
+        return;
     }
 
     status_ = SessionStatus::DOWNLOADING;
+    update_speed_and_eta();
 
-    // Launch worker thread for chunk 0
+    // Launch worker thread(s) for all incomplete chunks
+    existing_chunks = chunk_manager_.get_chunks_snapshot();
     {
         std::lock_guard<std::mutex> lock(workers_mutex_);
-        worker_threads_.emplace_back(&DownloadSession::download_chunk_worker, this, 0);
+        worker_threads_.clear();
+        for (const auto& c : existing_chunks) {
+            if (c.status != ChunkStatus::COMPLETED) {
+                chunk_manager_.set_chunk_status(c.id, ChunkStatus::DOWNLOADING);
+                worker_threads_.emplace_back(&DownloadSession::download_chunk_worker, this, c.id);
+            }
+        }
     }
 
     // Coordinator loop: monitor progress, ETA, and dynamically split chunks as in IDM
     dynamic_split_loop();
 
-    // Wait for all workers
+    // Wait for all workers to finish or abort
     {
         std::lock_guard<std::mutex> lock(workers_mutex_);
         for (auto& t : worker_threads_) {
@@ -309,6 +409,12 @@ void DownloadSession::run_session() {
     }
 
     if (stop_requested_ || pause_requested_) {
+        if (pause_requested_) {
+            status_ = SessionStatus::PAUSED;
+            current_speed_ = 0;
+            eta_seconds_ = 0;
+            update_speed_and_eta();
+        }
         return;
     }
 
@@ -360,6 +466,12 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, xferinfo_callback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &data);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) OpenDM/1.0");
 
     // Configure range header if supported
@@ -386,13 +498,23 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
         curl_slist_free_all(header_list);
     }
     curl_easy_cleanup(curl);
+    data.file.flush();
     data.file.close();
 
     if (stop_requested_ || pause_requested_) {
+        if (chunk.status != ChunkStatus::COMPLETED) {
+            chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::PENDING);
+        }
         return;
     }
 
-    if (res == CURLE_OK || (res == CURLE_PARTIAL_FILE && http_code == 206)) {
+    Chunk latest_chunk;
+    bool has_c = chunk_manager_.get_chunk(chunk_id, latest_chunk);
+    bool reached_boundary = has_c && (latest_chunk.end_offset >= latest_chunk.start_offset) &&
+                            (latest_chunk.downloaded_bytes >= (latest_chunk.end_offset - latest_chunk.start_offset + 1));
+
+    if (res == CURLE_OK || (res == CURLE_PARTIAL_FILE && http_code == 206) ||
+        (res == CURLE_WRITE_ERROR && reached_boundary)) {
         chunk_manager_.mark_chunk_completed(chunk_id);
     } else {
         chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::FAILED);
@@ -428,7 +550,10 @@ void DownloadSession::dynamic_split_loop() {
             }
         }
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Fast sleep in 10ms intervals for rapid pause/cancel response
+        for (int i = 0; i < 10 && !stop_requested_ && !pause_requested_; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
     }
 }
 
@@ -471,14 +596,19 @@ void DownloadSession::update_speed_and_eta() {
         }
     }
 
-    current_speed_ = total_spd;
-    int64_t downloaded = chunk_manager_.get_total_downloaded_bytes();
-
-    if (total_size_ > 0 && total_spd > 0) {
-        int64_t remaining = total_size_ - downloaded;
-        eta_seconds_ = (remaining > 0) ? (remaining / total_spd) : 0;
-    } else {
+    if (status_ == SessionStatus::PAUSED || status_ == SessionStatus::IDLE || status_ == SessionStatus::COMPLETED) {
+        current_speed_ = 0;
         eta_seconds_ = 0;
+    } else {
+        current_speed_ = total_spd;
+        int64_t downloaded = chunk_manager_.get_total_downloaded_bytes();
+
+        if (total_size_ > 0 && total_spd > 0) {
+            int64_t remaining = total_size_ - downloaded;
+            eta_seconds_ = (remaining > 0) ? (remaining / total_spd) : 0;
+        } else {
+            eta_seconds_ = 0;
+        }
     }
 
     std::lock_guard<std::mutex> lock(callback_mutex_);

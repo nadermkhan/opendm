@@ -63,6 +63,8 @@ public:
     std::string get_filename() const { return filename_; }
     SessionStatus get_status() const { return status_.load(); }
     DownloadProgress get_progress() const;
+    bool is_pause_requested() const { return pause_requested_.load(); }
+    bool is_stop_requested() const { return stop_requested_.load(); }
 
     // Listeners
     void set_progress_callback(ProgressCallback cb);
@@ -74,6 +76,7 @@ public:
     // Progress & Throttling
     void set_chunk_progress(int chunk_id, int64_t bytes, uint64_t speed);
     void apply_throttle(size_t bytes);
+    bool get_chunk_bounds(int chunk_id, int64_t& start_offset, int64_t& end_offset) const;
 
 private:
     void run_session();
@@ -103,6 +106,7 @@ private:
     ChunkManager chunk_manager_;
     SpeedLimiter speed_limiter_;
 
+    mutable std::mutex lifecycle_mutex_;
     mutable std::mutex workers_mutex_;
     std::vector<std::thread> worker_threads_;
     std::thread coordinator_thread_;

@@ -227,11 +227,14 @@ void DownloadQueue::process_pending_items() {
         if (st == SessionStatus::DOWNLOADING || st == SessionStatus::PROBING || st == SessionStatus::ASSEMBLING) {
             active_count++;
             all_finished = false;
-        } else if (st == SessionStatus::IDLE || st == SessionStatus::PAUSED) {
+        } else if (st == SessionStatus::IDLE) {
             all_finished = false;
             if (!next_candidate && active_count < max_conns) {
                 next_candidate = s;
             }
+        } else if (st == SessionStatus::PAUSED) {
+            // Paused downloads are explicitly held; do not auto-start
+            all_finished = false;
         }
     }
 

@@ -110,6 +110,14 @@ target_link_libraries(test_dash_parser PRIVATE
 )
 add_test(NAME DashParserTest COMMAND test_dash_parser)
 
+add_executable(test_session_pause
+    tests/test_session_pause.cpp
+)
+target_link_libraries(test_session_pause PRIVATE
+    opendm_core
+)
+add_test(NAME SessionPauseTest COMMAND test_session_pause)
+
 # Installation targets
 install(TARGETS opendm opendm-native-host
     RUNTIME DESTINATION bin
