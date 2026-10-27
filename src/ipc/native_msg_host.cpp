@@ -159,7 +159,7 @@ int main(int argc, char* argv[]) {
             // 1. Handshake request (type == 2)
             if (hdr.type == 2) {
                 // Packet 1: Handshake confirmation (Type 3)
-                opendm::write_native_json_string("MSG#1#3#0#0:113:0:0:0:96:0:0:0:100;");
+                opendm::write_native_json_string("MSG#1#3#0#0:113:0:0:0:96:103481600:0:0:100;");
 
                 // Packet 2: Configuration & activation (Type 4)
                 // Enables context menu, video grabber, and auto-interception for download file types
