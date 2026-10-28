@@ -85,7 +85,9 @@ bool ChunkManager::need_new_connection(size_t current_connections, size_t max_co
         return false;
     }
 
-    return (max_free >= 2 * MIN_CHUNK_SIZE);
+    // IDM algorithm (IDMan.exe @ 0x0055aeea):
+    // Checks if max_free >= 2 * MinChunkSize + 3 (204,803 bytes)
+    return (max_free >= 2 * MIN_CHUNK_SIZE + 3);
 }
 
 int ChunkManager::find_max_free_chunk() {
@@ -123,6 +125,27 @@ int ChunkManager::find_max_free_chunk() {
     return best_id;
 }
 
+int ChunkManager::find_chunk_with_zip_central_dir(int64_t target_offset, int64_t* out_remaining_bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (out_remaining_bytes) {
+        *out_remaining_bytes = 0;
+    }
+    // IDM algorithm: ChunksList::FindChunkWithZipCentralDir (IDMan.exe @ 0x005599c0)
+    // Searches chunks where start_offset + downloaded_bytes <= target_offset <= end_offset
+    for (const auto& c : chunks_) {
+        if (c->status == ChunkStatus::DOWNLOADING || c->status == ChunkStatus::PENDING) {
+            int64_t current_pos = c->start_offset + c->downloaded_bytes;
+            if (current_pos <= target_offset && target_offset <= c->end_offset) {
+                if (out_remaining_bytes) {
+                    *out_remaining_bytes = c->remaining_bytes();
+                }
+                return static_cast<int>(c->id);
+            }
+        }
+    }
+    return -1;
+}
+
 int ChunkManager::split_chunk(int target_chunk_id, const std::string& temp_dir, const std::string& file_prefix) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (is_streaming_) {
@@ -141,7 +164,8 @@ int ChunkManager::split_chunk(int target_chunk_id, const std::string& temp_dir, 
     int64_t current_pos = target->start_offset + target->downloaded_bytes;
     int64_t remaining = target->end_offset - current_pos + 1;
 
-    if (remaining < 2 * MIN_CHUNK_SIZE) {
+    // IDM threshold: (2 * MinChunkSize + 3) = 204,803 bytes
+    if (remaining < 2 * MIN_CHUNK_SIZE + 3) {
         return -1; // Too small to split profitably
     }
 

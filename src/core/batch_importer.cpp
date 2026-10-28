@@ -49,18 +49,28 @@ std::vector<BatchItem> BatchImporter::import_file(const std::string& filepath, s
 
         if (in_ef2_block) {
             line_in_block++;
-            if (line_in_block == 1) {
-                current_item.url = t;
-            } else if (line_in_block == 2) {
-                current_item.filename = t;
-            } else if (line_in_block == 3) {
-                current_item.path = t;
-            } else if (line_in_block == 4) {
-                current_item.referer = t;
-            } else if (line_in_block == 5) {
-                current_item.cookies = t;
-            } else if (line_in_block == 6) {
-                current_item.user_agent = t;
+            // Check for IDM tag prefixes (CUrlExporter::ReadFromIEFFile / WriteInELFFile)
+            if (t.rfind("referer:", 0) == 0 || t.rfind("Referer:", 0) == 0) {
+                current_item.referer = trim(t.substr(8));
+            } else if (t.rfind("cookie:", 0) == 0 || t.rfind("Cookie:", 0) == 0) {
+                current_item.cookies = trim(t.substr(7));
+            } else if (t.rfind("User-Agent:", 0) == 0 || t.rfind("user-agent:", 0) == 0) {
+                current_item.user_agent = trim(t.substr(11));
+            } else {
+                // Positional fallback
+                if (line_in_block == 1) {
+                    current_item.url = t;
+                } else if (line_in_block == 2) {
+                    current_item.filename = t;
+                } else if (line_in_block == 3) {
+                    current_item.path = t;
+                } else if (line_in_block == 4) {
+                    current_item.referer = t;
+                } else if (line_in_block == 5) {
+                    current_item.cookies = t;
+                } else if (line_in_block == 6) {
+                    current_item.user_agent = t;
+                }
             }
         } else {
             // Plain text URL list (skip comments)

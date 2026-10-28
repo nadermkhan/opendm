@@ -30,11 +30,18 @@ void test_idm_need_new_connection_threshold() {
     opendm::ChunkManager cm;
     std::string temp_dir = "/tmp/opendm_test";
 
-    // Below IDM threshold: (2 * 102400 + 3) = 204803 bytes
-    int64_t small_size = 200000;
-    cm.init_first_chunk(small_size, temp_dir, "small");
-    assert(!cm.need_new_connection(1, 8)); // Should NOT create new connection
-    std::cout << "  ✓ Correctly rejected new connection for " << small_size << " bytes (< 204,803 bytes)" << std::endl;
+    // Boundary test: Exactly 204,802 bytes (2 * MIN_CHUNK_SIZE + 2) -> FAILS threshold
+    int64_t below_threshold = 2 * opendm::ChunkManager::MIN_CHUNK_SIZE + 2;
+    cm.init_first_chunk(below_threshold, temp_dir, "small");
+    assert(!cm.need_new_connection(1, 8)); // Must reject
+    std::cout << "  ✓ Correctly rejected new connection for " << below_threshold << " bytes (< 204,803 bytes)" << std::endl;
+
+    // Boundary test: Exactly 204,803 bytes (2 * MIN_CHUNK_SIZE + 3) -> PASSES threshold
+    opendm::ChunkManager cm_exact;
+    int64_t exact_threshold = 2 * opendm::ChunkManager::MIN_CHUNK_SIZE + 3;
+    cm_exact.init_first_chunk(exact_threshold, temp_dir, "exact");
+    assert(cm_exact.need_new_connection(1, 8)); // Must accept
+    std::cout << "  ✓ Correctly accepted new connection for exactly " << exact_threshold << " bytes (== 204,803 bytes)" << std::endl;
 
     // Above IDM threshold: 500,000 bytes
     opendm::ChunkManager cm2;
@@ -45,6 +52,35 @@ void test_idm_need_new_connection_threshold() {
     // Max connections reached check
     assert(!cm2.need_new_connection(8, 8));
     std::cout << "  ✓ Respected max_connections ceiling" << std::endl;
+}
+
+void test_find_chunk_with_zip_central_dir() {
+    std::cout << "[TEST] Running test_find_chunk_with_zip_central_dir..." << std::endl;
+    opendm::ChunkManager cm;
+    std::string temp_dir = "/tmp/opendm_test";
+    cm.init_first_chunk(1000000, temp_dir, "zip");
+
+    // Split chunk 0 into [0, 499999] and [500000, 999999]
+    int c1 = cm.split_chunk(0, temp_dir, "zip");
+    assert(c1 == 1);
+
+    // Target offset 750,000 (Central Directory location near end)
+    int64_t rem = 0;
+    int chunk_id = cm.find_chunk_with_zip_central_dir(750000, &rem);
+    assert(chunk_id == 1);
+    assert(rem == 500000); // 999999 - 500000 + 1 = 500,000
+    std::cout << "  ✓ Found target central directory chunk " << chunk_id << " with remaining=" << rem << std::endl;
+
+    // Target offset 100,000 (Covered by chunk 0)
+    chunk_id = cm.find_chunk_with_zip_central_dir(100000, &rem);
+    assert(chunk_id == 0);
+    assert(rem == 500000);
+    std::cout << "  ✓ Found chunk 0 covering offset 100,000" << std::endl;
+
+    // Out of bounds target offset 2,000,000
+    chunk_id = cm.find_chunk_with_zip_central_dir(2000000, &rem);
+    assert(chunk_id == -1);
+    std::cout << "  ✓ Correctly returned -1 for out-of-bounds target" << std::endl;
 }
 
 void test_idm_midpoint_splitting() {
@@ -201,6 +237,7 @@ int main() {
     std::cout << "=== OpenDM Core Algorithm Tests ===" << std::endl;
     test_initialization();
     test_idm_need_new_connection_threshold();
+    test_find_chunk_with_zip_central_dir();
     test_idm_midpoint_splitting();
     test_chunk_assembly();
     test_join_file_callback_no_deadlock();

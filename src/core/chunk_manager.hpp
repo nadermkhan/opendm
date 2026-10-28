@@ -50,10 +50,15 @@ public:
     bool init_stream_chunk(const std::string& temp_dir, const std::string& file_prefix);
 
     // IDM algorithm: ChunksList::NeedNewConnection()
+    // Checks if max free bytes >= 2 * MIN_CHUNK_SIZE + 3 (204,803 bytes)
     bool need_new_connection(size_t current_connections, size_t max_connections);
 
     // IDM algorithm: ChunksList::FindMaxFreeChunk()
     int find_max_free_chunk();
+
+    // IDM algorithm: ChunksList::FindChunkWithZipCentralDir()
+    // Returns chunk ID covering target_offset and optionally writes remaining bytes to out_remaining_bytes
+    int find_chunk_with_zip_central_dir(int64_t target_offset, int64_t* out_remaining_bytes = nullptr);
 
     // IDM algorithm: ChunksList::CreateNewItem() & Connection::OnChangeBounds()
     // Splits chunk at target_chunk_id, returns newly created chunk ID, or -1 on failure
