@@ -179,6 +179,10 @@ const label = bar.children.find(c => c.className === "idm-label");
 assert(label, "Label element must exist");
 const menu = panel.children.find(c => c.id === "idm-menu");
 assert(menu, "Menu element must exist inside panel");
+const helpBtn = bar.children.find(c => c.className === "idm-help-btn");
+assert(helpBtn, "Help button must exist");
+assert.strictEqual(helpBtn.textContent, "?", "Help button text must be '?'");
+assert.strictEqual(helpBtn.title, "About this panel", "Help button title must be 'About this panel'");
 
 console.log("[PASS] Universal Panel Host and Shadow DOM structure verified");
 
@@ -363,9 +367,10 @@ setTimeout(() => {
 
         setTimeout(() => {
           assert.strictEqual(menu.style.display, "flex", "Menu must open on dropdown click");
-          const menuHtml = menu.children.map(c => c.innerHTML || "").join(" ");
-          assert(menuHtml.includes("1080p Full HD (Video + Audio)"), "Menu must list 1080p (Video + Audio)");
-          assert(menuHtml.includes("Audio Only (M4A / 128 kbps)"), "Menu must list Audio Only (M4A)");
+          const menuText = menu.children.map(c => c.textContent || "").join(" | ");
+          assert(menuText.includes("Download all"), "Menu must contain 'Download all'");
+          assert(menuText.includes("quality 1080p HD"), "Menu must list authentic IDM quality 1080p HD");
+          assert(menuText.includes("quality 128 kbps"), "Menu must list authentic IDM audio quality 128 kbps");
           console.log("[PASS] Case 9: YouTube dropdown resolution and audio options populated successfully");
 
           // Test Case 10: Strict rejection of SABR URLs and failure.mp3
@@ -410,15 +415,22 @@ setTimeout(() => {
             assert(validDl, "Valid stream with itag 136 and 140 must be selected");
             console.log("[PASS] Case 10: SABR control URL and failure.mp3 rejection verified");
 
-            // Test Case 11: YouTube DOM metadata resolution list extraction
+            // Test Case 11: YouTube DOM metadata resolution list extraction & IDM exact format parity
             const ytScript = new MockNode("SCRIPT");
             ytScript.textContent = `var ytInitialPlayerResponse = ${JSON.stringify({
+              videoDetails: { title: "Streets of Rage 2 Stage 1" },
               streamingData: {
+                formats: [
+                  { itag: 18, mimeType: "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"" },
+                  { itag: 22, mimeType: "video/mp4; codecs=\"avc1.64001F, mp4a.40.2\"" }
+                ],
                 adaptiveFormats: [
-                  { itag: 137, qualityLabel: "1080p", contentLength: "80000000", mimeType: "video/mp4; codecs=\"avc1.640028\"" },
-                  { itag: 136, qualityLabel: "720p", contentLength: "40000000", mimeType: "video/mp4; codecs=\"avc1.4d401f\"" },
-                  { itag: 135, qualityLabel: "480p", contentLength: "20000000", mimeType: "video/mp4; codecs=\"avc1.4d401f\"" },
-                  { itag: 134, qualityLabel: "360p", contentLength: "12000000", mimeType: "video/mp4; codecs=\"avc1.4d401e\"" },
+                  { itag: 160, qualityLabel: "144p", contentLength: "8000000", mimeType: "video/mp4; codecs=\"avc1.4d400c\"" },
+                  { itag: 133, qualityLabel: "240p", contentLength: "15000000", mimeType: "video/mp4; codecs=\"avc1.4d4015\"" },
+                  { itag: 134, qualityLabel: "360p", contentLength: "25000000", mimeType: "video/mp4; codecs=\"avc1.4d401e\"" },
+                  { itag: 135, qualityLabel: "480p", contentLength: "40000000", mimeType: "video/mp4; codecs=\"avc1.4d401f\"" },
+                  { itag: 136, qualityLabel: "720p", contentLength: "80000000", mimeType: "video/mp4; codecs=\"avc1.4d401f\"" },
+                  { itag: 137, qualityLabel: "1080p", contentLength: "120000000", mimeType: "video/mp4; codecs=\"avc1.640028\"" },
                   { itag: 140, mimeType: "audio/mp4; codecs=\"mp4a.40.2\"", contentLength: "4000000" }
                 ]
               }
@@ -435,12 +447,15 @@ setTimeout(() => {
 
             setTimeout(() => {
               assert.strictEqual(menu.style.display, "flex", "Menu must open on dropdown click");
-              const fullMenuHtml = menu.children.map(c => c.innerHTML || "").join(" ");
-              assert(fullMenuHtml.includes("1080p Full HD (Video + Audio)"), "DOM extracted 1080p must be in menu");
-              assert(fullMenuHtml.includes("720p HD (Video + Audio)"), "DOM extracted 720p must be in menu");
-              assert(fullMenuHtml.includes("480p SD (Video + Audio)"), "DOM extracted 480p must be in menu");
-              assert(fullMenuHtml.includes("360p (Video + Audio)"), "DOM extracted 360p must be in menu");
-              assert(fullMenuHtml.includes("Audio Only (M4A / 128 kbps)"), "DOM extracted audio must be in menu");
+              const fullMenuText = menu.children.map(c => c.textContent || "").join(" | ");
+              assert(fullMenuText.includes("Download all"), "Download all must be at top of menu");
+              assert(fullMenuText.includes("1. Streets of Rage 2 Stage 1, MP4 file, quality 360p"), "Format 1 must match progressive itag 18");
+              assert(fullMenuText.includes("2. Streets of Rage 2 Stage 1, MP4 file, quality 720p HD"), "Format 2 must match progressive itag 22");
+              assert(fullMenuText.includes("3. Streets of Rage 2 Stage 1, MP4 file, quality 144p"), "Format 3 must match adaptive itag 160");
+              assert(fullMenuText.includes("4. Streets of Rage 2 Stage 1, MP4 file, quality 240p"), "Format 4 must match adaptive itag 133");
+              assert(fullMenuText.includes("5. Streets of Rage 2 Stage 1, MP4 file, quality 480p"), "Format 5 must match adaptive itag 135 (360p duplicate skipped)");
+              assert(fullMenuText.includes("quality 1080p HD"), "DOM extracted 1080p must be in menu");
+              assert(fullMenuText.includes("quality 128 kbps"), "DOM extracted audio must be in menu");
               console.log("[PASS] Case 11: YouTube DOM metadata resolution list extraction verified 100%");
 
               // Test Case 12: YouTube streams containing alr=yes must be captured and accepted
@@ -473,7 +488,20 @@ setTimeout(() => {
                 assert(alrDl.url.includes("itag=140"), "Audio with itag=140 must be present in alr request");
                 console.log("[PASS] Case 12: YouTube streams containing alr=yes captured and accepted 100%");
 
-                console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+                // Test Case 13: "Download all" action dispatches downloads for all formats
+                sentMessages.length = 0;
+                const downloadAllBtn = menu.children.find(c => c.className && c.className.includes("idm-menu-item-all"));
+                assert(downloadAllBtn, "Download all button must exist in menu");
+                downloadAllBtn.dispatch("click", {
+                  stopPropagation: () => {},
+                  preventDefault: () => {}
+                });
+
+                setTimeout(() => {
+                  assert(sentMessages.length > 0, "Download all must dispatch download requests");
+                  console.log("[PASS] Case 13: Download all action functionality verified 100%");
+                  console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+                }, 300);
               }, 50);
             }, 50);
           }, 50);

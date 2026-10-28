@@ -122,23 +122,30 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     }
     .idm-logo {
       display: block;
-      width: 16px;
-      height: 16px;
-      margin-right: 5px;
+      width: 14px;
+      height: 14px;
+      margin-left: 2px;
+      margin-right: 4px;
       flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     .idm-label {
-      font-weight: 600;
+      font-weight: bold;
       font-size: 11px;
-      margin-right: 5px;
+      margin-right: 4px;
+      margin-left: 1px;
       white-space: nowrap;
-      color: #102030;
+      color: #c0392b;
+      line-height: 20px;
     }
     .idm-btn-sep {
       width: 1px;
       height: 14px;
-      background: rgba(0, 0, 0, 0.18);
-      margin: 0 3px;
+      background: #b4b4b4;
+      margin: 0 2px;
+      flex-shrink: 0;
     }
     .idm-dropdown-btn {
       display: flex;
@@ -159,68 +166,81 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       border-right: 3.5px solid transparent;
       border-top: 4.5px solid #333333;
     }
+    .idm-help-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 16px;
+      cursor: pointer;
+      font-size: 10px;
+      color: #003399;
+      font-weight: bold;
+      border: 1px solid #7f9db9;
+      background: linear-gradient(to bottom, #ffffff 0%, #e3efff 100%);
+      border-radius: 2px;
+      margin: 0 1px;
+    }
+    .idm-help-btn:hover {
+      background: #cce4f7;
+      border-color: #0054e3;
+    }
     .idm-close-btn {
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 15px;
-      height: 18px;
+      width: 14px;
+      height: 16px;
       cursor: pointer;
-      font-size: 11px;
+      font-size: 10px;
       color: #555555;
       font-weight: bold;
+      border: 1px solid #7f9db9;
+      background: linear-gradient(to bottom, #ffffff 0%, #e3efff 100%);
       border-radius: 2px;
-      margin-left: 1px;
+      margin: 0 1px;
     }
     .idm-close-btn:hover {
       background: #e81123;
+      border-color: #e81123;
       color: #ffffff;
     }
     #idm-menu {
       position: absolute;
-      top: 26px;
-      right: 0;
-      min-width: 220px;
-      max-height: 260px;
+      top: 24px;
+      left: 0;
+      min-width: 280px;
+      max-width: 520px;
+      max-height: 320px;
       overflow-y: auto;
       background: #ffffff;
-      border: 1px solid #7592a8;
-      border-radius: 3px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+      border: 1px solid #7f9db9;
+      border-radius: 2px;
+      box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25);
       display: none;
       flex-direction: column;
       z-index: 2147483647;
-      padding: 3px 0;
+      padding: 2px 0;
     }
     .idm-menu-item {
-      padding: 6px 10px;
+      padding: 4px 12px;
       cursor: pointer;
       white-space: nowrap;
       font-size: 11px;
-      color: #1a202c;
-      border-bottom: 1px solid #f0f0f0;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      transition: background 0.1s;
+      color: #000000;
+      display: block;
+      user-select: none;
+      transition: background 0.05s, color 0.05s;
     }
     .idm-menu-item:hover {
-      background: #e5f1fb;
-      color: #000000;
+      background: #3399ff;
+      color: #ffffff;
     }
-    .idm-menu-item:last-child {
-      border-bottom: none;
-    }
-    .idm-menu-label {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 220px;
-    }
-    .idm-menu-action {
-      color: #2563eb;
-      font-weight: 600;
-      margin-left: 8px;
-      flex-shrink: 0;
+    .idm-menu-sep {
+      height: 1px;
+      background: #d0d0d0;
+      margin: 2px 0;
+      border: none;
     }
   `;
   shadow.appendChild(style);
@@ -231,20 +251,10 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   const bar = document.createElement("div");
   bar.id = "idm-bar";
 
-  // IDM Logo with SVG fallback
-  const logo = document.createElement("img");
+  // IDM Play Triangle Icon (Green)
+  const logo = document.createElement("span");
   logo.className = "idm-logo";
-  logo.width = 16;
-  logo.height = 16;
-  logo.alt = "IDM";
-  const logoUrl = (extApi && extApi.runtime && extApi.runtime.getURL) ? extApi.runtime.getURL("images/logo16.png") : "";
-  logo.src = logoUrl;
-  logo.onerror = function() {
-    const svgWrap = document.createElement("span");
-    svgWrap.className = "idm-logo";
-    svgWrap.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#1d4ed8" stroke="#1e40af" stroke-width="0.8"/><ellipse cx="8" cy="8" rx="6.8" ry="2.2" stroke="#93c5fd" stroke-width="0.7" fill="none"/><ellipse cx="8" cy="8" rx="2.2" ry="6.8" stroke="#93c5fd" stroke-width="0.7" fill="none"/><line x1="1.2" y1="8" x2="14.8" y2="8" stroke="#93c5fd" stroke-width="0.7"/><path d="M8 2.5 L8 10 M5.2 7.2 L8 10 L10.8 7.2" stroke="#10b981" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    if (logo.parentNode) logo.parentNode.replaceChild(svgWrap, logo);
-  };
+  logo.innerHTML = '<svg width="12" height="12" viewBox="0 0 12 12" fill="none"><polygon points="2,1 11,6 2,11" fill="#2ECC71" stroke="#27AE60" stroke-width="0.7"/></svg>';
   bar.appendChild(logo);
 
   const label = document.createElement("span");
@@ -268,9 +278,30 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   sep2.className = "idm-btn-sep";
   bar.appendChild(sep2);
 
+  const helpBtn = document.createElement("div");
+  helpBtn.className = "idm-help-btn";
+  helpBtn.title = "About this panel";
+  helpBtn.textContent = "?";
+  helpBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    try {
+      if (typeof alert === "function") {
+        alert('This is IDM download panel.\nIt can be customized or turned off on "IDM->Options dialog->General tab"');
+      } else if (typeof window !== "undefined" && window.alert) {
+        window.alert('This is IDM download panel.\nIt can be customized or turned off on "IDM->Options dialog->General tab"');
+      }
+    } catch (err) {}
+  });
+  bar.appendChild(helpBtn);
+
+  const sep3 = document.createElement("div");
+  sep3.className = "idm-btn-sep";
+  bar.appendChild(sep3);
+
   const closeBtn = document.createElement("div");
   closeBtn.className = "idm-close-btn";
-  closeBtn.title = "Hide";
+  closeBtn.title = "Close";
   closeBtn.textContent = "✕";
   bar.appendChild(closeBtn);
 
@@ -540,9 +571,17 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
   function getMediaTitle() {
     let t = "";
-    const ytTitle = document.querySelector("h1.ytd-watch-metadata yt-formatted-string, #title h1 yt-formatted-string, ytd-watch-metadata h1");
-    if (ytTitle && ytTitle.textContent.trim()) {
-      t = ytTitle.textContent.trim();
+    try {
+      const ytData = getYouTubeFormatsFromDOM();
+      if (ytData && ytData.videoDetails && ytData.videoDetails.title) {
+        t = ytData.videoDetails.title.trim();
+      }
+    } catch (e) {}
+    if (!t) {
+      const ytTitle = document.querySelector("h1.ytd-watch-metadata yt-formatted-string, #title h1 yt-formatted-string, ytd-watch-metadata h1, h1.title, .watch-main-col meta[itemprop='name']");
+      if (ytTitle && (ytTitle.textContent || ytTitle.content)) {
+        t = (ytTitle.textContent || ytTitle.content).trim();
+      }
     }
     if (!t) {
       const ogTitle = document.querySelector('meta[property="og:title"], meta[name="twitter:title"]');
@@ -557,22 +596,89 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     return t || "video";
   }
 
+  // Exact IDM CYoutubeParser itag lookup table from idmcchandler7.dll
+  function getYoutubeItagInfo(itag) {
+    if (!itag) return null;
+    const itg = typeof itag === "string" ? parseInt(itag, 10) : itag;
+    switch (itg) {
+      // Progressive (MP4, FLV, WEBM, 3GP)
+      case 18: return { container: "MP4", quality: "360p", rank: 360, qName: "medium", isAudio: false, isProgressive: true };
+      case 22: return { container: "MP4", quality: "720p HD", rank: 720, qName: "hd720", isAudio: false, isProgressive: true };
+      case 37: return { container: "MP4", quality: "1080p HD", rank: 1080, qName: "hd1080", isAudio: false, isProgressive: true };
+      case 38: return { container: "MP4", quality: "3072p 4K", rank: 3072, qName: "highres", isAudio: false, isProgressive: true };
+      case 82: return { container: "MP4", quality: "360p 3D", rank: 360, qName: "medium", isAudio: false, isProgressive: true };
+      case 83: return { container: "MP4", quality: "480p 3D", rank: 480, qName: "large", isAudio: false, isProgressive: true };
+      case 84: return { container: "MP4", quality: "720p HD 3D", rank: 720, qName: "hd720", isAudio: false, isProgressive: true };
+      case 85: return { container: "MP4", quality: "1080p HD 3D", rank: 1080, qName: "hd1080", isAudio: false, isProgressive: true };
+      case 5: return { container: "FLV", quality: "240p", rank: 240, qName: "small", isAudio: false, isProgressive: true };
+      case 6: return { container: "FLV", quality: "270p", rank: 270, qName: "small", isAudio: false, isProgressive: true };
+      case 34: return { container: "FLV", quality: "360p", rank: 360, qName: "medium", isAudio: false, isProgressive: true };
+      case 35: return { container: "FLV", quality: "480p", rank: 480, qName: "large", isAudio: false, isProgressive: true };
+      case 43: return { container: "WEBM", quality: "360p", rank: 360, qName: "medium", isAudio: false, isProgressive: true };
+      case 44: return { container: "WEBM", quality: "480p", rank: 480, qName: "large", isAudio: false, isProgressive: true };
+      case 45: return { container: "WEBM", quality: "720p HD", rank: 720, qName: "hd720", isAudio: false, isProgressive: true };
+      case 46: return { container: "WEBM", quality: "1080p HD", rank: 1080, qName: "hd1080", isAudio: false, isProgressive: true };
+      case 17: return { container: "3GP", quality: "144p", rank: 144, qName: "tiny", isAudio: false, isProgressive: true };
+      case 36: return { container: "3GP", quality: "240p", rank: 240, qName: "small", isAudio: false, isProgressive: true };
+
+      // Adaptive MP4
+      case 160: return { container: "MP4", quality: "144p", rank: 144, qName: "tiny", isAudio: false, isProgressive: false };
+      case 133: return { container: "MP4", quality: "240p", rank: 240, qName: "small", isAudio: false, isProgressive: false };
+      case 134: return { container: "MP4", quality: "360p", rank: 360, qName: "medium", isAudio: false, isProgressive: false };
+      case 135: return { container: "MP4", quality: "480p", rank: 480, qName: "large", isAudio: false, isProgressive: false };
+      case 136: return { container: "MP4", quality: "720p HD", rank: 720, qName: "hd720", isAudio: false, isProgressive: false };
+      case 298: return { container: "MP4", quality: "720p HD, 60fps", rank: 720, qName: "hd720", isAudio: false, isProgressive: false };
+      case 137: return { container: "MP4", quality: "1080p HD", rank: 1080, qName: "hd1080", isAudio: false, isProgressive: false };
+      case 299: return { container: "MP4", quality: "1080p HD, 60fps", rank: 1080, qName: "hd1080", isAudio: false, isProgressive: false };
+      case 264: return { container: "MP4", quality: "1440p HD", rank: 1440, qName: "hd1440", isAudio: false, isProgressive: false };
+      case 304: return { container: "MP4", quality: "1440p HD, 60fps", rank: 1440, qName: "hd1440", isAudio: false, isProgressive: false };
+      case 266: return { container: "MP4", quality: "2160p 4K", rank: 2160, qName: "hd2160", isAudio: false, isProgressive: false };
+      case 305: return { container: "MP4", quality: "2160p 4K, 60fps", rank: 2160, qName: "hd2160", isAudio: false, isProgressive: false };
+
+      // Adaptive WEBM / VP9
+      case 278: return { container: "WEBM", quality: "144p", rank: 144, qName: "tiny", isAudio: false, isProgressive: false };
+      case 242: return { container: "WEBM", quality: "240p", rank: 240, qName: "small", isAudio: false, isProgressive: false };
+      case 243: return { container: "WEBM", quality: "360p", rank: 360, qName: "medium", isAudio: false, isProgressive: false };
+      case 244: return { container: "WEBM", quality: "480p", rank: 480, qName: "large", isAudio: false, isProgressive: false };
+      case 247: return { container: "WEBM", quality: "720p HD", rank: 720, qName: "hd720", isAudio: false, isProgressive: false };
+      case 302: return { container: "WEBM", quality: "720p HD, 60fps", rank: 720, qName: "hd720", isAudio: false, isProgressive: false };
+      case 248: return { container: "WEBM", quality: "1080p HD", rank: 1080, qName: "hd1080", isAudio: false, isProgressive: false };
+      case 303: return { container: "WEBM", quality: "1080p HD, 60fps", rank: 1080, qName: "hd1080", isAudio: false, isProgressive: false };
+      case 271: return { container: "WEBM", quality: "1440p HD", rank: 1440, qName: "hd1440", isAudio: false, isProgressive: false };
+      case 308: return { container: "WEBM", quality: "1440p HD, 60fps", rank: 1440, qName: "hd1440", isAudio: false, isProgressive: false };
+      case 313: return { container: "WEBM", quality: "2160p 4K", rank: 2160, qName: "hd2160", isAudio: false, isProgressive: false };
+      case 315: return { container: "WEBM", quality: "2160p 4K, 60fps", rank: 2160, qName: "hd2160", isAudio: false, isProgressive: false };
+      case 272: return { container: "WEBM", quality: "2160p 4K", rank: 2160, qName: "hd2160", isAudio: false, isProgressive: false };
+
+      // AV1
+      case 394: return { container: "MP4", quality: "144p", rank: 144, qName: "tiny", isAudio: false, isProgressive: false };
+      case 395: return { container: "MP4", quality: "240p", rank: 240, qName: "small", isAudio: false, isProgressive: false };
+      case 396: return { container: "MP4", quality: "360p", rank: 360, qName: "medium", isAudio: false, isProgressive: false };
+      case 397: return { container: "MP4", quality: "480p", rank: 480, qName: "large", isAudio: false, isProgressive: false };
+      case 398: return { container: "MP4", quality: "720p HD", rank: 720, qName: "hd720", isAudio: false, isProgressive: false };
+      case 399: return { container: "MP4", quality: "1080p HD", rank: 1080, qName: "hd1080", isAudio: false, isProgressive: false };
+      case 400: return { container: "MP4", quality: "1440p HD", rank: 1440, qName: "hd1440", isAudio: false, isProgressive: false };
+      case 401: return { container: "MP4", quality: "2160p 4K", rank: 2160, qName: "hd2160", isAudio: false, isProgressive: false };
+
+      // Audio
+      case 139: return { container: "M4A", quality: "48 kbps", rank: 48, qName: "tiny", isAudio: true, isProgressive: false };
+      case 140: return { container: "M4A", quality: "128 kbps", rank: 128, qName: "tiny", isAudio: true, isProgressive: false };
+      case 141: return { container: "M4A", quality: "256 kbps", rank: 256, qName: "tiny", isAudio: true, isProgressive: false };
+      case 249: return { container: "WEBM", quality: "50 kbps", rank: 50, qName: "tiny", isAudio: true, isProgressive: false };
+      case 250: return { container: "WEBM", quality: "70 kbps", rank: 70, qName: "tiny", isAudio: true, isProgressive: false };
+      case 251: return { container: "WEBM", quality: "160 kbps", rank: 160, qName: "tiny", isAudio: true, isProgressive: false };
+      case 171: return { container: "WEBM", quality: "128 kbps", rank: 128, qName: "tiny", isAudio: true, isProgressive: false };
+
+      default: return null;
+    }
+  }
+
   function getYtQualityRank(url) {
     if (!url) return 0;
     const m = url.match(/[?&]itag=(\d+)/);
     if (!m) return 0;
-    const itag = parseInt(m[1], 10);
-    switch (itag) {
-      case 313: case 401: case 272: return 2160;
-      case 271: case 308: case 400: return 1440;
-      case 137: case 248: case 399: case 299: case 270: return 1080;
-      case 136: case 247: case 398: case 298: case 22: return 720;
-      case 135: case 244: case 397: return 480;
-      case 134: case 243: case 396: case 18: return 360;
-      case 133: case 242: case 395: return 240;
-      case 160: case 278: case 394: return 144;
-      default: return 100;
-    }
+    const info = getYoutubeItagInfo(m[1]);
+    return info ? info.rank : 100;
   }
 
   function getYouTubeFormatsFromDOM() {
@@ -715,7 +821,9 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   }
 
   bar.addEventListener("click", (e) => {
-    if (e.target === closeBtn || (closeBtn.contains && closeBtn.contains(e.target)) || e.target === dropdownBtn || (dropdownBtn.contains && dropdownBtn.contains(e.target))) {
+    if (e.target === closeBtn || (closeBtn.contains && closeBtn.contains(e.target)) ||
+        e.target === helpBtn || (helpBtn.contains && helpBtn.contains(e.target)) ||
+        e.target === dropdownBtn || (dropdownBtn.contains && dropdownBtn.contains(e.target))) {
       return;
     }
     e.stopPropagation();
@@ -831,6 +939,8 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     e.stopPropagation();
     e.preventDefault();
 
+    const origText = label.textContent;
+
     if (menu.style.display === "flex") {
       menu.style.display = "none";
       return;
@@ -838,7 +948,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
     menu.innerHTML = "";
     const loadingItem = document.createElement("div");
-    loadingItem.style.cssText = "padding: 6px 10px; color: #666; font-size: 11px;";
+    loadingItem.style.cssText = "padding: 4px 12px; color: #666; font-size: 11px;";
     loadingItem.textContent = "Scanning available streams...";
     menu.appendChild(loadingItem);
     menu.style.display = "flex";
@@ -855,149 +965,169 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
       if (isYtOrDash) {
         const ytData = getYouTubeFormatsFromDOM();
-        const adaptiveFormats = (ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || [];
-        const resolutionDefs = [
-          { label: "1080p Full HD (Video + Audio)", qName: "hd1080", itags: [137, 248, 399, 299, 270], minRes: 1080 },
-          { label: "720p HD (Video + Audio)", qName: "hd720", itags: [136, 247, 398, 298, 22], minRes: 720 },
-          { label: "480p SD (Video + Audio)", qName: "large", itags: [135, 244, 397], minRes: 480 },
-          { label: "360p (Video + Audio)", qName: "medium", itags: [134, 243, 396, 18], minRes: 360 },
-          { label: "240p (Video + Audio)", qName: "small", itags: [133, 242, 395], minRes: 240 },
-          { label: "144p (Video + Audio)", qName: "tiny", itags: [160, 278, 394], minRes: 144 }
-        ];
+        const progFormats = (ytData && ytData.streamingData && ytData.streamingData.formats) || [];
+        const adapFormats = (ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || [];
 
-        let audioSize = 0;
-        if (audioStreams.length > 0 && audioStreams[0].size) {
-          audioSize = audioStreams[0].size;
-        } else {
-          const af140 = adaptiveFormats.find(f => f.itag === 140 || (f.mimeType && f.mimeType.includes("audio")));
-          if (af140 && af140.contentLength) audioSize = parseInt(af140.contentLength, 10) || 0;
-        }
+        // Build list of candidate format objects: progressive formats first, then adaptive
+        const rawFmts = [];
+        progFormats.forEach(f => rawFmts.push({ fmt: f, isProg: true }));
+        adapFormats.forEach(f => rawFmts.push({ fmt: f, isProg: false }));
 
-        const seenLabels = new Set();
+        const seenQualities = new Set();
 
-        if (adaptiveFormats.length > 0) {
-          for (const rDef of resolutionDefs) {
-            const matchFormat = adaptiveFormats.find(f => rDef.itags.includes(f.itag) || (f.qualityLabel && f.qualityLabel.includes(String(rDef.minRes))));
-            if (!matchFormat) continue;
+        if (rawFmts.length > 0) {
+          for (const itemObj of rawFmts) {
+            const f = itemObj.fmt;
+            const isProg = itemObj.isProg;
+            const itag = f.itag || 0;
+            const info = getYoutubeItagInfo(itag);
 
-            const captured = videoStreams.find(vs => {
-              const it = vs.url.match(/[?&]itag=(\d+)/);
-              return it && rDef.itags.includes(parseInt(it[1], 10));
-            });
+            let container = "MP4";
+            let quality = "";
+            let qName = "medium";
+            let isAudio = false;
 
-            let sizeBytes = 0;
-            if (matchFormat.contentLength) {
-              sizeBytes = parseInt(matchFormat.contentLength, 10) + audioSize;
-            } else if (captured && captured.size) {
-              sizeBytes = captured.size + audioSize;
+            if (info) {
+              container = info.container;
+              quality = info.quality;
+              qName = info.qName;
+              isAudio = info.isAudio;
+            } else {
+              isAudio = (f.mimeType && f.mimeType.includes("audio")) || false;
+              container = (f.mimeType && f.mimeType.includes("webm")) ? "WEBM" : (isAudio ? "M4A" : "MP4");
+              if (f.qualityLabel) {
+                quality = f.qualityLabel.includes("HD") ? f.qualityLabel : (parseInt(f.qualityLabel, 10) >= 720 ? (f.qualityLabel + " HD") : f.qualityLabel);
+              } else if (f.height) {
+                quality = f.height >= 720 ? (f.height + "p HD") : (f.height + "p");
+              } else if (isAudio) {
+                quality = f.bitrate ? (Math.round(f.bitrate / 1000) + " kbps") : "128 kbps";
+              }
             }
 
-            let sizeStr = "";
-            if (sizeBytes > 1048576) {
-              sizeStr = ` (${(sizeBytes / 1048576).toFixed(1)} MB)`;
-            } else if (sizeBytes > 1024) {
-              sizeStr = ` (${(sizeBytes / 1024).toFixed(0)} KB)`;
-            }
+            if (!quality) continue;
+
+            const dedupeKey = isAudio ? ("audio_" + container + "_" + quality) : quality;
+            if (seenQualities.has(dedupeKey)) continue;
+            seenQualities.add(dedupeKey);
 
             let targetUrl = "";
-            if (captured) {
-              const cleanV = cleanMediaStreamUrl(captured.url);
-              targetUrl = bestAudio ? `yta2toidm://${cleanV}##${bestAudio}` : cleanV;
-            } else if (matchFormat.url) {
-              const cleanV = cleanMediaStreamUrl(matchFormat.url);
-              targetUrl = bestAudio ? `yta2toidm://${cleanV}##${bestAudio}` : cleanV;
+            const captured = videoStreams.find(vs => {
+              const it = vs.url && vs.url.match(/[?&]itag=(\d+)/);
+              return it && parseInt(it[1], 10) === itag;
+            });
+
+            if (isProg) {
+              if (f.url) {
+                targetUrl = cleanMediaStreamUrl(f.url);
+              } else if (captured) {
+                targetUrl = cleanMediaStreamUrl(captured.url);
+              }
+            } else if (!isAudio) {
+              if (captured) {
+                const cleanV = cleanMediaStreamUrl(captured.url);
+                targetUrl = bestAudio ? (`yta2toidm://${cleanV}##${bestAudio}`) : cleanV;
+              } else if (f.url) {
+                const cleanV = cleanMediaStreamUrl(f.url);
+                targetUrl = bestAudio ? (`yta2toidm://${cleanV}##${bestAudio}`) : cleanV;
+              }
+            } else {
+              const capturedAudio = audioStreams.find(as => {
+                const it = as.url && as.url.match(/[?&]itag=(\d+)/);
+                return it && parseInt(it[1], 10) === itag;
+              });
+              if (capturedAudio) {
+                targetUrl = cleanMediaStreamUrl(capturedAudio.url);
+              } else if (f.url) {
+                targetUrl = cleanMediaStreamUrl(f.url);
+              } else {
+                targetUrl = bestAudio || "";
+              }
             }
 
-            seenLabels.add(rDef.label);
+            const ext = isAudio ? (container === "WEBM" ? "opus" : "m4a") : (container === "WEBM" ? "webm" : "mp4");
             items.push({
               url: targetUrl,
-              qName: rDef.qName,
+              qName: qName,
               needsSwitch: !targetUrl,
-              filename: `${mediaTitle}.mp4`,
-              label: `${rDef.label}${sizeStr}`
+              filename: `${mediaTitle}.${ext}`,
+              container: container,
+              quality: quality,
+              isAudio: isAudio
             });
           }
         }
 
+        // Also check any captured video streams that may not have been in DOM metadata
         for (const vs of videoStreams) {
           const u = vs.url || "";
-          const itagMatch = u.match(/[?&]itag=(\d+)/);
-          const itag = itagMatch ? parseInt(itagMatch[1], 10) : 0;
-          let labelText = "";
-          let qName = "auto";
-          if (itag === 137 || itag === 248 || itag === 399) { labelText = "1080p Full HD (Video + Audio)"; qName = "hd1080"; }
-          else if (itag === 136 || itag === 247 || itag === 398) { labelText = "720p HD (Video + Audio)"; qName = "hd720"; }
-          else if (itag === 135 || itag === 244 || itag === 397) { labelText = "480p SD (Video + Audio)"; qName = "large"; }
-          else if (itag === 134 || itag === 243 || itag === 396) { labelText = "360p (Video + Audio)"; qName = "medium"; }
-          else if (itag === 133 || itag === 242) { labelText = "240p (Video + Audio)"; qName = "small"; }
-          else labelText = "Video Stream (Video + Audio)";
+          const itMatch = u.match(/[?&]itag=(\d+)/);
+          const itag = itMatch ? parseInt(itMatch[1], 10) : 0;
+          const info = getYoutubeItagInfo(itag);
+          let container = info ? info.container : "MP4";
+          let quality = info ? info.quality : "720p HD";
+          let qName = info ? info.qName : "hd720";
 
-          if (seenLabels.has(labelText)) continue;
-          seenLabels.add(labelText);
-
-          let sizeBytes = (vs.size || 0) + audioSize;
-          let sizeStr = "";
-          if (sizeBytes > 1048576) sizeStr = ` (${(sizeBytes / 1048576).toFixed(1)} MB)`;
-          else if (sizeBytes > 1024) sizeStr = ` (${(sizeBytes / 1024).toFixed(0)} KB)`;
+          if (seenQualities.has(quality)) continue;
+          seenQualities.add(quality);
 
           const cleanVideo = cleanMediaStreamUrl(u);
-          const finalUrl = bestAudio ? `yta2toidm://${cleanVideo}##${bestAudio}` : cleanVideo;
+          const finalUrl = bestAudio ? (`yta2toidm://${cleanVideo}##${bestAudio}`) : cleanVideo;
           items.push({
             url: finalUrl,
             qName: qName,
             needsSwitch: false,
             filename: `${mediaTitle}.mp4`,
-            label: `${labelText}${sizeStr}`
+            container: container,
+            quality: quality,
+            isAudio: false
           });
         }
 
+        // Audio streams from captured network traffic
         if (audioStreams.length > 0) {
           for (const as of audioStreams) {
             const cleanAudio = cleanMediaStreamUrl(as.url);
-            const isM4a = as.url.includes("itag=140") || (as.mime && as.mime.includes("mp4"));
-            const aLabel = isM4a ? "Audio Only (M4A / 128 kbps)" : "Audio Only (Opus / 160 kbps)";
-            if (seenLabels.has(aLabel)) continue;
-            seenLabels.add(aLabel);
+            const itMatch = as.url.match(/[?&]itag=(\d+)/);
+            const itag = itMatch ? parseInt(itMatch[1], 10) : 0;
+            const info = getYoutubeItagInfo(itag);
+            const isM4a = (info && info.container === "M4A") || as.url.includes("itag=140") || (as.mime && as.mime.includes("mp4"));
+            const container = isM4a ? "M4A" : "WEBM";
+            const quality = info ? info.quality : (isM4a ? "128 kbps" : "160 kbps");
+            const dedupeKey = "audio_" + container + "_" + quality;
+            if (seenQualities.has(dedupeKey)) continue;
+            seenQualities.add(dedupeKey);
 
-            let aSizeStr = "";
-            if (as.size && as.size > 0) {
-              aSizeStr = ` (${(as.size / 1048576).toFixed(1)} MB)`;
-            }
             items.push({
               url: cleanAudio,
+              qName: "tiny",
               needsSwitch: false,
               filename: `${mediaTitle}.${isM4a ? "m4a" : "opus"}`,
-              label: `${aLabel}${aSizeStr}`
-            });
-          }
-        } else if (adaptiveFormats.length > 0) {
-          const audioFormats = adaptiveFormats.filter(f => f.mimeType && f.mimeType.includes("audio"));
-          for (const af of audioFormats) {
-            const isM4a = af.itag === 140 || (af.mimeType && af.mimeType.includes("mp4"));
-            const aLabel = isM4a ? "Audio Only (M4A / 128 kbps)" : "Audio Only (Opus / 160 kbps)";
-            if (seenLabels.has(aLabel)) continue;
-            seenLabels.add(aLabel);
-
-            let aSize = parseInt(af.contentLength || "0", 10);
-            let aSizeStr = aSize > 1048576 ? ` (${(aSize / 1048576).toFixed(1)} MB)` : "";
-            items.push({
-              url: af.url ? cleanMediaStreamUrl(af.url) : "",
-              needsSwitch: !af.url,
-              filename: `${mediaTitle}.${isM4a ? "m4a" : "opus"}`,
-              label: `${aLabel}${aSizeStr}`
+              container: container,
+              quality: quality,
+              isAudio: true
             });
           }
         }
 
+        // Fallback default resolution list if nothing could be parsed
         if (items.length === 0) {
-          for (const rDef of resolutionDefs) {
-            seenLabels.add(rDef.label);
+          const fallbackDefs = [
+            { container: "MP4", quality: "1080p HD", qName: "hd1080" },
+            { container: "MP4", quality: "720p HD", qName: "hd720" },
+            { container: "MP4", quality: "480p", qName: "large" },
+            { container: "MP4", quality: "360p", qName: "medium" },
+            { container: "MP4", quality: "240p", qName: "small" },
+            { container: "MP4", quality: "144p", qName: "tiny" }
+          ];
+          for (const fd of fallbackDefs) {
             items.push({
               url: "",
-              qName: rDef.qName,
+              qName: fd.qName,
               needsSwitch: true,
               filename: `${mediaTitle}.mp4`,
-              label: rDef.label
+              container: fd.container,
+              quality: fd.quality,
+              isAudio: false
             });
           }
           items.push({
@@ -1005,53 +1135,96 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             qName: "tiny",
             needsSwitch: true,
             filename: `${mediaTitle}.m4a`,
-            label: "Audio Only (M4A / 128 kbps)"
+            container: "M4A",
+            quality: "128 kbps",
+            isAudio: true
           });
         }
       } else {
+        // Non-YouTube media
         if (directSrc && directSrc.startsWith("http") && !directSrc.startsWith("blob:")) {
           const ext = directSrc.split(".").pop().split("?")[0].toUpperCase().slice(0, 4) || "MP4";
           items.push({
             url: directSrc,
             filename: `${mediaTitle}.${ext.toLowerCase()}`,
-            label: `Direct Stream (${ext})`
+            container: ext,
+            quality: "",
+            isAudio: false
           });
         }
 
         streams.forEach((s) => {
-          let ext = "MP4";
+          let container = "MP4";
+          let isAudio = false;
           if (s.mime) {
-            if (s.mime.includes("webm")) ext = "WEBM";
-            else if (s.mime.includes("audio") || s.mime.includes("mp3")) ext = "MP3";
-            else if (s.mime.includes("m4a")) ext = "M4A";
-            else if (s.mime.includes("mpegurl")) ext = "HLS (M3U8)";
-            else if (s.mime.includes("dash")) ext = "DASH (MPD)";
-          }
-          let sizeStr = "";
-          if (s.size && s.size > 0) {
-            if (s.size > 1048576) sizeStr = ` (${(s.size / 1048576).toFixed(1)} MB)`;
-            else sizeStr = ` (${(s.size / 1024).toFixed(0)} KB)`;
+            if (s.mime.includes("webm")) container = "WEBM";
+            else if (s.mime.includes("audio") || s.mime.includes("mp3")) { container = "MP3"; isAudio = true; }
+            else if (s.mime.includes("m4a")) { container = "M4A"; isAudio = true; }
+            else if (s.mime.includes("mpegurl")) container = "HLS";
+            else if (s.mime.includes("dash")) container = "DASH";
           }
           items.push({
             url: cleanMediaStreamUrl(s.url),
-            filename: `${mediaTitle}.${ext.toLowerCase().slice(0, 3)}`,
-            label: `${ext} Stream${sizeStr}`
+            filename: `${mediaTitle}.${container.toLowerCase().slice(0, 3)}`,
+            container: container,
+            quality: "",
+            isAudio: isAudio
           });
         });
       }
 
       if (items.length === 0) {
         const noneItem = document.createElement("div");
-        noneItem.style.cssText = "padding: 6px 10px; color: #666; font-size: 11px;";
+        noneItem.style.cssText = "padding: 4px 12px; color: #666; font-size: 11px;";
         noneItem.textContent = "No additional formats detected";
         menu.appendChild(noneItem);
         return;
       }
 
-      items.forEach((item) => {
+      // 1. "Download all" option at the top of the menu
+      const allItem = document.createElement("div");
+      allItem.className = "idm-menu-item idm-menu-item-all";
+      allItem.textContent = "Download all";
+      allItem.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        menu.style.display = "none";
+        const downloadable = items.filter(it => it.url);
+        if (downloadable.length > 0) {
+          label.textContent = "Downloading all (" + downloadable.length + ")...";
+          downloadable.forEach((it, idx) => {
+            setTimeout(() => {
+              downloadMedia(it.url, it.filename);
+            }, idx * 250);
+          });
+          setTimeout(() => { label.textContent = origText; }, (downloadable.length * 250) + 1200);
+        } else if (items.length > 0 && items[0].qName) {
+          label.textContent = "Buffering stream...";
+          switchYouTubeQuality(items[0].qName);
+          setTimeout(() => { label.textContent = origText; }, 1500);
+        }
+      });
+      menu.appendChild(allItem);
+
+      // Separator line under "Download all"
+      const sep = document.createElement("div");
+      sep.className = "idm-menu-sep";
+      menu.appendChild(sep);
+
+      // 2. Numbered format items in IDM exact style:
+      // "${index}. ${title}, ${container} file, quality ${quality}"
+      items.forEach((item, idx) => {
+        const itemNumber = idx + 1;
+        let lineText = "";
+        if (item.quality) {
+          lineText = `${itemNumber}. ${mediaTitle}, ${item.container} file, quality ${item.quality}`;
+        } else {
+          lineText = `${itemNumber}. ${mediaTitle}, ${item.container} file`;
+        }
+        item.label = lineText;
+
         const row = document.createElement("div");
         row.className = "idm-menu-item";
-        row.innerHTML = `<span class="idm-menu-label">${item.label}</span><span class="idm-menu-action">Download</span>`;
+        row.textContent = lineText;
         row.addEventListener("click", (ev) => {
           ev.stopPropagation();
           menu.style.display = "none";
@@ -1068,7 +1241,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
                 const paired = findPairedStreams(newStreams);
                 if (paired.videoStreams.length > 0) {
                   const bestV = cleanMediaStreamUrl(paired.videoStreams[0].url);
-                  const fUrl = paired.bestAudio ? `yta2toidm://${bestV}##${paired.bestAudio}` : bestV;
+                  const fUrl = paired.bestAudio ? (`yta2toidm://${bestV}##${paired.bestAudio}`) : bestV;
                   downloadMedia(fUrl, item.filename);
                   label.textContent = "Sent to IDM!";
                 } else {
