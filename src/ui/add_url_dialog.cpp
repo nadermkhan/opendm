@@ -145,6 +145,86 @@ void AddUrlDialog::on_ok_clicked() {
         res.password = gtk_editable_get_text(GTK_EDITABLE(entry_pass_));
     }
 
+    std::string u = res.url;
+    bool is_yt = (u.find("youtube.com/watch") != std::string::npos ||
+                  u.find("youtu.be/") != std::string::npos ||
+                  u.find("youtube.com/shorts/") != std::string::npos ||
+                  u.find("youtube.com/live/") != std::string::npos);
+    if (is_yt) {
+        GtkWidget* alert = gtk_window_new();
+        gtk_window_set_title(GTK_WINDOW(alert), "OpenDM - Web Video Download");
+        gtk_window_set_modal(GTK_WINDOW(alert), TRUE);
+        gtk_window_set_transient_for(GTK_WINDOW(alert), GTK_WINDOW(dialog_));
+        gtk_window_set_default_size(GTK_WINDOW(alert), 420, 200);
+        gtk_window_set_resizable(GTK_WINDOW(alert), FALSE);
+
+        GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+        gtk_widget_set_margin_start(vbox, 16);
+        gtk_widget_set_margin_end(vbox, 16);
+        gtk_widget_set_margin_top(vbox, 16);
+        gtk_widget_set_margin_bottom(vbox, 16);
+        gtk_window_set_child(GTK_WINDOW(alert), vbox);
+
+        GtkWidget* msg_lbl = gtk_label_new(
+            "OpenDM captures video and audio streams dynamically using its browser extension.\n\n"
+            "To download this YouTube video with audio:\n"
+            "  1. Play the video in your web browser (Chrome, Firefox, Edge, etc.)\n"
+            "  2. Click the 'Download this video' panel located above the video player.\n\n"
+            "Would you like to open this video in your browser now?"
+        );
+        gtk_label_set_wrap(GTK_LABEL(msg_lbl), TRUE);
+        gtk_label_set_xalign(GTK_LABEL(msg_lbl), 0.0f);
+        gtk_box_append(GTK_BOX(vbox), msg_lbl);
+
+        GtkWidget* btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gtk_widget_set_halign(btn_box, GTK_ALIGN_END);
+        gtk_widget_set_margin_top(btn_box, 10);
+
+        GtkWidget* btn_open = gtk_button_new_with_label("Open in Browser");
+        gtk_widget_add_css_class(btn_open, "suggested-action");
+        GtkWidget* btn_anyway = gtk_button_new_with_label("Download Webpage");
+        GtkWidget* btn_cancel = gtk_button_new_with_label("Cancel");
+
+        gtk_box_append(GTK_BOX(btn_box), btn_open);
+        gtk_box_append(GTK_BOX(btn_box), btn_anyway);
+        gtk_box_append(GTK_BOX(btn_box), btn_cancel);
+        gtk_box_append(GTK_BOX(vbox), btn_box);
+
+        struct AlertData {
+            AddUrlDialog* self;
+            GtkWidget* alert_win;
+            AddUrlResult res;
+        };
+        auto* data = new AlertData{this, alert, res};
+
+        g_signal_connect_swapped(btn_open, "clicked", G_CALLBACK(+[](AlertData* d) {
+            std::string open_cmd = "xdg-open \"" + d->res.url + "\" >/dev/null 2>&1 &";
+            (void)system(open_cmd.c_str());
+            gtk_window_destroy(GTK_WINDOW(d->alert_win));
+            gtk_window_destroy(GTK_WINDOW(d->self->dialog_));
+            delete d->self;
+            delete d;
+        }), data);
+
+        g_signal_connect_swapped(btn_anyway, "clicked", G_CALLBACK(+[](AlertData* d) {
+            if (d->self->callback_) {
+                d->self->callback_(d->res);
+            }
+            gtk_window_destroy(GTK_WINDOW(d->alert_win));
+            gtk_window_destroy(GTK_WINDOW(d->self->dialog_));
+            delete d->self;
+            delete d;
+        }), data);
+
+        g_signal_connect_swapped(btn_cancel, "clicked", G_CALLBACK(+[](AlertData* d) {
+            gtk_window_destroy(GTK_WINDOW(d->alert_win));
+            delete d;
+        }), data);
+
+        gtk_window_present(GTK_WINDOW(alert));
+        return;
+    }
+
     if (callback_) {
         callback_(res);
     }

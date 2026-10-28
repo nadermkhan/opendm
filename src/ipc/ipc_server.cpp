@@ -191,6 +191,141 @@ bool is_web_content_type(const std::string& content_type) {
     return false;
 }
 
+std::string normalize_stream_scheme(const std::string& raw_url) {
+    std::string url = raw_url;
+    while (!url.empty() && (url.front() == ' ' || url.front() == '\t' || url.front() == '\r' || url.front() == '\n' || url.front() == '\"')) {
+        url.erase(0, 1);
+    }
+    while (!url.empty() && (url.back() == ' ' || url.back() == '\t' || url.back() == '\r' || url.back() == '\n' || url.back() == '\"' || url.back() == ';')) {
+        url.pop_back();
+    }
+
+    if (url.rfind("idmfchttps://", 0) == 0) {
+        url = "https://" + url.substr(13);
+    } else if (url.rfind("idmfchttp://", 0) == 0) {
+        url = "http://" + url.substr(12);
+    } else if (url.rfind("idmfcftp://", 0) == 0) {
+        url = "ftp://" + url.substr(11);
+    } else if (url.rfind("idmdwnlmfv9://", 0) == 0) {
+        url = url.substr(14);
+    } else if (url.rfind("idmreg://", 0) == 0) {
+        url = url.substr(9);
+    } else if (url.rfind("mpdatoidm:///", 0) == 0) {
+        url = url.substr(13);
+    } else if (url.rfind("mpdatoidm://", 0) == 0) {
+        url = url.substr(12);
+    } else if (url.rfind("mpdtoidm:///", 0) == 0) {
+        url = url.substr(12);
+    } else if (url.rfind("mpdtoidm://", 0) == 0) {
+        url = url.substr(11);
+    } else if (url.rfind("yta2toidm://", 0) == 0) {
+        url = url.substr(12);
+    } else if (url.rfind("yta3toidm://", 0) == 0) {
+        url = url.substr(12);
+    } else if (url.rfind("yta5toidm://", 0) == 0) {
+        url = url.substr(12);
+    } else if (url.rfind("ytatoidm://", 0) == 0) {
+        url = url.substr(11);
+    } else if (url.rfind("hls2toidmtomp4://", 0) == 0) {
+        url = url.substr(17);
+    } else if (url.rfind("hls2toidm://", 0) == 0) {
+        url = url.substr(12);
+    } else if (url.rfind("idmhlstomp4v2://", 0) == 0) {
+        url = url.substr(16);
+    }
+
+    if (url.rfind("//", 0) == 0) {
+        url = "https:" + url;
+    }
+    return url;
+}
+
+std::pair<std::string, std::string> split_dual_stream_url(const std::string& raw_url) {
+    std::string s = normalize_stream_scheme(raw_url);
+    size_t hash_pos = s.find("##");
+    if (hash_pos == std::string::npos) {
+        return {s, ""};
+    }
+    std::string video_url = normalize_stream_scheme(s.substr(0, hash_pos));
+    std::string audio_url = normalize_stream_scheme(s.substr(hash_pos + 2));
+    return {video_url, audio_url};
+}
+
+std::string clean_stream_query_parameters(const std::string& url) {
+    size_t qpos = url.find('?');
+    if (qpos == std::string::npos) {
+        return url;
+    }
+    std::string base = url.substr(0, qpos);
+    std::string query = url.substr(qpos + 1);
+
+    bool is_googlevideo = (url.find("googlevideo.com") != std::string::npos ||
+                           url.find("videoplayback") != std::string::npos ||
+                           url.find("youtube.com") != std::string::npos);
+    bool is_mycdn = (url.find("mycdn.me") != std::string::npos);
+
+    if (!is_googlevideo && !is_mycdn) {
+        return url;
+    }
+
+    std::vector<std::string> kept_params;
+    std::istringstream iss(query);
+    std::string token;
+    while (std::getline(iss, token, '&')) {
+        if (token.empty()) continue;
+        size_t eq = token.find('=');
+        std::string key = (eq == std::string::npos) ? token : token.substr(0, eq);
+        while (!key.empty() && (key.front() == ' ' || key.front() == '\t')) key.erase(0, 1);
+
+        if (is_googlevideo) {
+            if (key == "range" || key == "begin" || key == "len" || key == "ump") {
+                continue;
+            }
+        }
+        if (is_mycdn) {
+            if (key == "bytes") {
+                continue;
+            }
+        }
+        kept_params.push_back(token);
+    }
+
+    if (kept_params.empty()) {
+        return base;
+    }
+
+    std::string result = base + "?";
+    for (size_t i = 0; i < kept_params.size(); ++i) {
+        if (i > 0) result += "&";
+        result += kept_params[i];
+    }
+    return result;
+}
+
+std::string sanitize_media_filename(const std::string& title, const std::string& default_ext) {
+    if (title.empty()) {
+        return "video_download." + default_ext;
+    }
+    std::string clean;
+    clean.reserve(title.length());
+    for (char c : title) {
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '\"' || c == '<' || c == '>' || c == '|') {
+            clean += '_';
+        } else if (static_cast<unsigned char>(c) >= 32) {
+            clean += c;
+        }
+    }
+    while (!clean.empty() && (clean.front() == ' ' || clean.front() == '.')) clean.erase(0, 1);
+    while (!clean.empty() && (clean.back() == ' ' || clean.back() == '.')) clean.pop_back();
+    if (clean.empty()) {
+        return "video_download." + default_ext;
+    }
+    if (clean.find('.') == std::string::npos) {
+        clean += "." + default_ext;
+    }
+    return clean;
+}
+
 IpcServer::IpcServer(const std::string& socket_path) : socket_path_(socket_path) {}
 
 IpcServer::~IpcServer() {
@@ -315,20 +450,23 @@ std::string IpcServer::handle_request(const std::string& request) {
         MsgHeader hdr = parse_msg_header(req);
         bool is_explicit_user_action = (hdr.valid && hdr.type == 14) || (req.find("#14#") != std::string::npos);
 
-        std::string url = extract_tonec_field(req, 6);
-        if (!url.empty()) {
-            if (url.rfind("idmdwnlmfv9://", 0) == 0) {
-                url = url.substr(14);
-            } else if (url.rfind("idmreg://", 0) == 0) {
-                url = url.substr(9);
+        std::string raw_field6 = extract_tonec_field(req, 6);
+        if (!raw_field6.empty()) {
+            auto [video_url, audio_url] = split_dual_stream_url(raw_field6);
+            video_url = clean_stream_query_parameters(video_url);
+            if (!audio_url.empty()) {
+                audio_url = clean_stream_query_parameters(audio_url);
             }
+            std::string url = video_url;
             std::string filename = extract_tonec_field(req, 100);
             if (filename.empty()) {
                 filename = extract_tonec_field(req, 4);
             }
             std::string referer = extract_tonec_field(req, 50);
-            if (referer.empty()) {
-                referer = extract_tonec_field(req, 7);
+            std::string page_title = extract_tonec_field(req, 7);
+            if (referer.empty() && page_title.rfind("http", 0) == 0) {
+                referer = page_title;
+                page_title.clear();
             }
             std::string cookies = extract_tonec_field(req, 51);
             std::string user_agent = extract_tonec_field(req, 54);
@@ -391,14 +529,18 @@ std::string IpcServer::handle_request(const std::string& request) {
                 }
             }
 
-            if (filename.empty() || filename == "ZIP") {
-                size_t slash = url.find_last_of('/');
-                if (slash != std::string::npos && slash + 1 < url.length()) {
-                    filename = url.substr(slash + 1);
-                    size_t q = filename.find('?');
-                    if (q != std::string::npos) filename = filename.substr(0, q);
+            if (filename.empty() || filename == "ZIP" || filename == "videoplayback" || filename == "videoplayback.mp4" || filename == "download.bin") {
+                if (!page_title.empty()) {
+                    filename = sanitize_media_filename(page_title, "mp4");
                 } else {
-                    filename = "download.bin";
+                    size_t slash = url.find_last_of('/');
+                    if (slash != std::string::npos && slash + 1 < url.length()) {
+                        filename = url.substr(slash + 1);
+                        size_t q = filename.find('?');
+                        if (q != std::string::npos) filename = filename.substr(0, q);
+                    } else {
+                        filename = "download.bin";
+                    }
                 }
             }
 
@@ -505,7 +647,9 @@ std::string IpcServer::handle_request(const std::string& request) {
             }
 
             if (is_explicit_user_action) {
-                if (filename.find('.') == std::string::npos || filename == "download.bin") {
+                if (!page_title.empty() && (filename.empty() || filename == "download.bin" || filename.rfind("videoplayback", 0) == 0)) {
+                    filename = sanitize_media_filename(page_title, "mp4");
+                } else if (filename.find('.') == std::string::npos || filename == "download.bin") {
                     if (url.find("audio") != std::string::npos || url.find(".mp3") != std::string::npos || url.find(".m4a") != std::string::npos) {
                         filename = (filename == "download.bin" ? "audio_download.mp3" : (filename + ".mp3"));
                     } else {
@@ -519,6 +663,8 @@ std::string IpcServer::handle_request(const std::string& request) {
             if (gui_mode_) {
                 DownloadPromptInfo prompt_info;
                 prompt_info.url = url;
+                prompt_info.audio_stream_url = audio_url;
+                prompt_info.is_streaming_media = !audio_url.empty();
                 prompt_info.filename = filename;
                 prompt_info.category = category;
                 prompt_info.file_size = file_size;
@@ -541,6 +687,9 @@ std::string IpcServer::handle_request(const std::string& request) {
                 std::string id = "ext_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
 
                 auto session = std::make_shared<DownloadSession>(id, url, dest_file);
+                if (!audio_url.empty()) {
+                    session->set_audio_stream_url(audio_url);
+                }
                 SiteLogonManager::instance().apply_to_session(*session, url);
                 if (!referer.empty()) session->set_header("Referer", referer);
                 if (!cookies.empty()) session->set_header("Cookie", cookies);
@@ -559,16 +708,26 @@ std::string IpcServer::handle_request(const std::string& request) {
     }
 
     if (action == "download") {
-        std::string url = extract_json_field(request, "url");
+        std::string raw_url = extract_json_field(request, "url");
         std::string path = extract_json_field(request, "path");
         std::string filename = extract_json_field(request, "filename");
         std::string queue_name = extract_json_field(request, "queue");
         std::string add_only_str = extract_json_field(request, "add_only");
         std::string no_prompt_str = extract_json_field(request, "no_prompt");
+        std::string req_audio = extract_json_field(request, "audio_url");
 
-        if (url.empty()) {
+        if (raw_url.empty()) {
             return "{\"status\": \"error\", \"message\": \"Missing URL\"}";
         }
+
+        auto [video_url, audio_url] = split_dual_stream_url(raw_url);
+        video_url = clean_stream_query_parameters(video_url);
+        if (!req_audio.empty()) {
+            audio_url = clean_stream_query_parameters(normalize_stream_scheme(req_audio));
+        } else if (!audio_url.empty()) {
+            audio_url = clean_stream_query_parameters(audio_url);
+        }
+        std::string url = video_url;
 
         if (filename.empty()) {
             size_t slash = url.find_last_of('/');
@@ -584,6 +743,8 @@ std::string IpcServer::handle_request(const std::string& request) {
         if (gui_mode_ && no_prompt_str != "true" && add_only_str != "true") {
             DownloadPromptInfo prompt_info;
             prompt_info.url = url;
+            prompt_info.audio_stream_url = audio_url;
+            prompt_info.is_streaming_media = !audio_url.empty();
             prompt_info.filename = filename;
             prompt_info.destination_dir = path;
             prompt_info.category = QueueManager::detect_category(filename);
@@ -606,6 +767,9 @@ std::string IpcServer::handle_request(const std::string& request) {
         std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
 
         auto session = std::make_shared<DownloadSession>(id, url, dest_file);
+        if (!audio_url.empty()) {
+            session->set_audio_stream_url(audio_url);
+        }
         SiteLogonManager::instance().apply_to_session(*session, url);
 
         std::string connections_str = extract_json_field(request, "connections");

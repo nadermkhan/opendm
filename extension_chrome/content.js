@@ -509,9 +509,70 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     }
   }, { capture: true, passive: true });
 
+  function cleanMediaStreamUrl(u) {
+    if (!u) return "";
+    try {
+      const parsed = new URL(u);
+      parsed.searchParams.delete("range");
+      parsed.searchParams.delete("begin");
+      parsed.searchParams.delete("len");
+      parsed.searchParams.delete("ump");
+      parsed.searchParams.delete("bytes");
+      return parsed.toString();
+    } catch (e) {
+      return u.replace(/[?&](range|begin|len|ump|bytes)=[^&]*/g, "");
+    }
+  }
+
+  function getMediaTitle() {
+    let t = "";
+    const ytTitle = document.querySelector("h1.ytd-watch-metadata yt-formatted-string, #title h1 yt-formatted-string, ytd-watch-metadata h1");
+    if (ytTitle && ytTitle.textContent.trim()) {
+      t = ytTitle.textContent.trim();
+    }
+    if (!t) {
+      const ogTitle = document.querySelector('meta[property="og:title"], meta[name="twitter:title"]');
+      if (ogTitle && ogTitle.content) {
+        t = ogTitle.content.trim();
+      }
+    }
+    if (!t) {
+      t = document.title || "video";
+    }
+    t = t.replace(/\s*-\s*YouTube\s*$/i, "").trim();
+    return t || "video";
+  }
+
+  function findPairedStreams(streams) {
+    const isYtOrDash = streams.some(s => s.url && (s.url.includes("googlevideo.com") || s.url.includes("videoplayback")));
+    const videoStreams = [];
+    const audioStreams = [];
+
+    for (const s of streams) {
+      const u = s.url || "";
+      const mime = (s.mime || "").toLowerCase();
+      const isAudio = s.type === "audio" || mime.includes("audio") || u.includes("mime=audio") || u.includes("mime%2Faudio");
+      if (isAudio) {
+        audioStreams.push(s);
+      } else {
+        videoStreams.push(s);
+      }
+    }
+
+    audioStreams.sort((a, b) => {
+      const a140 = (a.url.includes("itag=140") || (a.mime && a.mime.includes("mp4"))) ? 1 : 0;
+      const b140 = (b.url.includes("itag=140") || (b.mime && b.mime.includes("mp4"))) ? 1 : 0;
+      if (a140 !== b140) return b140 - a140;
+      return (b.size || 0) - (a.size || 0);
+    });
+
+    const bestAudio = audioStreams.length > 0 ? cleanMediaStreamUrl(audioStreams[0].url) : "";
+    return { isYtOrDash, videoStreams, audioStreams, bestAudio };
+  }
+
   function downloadMedia(streamUrl, filename) {
     if (!extApi || !streamUrl) return;
-    const title = document.title || "media";
+    const title = getMediaTitle();
     const referer = window.location.href;
     extApi.runtime.sendMessage({
       action: "download_media",
@@ -550,18 +611,40 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
         extApi.runtime.sendMessage({ action: "get_tab_media" }, (resp) => {
           const streams = (resp && resp.streams) || [];
           const isAudio = activeTarget.tagName.toLowerCase() === "audio";
-          const filtered = streams.filter(s => isAudio ? s.type === "audio" : true);
-          if (filtered.length > 0) {
-            filtered.sort((a, b) => (b.size || 0) - (a.size || 0));
-            downloadMedia(filtered[0].url);
+          const mediaTitle = getMediaTitle();
+
+          if (isAudio) {
+            const audios = streams.filter(s => s.type === "audio" || (s.mime && s.mime.includes("audio")) || s.url.includes("mime=audio"));
+            if (audios.length > 0) {
+              audios.sort((a, b) => (b.size || 0) - (a.size || 0));
+              downloadMedia(cleanMediaStreamUrl(audios[0].url), mediaTitle + ".mp3");
+              label.textContent = "Sent to IDM!";
+              setTimeout(() => { label.textContent = origText; }, 1500);
+              return;
+            }
+          }
+
+          const { isYtOrDash, videoStreams, bestAudio } = findPairedStreams(streams);
+
+          if (videoStreams.length > 0) {
+            videoStreams.sort((a, b) => (b.size || 0) - (a.size || 0));
+            const bestVideo = cleanMediaStreamUrl(videoStreams[0].url);
+            let finalUrl = bestVideo;
+            if (isYtOrDash && bestAudio) {
+              finalUrl = `yta2toidm://${bestVideo}##${bestAudio}`;
+            }
+            downloadMedia(finalUrl, mediaTitle + ".mp4");
+            label.textContent = "Sent to IDM!";
+          } else if (streams.length > 0) {
+            downloadMedia(cleanMediaStreamUrl(streams[0].url), mediaTitle + ".mp4");
             label.textContent = "Sent to IDM!";
           } else if (directSrc) {
-            downloadMedia(directSrc);
+            downloadMedia(directSrc, mediaTitle + ".mp4");
             label.textContent = "Sent to IDM!";
           } else {
             const ogVideo = document.querySelector('meta[property="og:video"], meta[property="og:video:url"], meta[name="twitter:player:stream"]');
             if (ogVideo && ogVideo.content) {
-              downloadMedia(ogVideo.content);
+              downloadMedia(ogVideo.content, mediaTitle + ".mp4");
               label.textContent = "Sent to IDM!";
             } else {
               label.textContent = "No stream found";
@@ -601,35 +684,76 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       menu.innerHTML = "";
       const streams = (resp && resp.streams) || [];
       const directSrc = (activeTarget && (activeTarget.currentSrc || activeTarget.src)) || "";
-
+      const { isYtOrDash, videoStreams, audioStreams, bestAudio } = findPairedStreams(streams);
+      const mediaTitle = getMediaTitle();
       const items = [];
-      if (directSrc && directSrc.startsWith("http") && !directSrc.startsWith("blob:")) {
-        const ext = directSrc.split(".").pop().split("?")[0].toUpperCase().slice(0, 4) || "MP4";
-        items.push({
-          url: directSrc,
-          label: `Direct Stream (${ext})`
+
+      if (isYtOrDash && videoStreams.length > 0) {
+        const seenResolutions = new Set();
+        for (const vs of videoStreams) {
+          const u = vs.url || "";
+          let itagMatch = u.match(/[?&]itag=(\d+)/);
+          let itag = itagMatch ? parseInt(itagMatch[1], 10) : 0;
+          let labelText = "";
+          if (itag === 137 || itag === 248 || itag === 399) labelText = "1080p Full HD (Video + Audio)";
+          else if (itag === 136 || itag === 247 || itag === 398) labelText = "720p HD (Video + Audio)";
+          else if (itag === 135 || itag === 244 || itag === 397) labelText = "480p SD (Video + Audio)";
+          else if (itag === 134 || itag === 243 || itag === 396) labelText = "360p (Video + Audio)";
+          else if (itag === 133 || itag === 242) labelText = "240p (Video + Audio)";
+          else labelText = "Video Stream (Video + Audio)";
+
+          if (seenResolutions.has(labelText)) continue;
+          seenResolutions.add(labelText);
+
+          const cleanVideo = cleanMediaStreamUrl(u);
+          const finalUrl = bestAudio ? `yta2toidm://${cleanVideo}##${bestAudio}` : cleanVideo;
+          items.push({
+            url: finalUrl,
+            filename: `${mediaTitle}.mp4`,
+            label: labelText
+          });
+        }
+
+        if (audioStreams.length > 0) {
+          const cleanAudio = cleanMediaStreamUrl(audioStreams[0].url);
+          const isM4a = audioStreams[0].url.includes("itag=140") || (audioStreams[0].mime && audioStreams[0].mime.includes("mp4"));
+          items.push({
+            url: cleanAudio,
+            filename: `${mediaTitle}.${isM4a ? "m4a" : "opus"}`,
+            label: `Audio Only (${isM4a ? "M4A / 128 kbps" : "Opus"})`
+          });
+        }
+      } else {
+        if (directSrc && directSrc.startsWith("http") && !directSrc.startsWith("blob:")) {
+          const ext = directSrc.split(".").pop().split("?")[0].toUpperCase().slice(0, 4) || "MP4";
+          items.push({
+            url: directSrc,
+            filename: `${mediaTitle}.${ext.toLowerCase()}`,
+            label: `Direct Stream (${ext})`
+          });
+        }
+
+        streams.forEach((s) => {
+          let ext = "MP4";
+          if (s.mime) {
+            if (s.mime.includes("webm")) ext = "WEBM";
+            else if (s.mime.includes("audio") || s.mime.includes("mp3")) ext = "MP3";
+            else if (s.mime.includes("m4a")) ext = "M4A";
+            else if (s.mime.includes("mpegurl")) ext = "HLS (M3U8)";
+            else if (s.mime.includes("dash")) ext = "DASH (MPD)";
+          }
+          let sizeStr = "";
+          if (s.size && s.size > 0) {
+            if (s.size > 1048576) sizeStr = ` (${(s.size / 1048576).toFixed(1)} MB)`;
+            else sizeStr = ` (${(s.size / 1024).toFixed(0)} KB)`;
+          }
+          items.push({
+            url: cleanMediaStreamUrl(s.url),
+            filename: `${mediaTitle}.${ext.toLowerCase().slice(0, 3)}`,
+            label: `${ext} Stream${sizeStr}`
+          });
         });
       }
-
-      streams.forEach((s) => {
-        let ext = "MP4";
-        if (s.mime) {
-          if (s.mime.includes("webm")) ext = "WEBM";
-          else if (s.mime.includes("audio") || s.mime.includes("mp3")) ext = "MP3";
-          else if (s.mime.includes("m4a")) ext = "M4A";
-          else if (s.mime.includes("mpegurl")) ext = "HLS (M3U8)";
-          else if (s.mime.includes("dash")) ext = "DASH (MPD)";
-        }
-        let sizeStr = "";
-        if (s.size && s.size > 0) {
-          if (s.size > 1048576) sizeStr = ` (${(s.size / 1048576).toFixed(1)} MB)`;
-          else sizeStr = ` (${(s.size / 1024).toFixed(0)} KB)`;
-        }
-        items.push({
-          url: s.url,
-          label: `${ext} Stream${sizeStr}`
-        });
-      });
 
       if (items.length === 0) {
         const noneItem = document.createElement("div");
@@ -646,7 +770,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
         row.addEventListener("click", (ev) => {
           ev.stopPropagation();
           menu.style.display = "none";
-          downloadMedia(item.url);
+          downloadMedia(item.url, item.filename);
         });
         menu.appendChild(row);
       });

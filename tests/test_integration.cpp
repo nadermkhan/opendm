@@ -38,7 +38,7 @@ int main() {
     found = logon.get_credential_for_url("https://sub.fileserver.org/dl", found_cred);
     assert(found);
     assert(found_cred.username == "guest");
-    std::cout << "  ✓ Site logon URL matching passed." << std::endl;
+    std::cout << "  [PASS] Site logon URL matching passed." << std::endl;
 
     // 2. Test Batch EF2 Importer
     std::cout << "[Test 2] IDM EF2 Batch Format Parsing & Serialization..." << std::endl;
@@ -79,7 +79,7 @@ int main() {
 
     fs::remove(test_ef2);
     fs::remove(test_ef2_export);
-    std::cout << "  ✓ IDM EF2 batch parser & serializer passed." << std::endl;
+    std::cout << "  [PASS] IDM EF2 batch parser & serializer passed." << std::endl;
 
     // 3. Test CLI Parser
     std::cout << "[Test 3] IDM Command Line Compatibility..." << std::endl;
@@ -103,7 +103,7 @@ int main() {
     assert(opts.exit_after_download);
     assert(opts.silent_mode);
     assert(opts.add_only);
-    std::cout << "  ✓ IDM CLI suite argument parser passed." << std::endl;
+    std::cout << "  [PASS] IDM CLI suite argument parser passed." << std::endl;
 
     // 4. Test Queue Reordering with update callback (verifies Fix 1.5)
     std::cout << "[Test 4] DownloadQueue item reordering callback safety..." << std::endl;
@@ -128,7 +128,7 @@ int main() {
     callback_called = false;
     q.move_item_down("q_item2");
     assert(callback_called);
-    std::cout << "  ✓ Queue move_item_up/down callbacks safely executed without deadlocks." << std::endl;
+    std::cout << "  [PASS] Queue move_item_up/down callbacks safely executed without deadlocks." << std::endl;
 
     // 5. Test DownloadSession Redownload (verifies Fix 1.2 / 1.4)
     std::cout << "[Test 5] DownloadSession Redownload resets chunk state..." << std::endl;
@@ -141,13 +141,13 @@ int main() {
     assert(s_redl->get_status() == opendm::SessionStatus::PROBING || s_redl->get_status() == opendm::SessionStatus::DOWNLOADING || s_redl->get_status() == opendm::SessionStatus::ERROR);
     s_redl->cancel();
     assert(s_redl->get_status() == opendm::SessionStatus::IDLE);
-    std::cout << "  ✓ DownloadSession redownload and lifecycle verified." << std::endl;
+    std::cout << "  [PASS] DownloadSession redownload and lifecycle verified." << std::endl;
 
     // 6. Test SiteLogonManager::apply_to_session
     std::cout << "[Test 6] SiteLogonManager applies credentials to session..." << std::endl;
     auto s_auth = std::make_shared<opendm::DownloadSession>("auth_task", "https://rapidgator.net/file/999", "/tmp/auth.bin");
     logon.apply_to_session(*s_auth, "https://rapidgator.net/file/999");
-    std::cout << "  ✓ SiteLogonManager credentials applied to session." << std::endl;
+    std::cout << "  [PASS] SiteLogonManager credentials applied to session." << std::endl;
 
     // 7. Test Tonec Wire Protocol Parsing
     std::cout << "[Test 7] Tonec Wire Protocol Parsing..." << std::endl;
@@ -169,7 +169,7 @@ int main() {
     assert(field6 == "idmdwnlmfv9://https://wickradio.com/Please-Wait.php");
     std::string field12 = opendm::extract_tonec_field(sample_tonec, 12);
     assert(field12 == "HTTP/2.0 302 ");
-    std::cout << "  ✓ Tonec header and positional argument parsing passed." << std::endl;
+    std::cout << "  [PASS] Tonec header and positional argument parsing passed." << std::endl;
 
     // 8. Test Extension and Content-Type filtering helpers
     std::cout << "[Test 8] Content-Type & Extension Filtering..." << std::endl;
@@ -198,7 +198,7 @@ int main() {
     assert(opendm::is_web_content_type("application/javascript"));
     assert(!opendm::is_web_content_type("application/zip"));
     assert(!opendm::is_web_content_type("application/octet-stream"));
-    std::cout << "  ✓ Extension and MIME type filtering verified." << std::endl;
+    std::cout << "  [PASS] Extension and MIME type filtering verified." << std::endl;
 
     // 9. Test IpcServer handling of unintended downloads vs genuine downloads
     std::cout << "[Test 9] IpcServer unintended download rejection..." << std::endl;
@@ -241,7 +241,7 @@ int main() {
         assert(resp_vid.find("\"status\": \"prompting\"") != std::string::npos);
 
         test_ipc.stop();
-        std::cout << "  ✓ IpcServer successfully filtered web pages/images and accepted genuine downloads." << std::endl;
+        std::cout << "  [PASS] IpcServer successfully filtered web pages/images and accepted genuine downloads." << std::endl;
     }
 
     // 10. Test Queue and Session State Persistence (save_to_file / load_from_file)
@@ -289,7 +289,7 @@ int main() {
 
         qm.clear_all();
         fs::remove(test_storage);
-        std::cout << "  ✓ Session serialization and QueueManager save/load verified." << std::endl;
+        std::cout << "  [PASS] Session serialization and QueueManager save/load verified." << std::endl;
     }
 
     // 11. Test Disk Space Pre-Check & Metadata Accessors
@@ -308,7 +308,81 @@ int main() {
             uintmax_t impossible_size = space_info.available + 1024ULL * 1024ULL * 1024ULL * 1024ULL;
             assert(impossible_size > space_info.available);
         }
-        std::cout << "  ✓ Disk space verification and session metadata accessors passed." << std::endl;
+        std::cout << "  [PASS] Disk space verification and session metadata accessors passed." << std::endl;
+    }
+
+    // 12. Test YouTube & DASH Stream Scheme Normalization, Splitting & Range Parameter Stripping
+    std::cout << "[Test 12] YouTube & DASH Stream Scheme Normalization, Dual-Stream Splitting & Range Stripping..." << std::endl;
+    {
+        // A. Test Scheme Normalization
+        assert(opendm::normalize_stream_scheme("yta2toidm://https://example.com/v") == "https://example.com/v");
+        assert(opendm::normalize_stream_scheme("yta3toidm://https://example.com/v") == "https://example.com/v");
+        assert(opendm::normalize_stream_scheme("yta5toidm://https://example.com/v") == "https://example.com/v");
+        assert(opendm::normalize_stream_scheme("ytatoidm://https://example.com/v") == "https://example.com/v");
+        assert(opendm::normalize_stream_scheme("mpdatoidm://https://example.com/v") == "https://example.com/v");
+        assert(opendm::normalize_stream_scheme("mpdtoidm://https://example.com/v") == "https://example.com/v");
+        assert(opendm::normalize_stream_scheme("hls2toidmtomp4://https://example.com/v") == "https://example.com/v");
+        assert(opendm::normalize_stream_scheme("idmfchttps://example.com/v") == "https://example.com/v");
+        assert(opendm::normalize_stream_scheme("idmfchttp://example.com/v") == "http://example.com/v");
+
+        // B. Test Dual-Stream Splitting
+        auto [v, a] = opendm::split_dual_stream_url("yta2toidm://https://googlevideo.com/v1##https://googlevideo.com/a1");
+        assert(v == "https://googlevideo.com/v1");
+        assert(a == "https://googlevideo.com/a1");
+
+        // Single stream case
+        auto [v_single, a_single] = opendm::split_dual_stream_url("https://example.com/video.mp4");
+        assert(v_single == "https://example.com/video.mp4");
+        assert(a_single.empty());
+
+        // C. Test Parameter Stripping on googlevideo.com and videoplayback
+        std::string raw_yt = "https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?expire=123&itag=137&mime=video%2Fmp4&range=0-1048576&rn=1&begin=0&len=1000&ump=1";
+        std::string cleaned_yt = opendm::clean_stream_query_parameters(raw_yt);
+        assert(cleaned_yt.find("range=") == std::string::npos);
+        assert(cleaned_yt.find("begin=") == std::string::npos);
+        assert(cleaned_yt.find("len=") == std::string::npos);
+        assert(cleaned_yt.find("ump=") == std::string::npos);
+        assert(cleaned_yt.find("expire=123") != std::string::npos);
+        assert(cleaned_yt.find("itag=137") != std::string::npos);
+        assert(cleaned_yt.find("rn=1") != std::string::npos);
+
+        // Test Parameter Stripping on mycdn.me
+        std::string raw_mycdn = "https://mycdn.me/video.mp4?bytes=0-500&sig=abc";
+        std::string cleaned_mycdn = opendm::clean_stream_query_parameters(raw_mycdn);
+        assert(cleaned_mycdn == "https://mycdn.me/video.mp4?sig=abc");
+
+        // D. Test Filename Sanitization from Video Title
+        assert(opendm::sanitize_media_filename("Never Gonna Give You Up - Rick Astley", "mp4") == "Never Gonna Give You Up - Rick Astley.mp4");
+        assert(opendm::sanitize_media_filename("Test / Video : With * Illegal ? Chars", "mp4") == "Test _ Video _ With _ Illegal _ Chars.mp4");
+
+        // E. Test IPC reception of paired YouTube stream
+        opendm::IpcServer yt_ipc("/tmp/opendm_yt_test.sock");
+        opendm::DownloadPromptInfo captured_prompt;
+        bool prompt_received = false;
+        yt_ipc.set_download_prompt_callback([&](const opendm::DownloadPromptInfo& info) {
+            captured_prompt = info;
+            prompt_received = true;
+        });
+        yt_ipc.start();
+
+        std::string raw_stream_payload = "yta2toidm://https://rr1.googlevideo.com/videoplayback?itag=137&mime=video%2Fmp4&range=0-1048576&rn=1"
+            "##https://rr1.googlevideo.com/videoplayback?itag=140&mime=audio%2Fmp4&range=0-1048576&rn=1";
+        std::string raw_title = "Rick Astley - Never Gonna Give You Up";
+        std::string yt_tonec = "MSG#250#14#1#0:1,"
+            "6=" + std::to_string(raw_stream_payload.length()) + ":" + raw_stream_payload + ","
+            "7=" + std::to_string(raw_title.length()) + ":" + raw_title + ";";
+        std::string resp = opendm::IpcServer::send_command(yt_tonec, "/tmp/opendm_yt_test.sock");
+        assert(resp.find("\"status\": \"prompting\"") != std::string::npos);
+        assert(prompt_received);
+        assert(captured_prompt.is_streaming_media);
+        assert(captured_prompt.url == "https://rr1.googlevideo.com/videoplayback?itag=137&mime=video%2Fmp4&rn=1");
+        assert(captured_prompt.audio_stream_url == "https://rr1.googlevideo.com/videoplayback?itag=140&mime=audio%2Fmp4&rn=1");
+        assert(captured_prompt.url.find("range=") == std::string::npos);
+        assert(captured_prompt.audio_stream_url.find("range=") == std::string::npos);
+        assert(captured_prompt.filename == "Rick Astley - Never Gonna Give You Up.mp4");
+
+        yt_ipc.stop();
+        std::cout << "  [PASS] Stream scheme normalization, dual-stream demuxing, range parameter stripping, and IPC prompt verified." << std::endl;
     }
 
     std::cout << "All Subsystem Integration tests passed!" << std::endl;

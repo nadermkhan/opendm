@@ -85,4 +85,11 @@ bool is_downloadable_extension(const std::string& ext);
 bool is_forbidden_web_extension(const std::string& ext);
 bool is_web_content_type(const std::string& content_type);
 
+// Media stream scheme and query parameter normalization (IDM compatibility)
+std::string normalize_stream_scheme(const std::string& raw_url);
+std::pair<std::string, std::string> split_dual_stream_url(const std::string& raw_url);
+std::string clean_stream_query_parameters(const std::string& url);
+std::string sanitize_media_filename(const std::string& title, const std::string& default_ext = "mp4");
+
 } // namespace opendm
+

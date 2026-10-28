@@ -111,6 +111,11 @@ const mockWindow = {
   }
 };
 
+let currentMockStreams = [
+  { url: "https://video.twimg.com/ext_tw_video/test_1080.mp4", mime: "video/mp4", size: 15420000 },
+  { url: "https://video.twimg.com/ext_tw_video/test_720.mp4", mime: "video/mp4", size: 8200000 }
+];
+
 const mockBrowser = {
   runtime: {
     getURL: (p) => "chrome-extension://idm-test/" + p,
@@ -118,10 +123,7 @@ const mockBrowser = {
       sentMessages.push(msg);
       if (msg.action === "get_tab_media") {
         cb && cb({
-          streams: [
-            { url: "https://video.twimg.com/ext_tw_video/test_1080.mp4", mime: "video/mp4", size: 15420000 },
-            { url: "https://video.twimg.com/ext_tw_video/test_720.mp4", mime: "video/mp4", size: 8200000 }
-          ]
+          streams: currentMockStreams
         });
       } else if (msg.action === "download_media") {
         cb && cb({ status: "ok" });
@@ -292,7 +294,70 @@ setTimeout(() => {
       assert.strictEqual(panel.style.display, "none", "Panel must hide when close button is clicked");
       console.log("[PASS] Case 7: Close button dismisses panel cleanly");
 
-      console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+      // Test Case 8: YouTube DASH Dual-Stream Pairing & Range Stripping
+      const ytVideo = new MockNode("VIDEO");
+      ytVideo.src = "blob:https://www.youtube.com/watch-blob-id";
+      ytVideo._rect = { top: 50, bottom: 450, left: 100, right: 900, width: 800, height: 400 };
+      mockDocument.body.appendChild(ytVideo);
+
+      currentMockStreams = [
+        {
+          url: "https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?expire=123&itag=137&mime=video%2Fmp4&range=0-1048576&rn=1",
+          type: "video",
+          mime: "video/mp4",
+          size: 50000000
+        },
+        {
+          url: "https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?expire=123&itag=140&mime=audio%2Fmp4&range=0-1048576&rn=1",
+          type: "audio",
+          mime: "audio/mp4",
+          size: 5000000
+        }
+      ];
+
+      const ytEvent = {
+        clientX: 200,
+        clientY: 100,
+        composedPath: () => [ytVideo, mockDocument.body]
+      };
+      mockDocument.elementsFromPoint = (x, y) => [ytVideo, mockDocument.body];
+      mouseMoveListeners.forEach(fn => fn(ytEvent));
+
+      assert.strictEqual(panel.style.display, "block", "Panel must appear for YouTube video");
+      assert.strictEqual(label.textContent, "Download this video");
+
+      bar.dispatch("click", {
+        target: bar,
+        stopPropagation: () => {},
+        preventDefault: () => {}
+      });
+
+      setTimeout(() => {
+        const ytDl = sentMessages.find(m => m.action === "download_media" && m.url.startsWith("yta2toidm://"));
+        assert(ytDl, "YouTube request must use yta2toidm:// scheme with dual streams");
+        assert(ytDl.url.includes("##"), "YouTube request must contain ## dual stream delimiter");
+        assert(!ytDl.url.includes("range=0-1048576"), "range parameter must be stripped from both video and audio streams");
+        assert(ytDl.url.includes("itag=137"), "Video stream with itag=137 must be present");
+        assert(ytDl.url.includes("itag=140"), "Audio stream with itag=140 must be present");
+        console.log("[PASS] Case 8: YouTube dual-stream pairing and query parameter range stripping verified 100%");
+
+        // Test Case 9: YouTube Dropdown resolution options
+        dropdownBtn.dispatch("click", {
+          target: dropdownBtn,
+          stopPropagation: () => {},
+          preventDefault: () => {}
+        });
+
+        setTimeout(() => {
+          assert.strictEqual(menu.style.display, "flex", "Menu must open on dropdown click");
+          const menuHtml = menu.children.map(c => c.innerHTML || "").join(" ");
+          assert(menuHtml.includes("1080p Full HD (Video + Audio)"), "Menu must list 1080p (Video + Audio)");
+          assert(menuHtml.includes("Audio Only (M4A / 128 kbps)"), "Menu must list Audio Only (M4A)");
+          console.log("[PASS] Case 9: YouTube dropdown resolution and audio options populated successfully");
+
+          console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+        }, 50);
+      }, 50);
     }, 50);
   }, 50);
 }, 50);

@@ -751,6 +751,7 @@ void DownloadSession::assemble_file() {
                     if (afp) {
                         curl_easy_setopt(acurl, CURLOPT_URL, audio_url.c_str());
                         curl_easy_setopt(acurl, CURLOPT_FOLLOWLOCATION, 1L);
+                        curl_easy_setopt(acurl, CURLOPT_MAXREDIRS, 10L);
                         curl_easy_setopt(acurl, CURLOPT_WRITEDATA, afp);
                         const std::string default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
                         std::string ua = default_ua;
@@ -760,7 +761,26 @@ void DownloadSession::assemble_file() {
                         }
                         curl_easy_setopt(acurl, CURLOPT_USERAGENT, ua.c_str());
                         curl_easy_setopt(acurl, CURLOPT_CONNECTTIMEOUT, 15L);
+
+                        if (!auth_userpwd_.empty()) {
+                            curl_easy_setopt(acurl, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
+                            curl_easy_setopt(acurl, CURLOPT_USERPWD, auth_userpwd_.c_str());
+                        }
+
+                        struct curl_slist* aheaders = nullptr;
+                        for (const auto& [k, v] : custom_headers_) {
+                            if (k != "User-Agent") {
+                                aheaders = curl_slist_append(aheaders, (k + ": " + v).c_str());
+                            }
+                        }
+                        if (aheaders) {
+                            curl_easy_setopt(acurl, CURLOPT_HTTPHEADER, aheaders);
+                        }
+
                         CURLcode ares = curl_easy_perform(acurl);
+                        if (aheaders) {
+                            curl_slist_free_all(aheaders);
+                        }
                         fclose(afp);
                         if (ares == CURLE_OK) {
                             std::string mux_err;
