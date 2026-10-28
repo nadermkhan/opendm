@@ -3,6 +3,7 @@
 #include <sstream>
 #include <filesystem>
 #include <iostream>
+#include <thread>
 
 namespace opendm {
 
@@ -35,17 +36,26 @@ ZipPreviewDialog::ZipPreviewDialog(GtkWindow* parent, const std::string& initial
     setup_ui();
 }
 
-ZipPreviewDialog::~ZipPreviewDialog() {}
+ZipPreviewDialog::~ZipPreviewDialog() {
+    destroyed_ = true;
+}
 
 void ZipPreviewDialog::show() {
     gtk_window_present(GTK_WINDOW(window_));
-    if (!current_url_.empty()) {
+    if (!current_url_.empty() && entries_.empty()) {
         on_fetch_clicked();
     }
 }
 
 void ZipPreviewDialog::close() {
-    gtk_window_destroy(GTK_WINDOW(window_));
+    destroyed_ = true;
+    if (alive_token_) {
+        alive_token_->store(false);
+    }
+    if (window_) {
+        gtk_window_destroy(GTK_WINDOW(window_));
+        window_ = nullptr;
+    }
 }
 
 void ZipPreviewDialog::setup_ui() {
@@ -55,6 +65,12 @@ void ZipPreviewDialog::setup_ui() {
     if (parent_) {
         gtk_window_set_transient_for(GTK_WINDOW(window_), parent_);
     }
+
+    g_signal_connect(window_, "close-request", G_CALLBACK(+[](GtkWindow*, gpointer data) -> gboolean {
+        auto* self = static_cast<ZipPreviewDialog*>(data);
+        self->close();
+        return FALSE;
+    }), this);
 
     GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     gtk_widget_set_margin_start(vbox, 16);
@@ -113,6 +129,11 @@ void ZipPreviewDialog::setup_ui() {
     g_signal_connect_swapped(btn_close, "clicked", G_CALLBACK(+[](ZipPreviewDialog* self) {
         self->close();
     }), this);
+
+    g_signal_connect(window_, "destroy", G_CALLBACK(+[](GtkWidget*, gpointer d) {
+        auto* self = static_cast<ZipPreviewDialog*>(d);
+        self->destroyed_ = true;
+    }), this);
 }
 
 void ZipPreviewDialog::on_fetch_clicked() {
@@ -122,16 +143,48 @@ void ZipPreviewDialog::on_fetch_clicked() {
     current_url_ = text;
     gtk_label_set_text(GTK_LABEL(status_label_), "Sending HTTP Range request for Central Directory...");
     gtk_widget_set_sensitive(btn_fetch_, FALSE);
+    gtk_widget_set_sensitive(btn_extract_, FALSE);
 
-    std::string err;
-    bool ok = previewer_.fetch_entries(current_url_, entries_, err);
-    gtk_widget_set_sensitive(btn_fetch_, TRUE);
+    struct FetchCtx {
+        ZipPreviewDialog* self;
+        std::shared_ptr<std::atomic<bool>> alive;
+        std::string url;
+    };
+    auto* ctx = new FetchCtx{this, alive_token_, current_url_};
 
-    if (!ok) {
-        gtk_label_set_text(GTK_LABEL(status_label_), ("Error: " + err).c_str());
-        return;
-    }
+    std::thread([ctx]() {
+        std::vector<ZipEntry> fetched_entries;
+        std::string err;
+        bool ok = ctx->self->previewer_.fetch_entries(ctx->url, fetched_entries, err);
 
+        struct FetchRes {
+            ZipPreviewDialog* self;
+            std::shared_ptr<std::atomic<bool>> alive;
+            bool ok;
+            std::vector<ZipEntry> entries;
+            std::string err;
+        };
+        auto* res = new FetchRes{ctx->self, ctx->alive, ok, std::move(fetched_entries), std::move(err)};
+        delete ctx;
+
+        g_idle_add(+[](gpointer data) -> gboolean {
+            auto* r = static_cast<FetchRes*>(data);
+            if (r->alive && r->alive->load() && r->self && !r->self->destroyed_) {
+                gtk_widget_set_sensitive(r->self->btn_fetch_, TRUE);
+                if (!r->ok) {
+                    gtk_label_set_text(GTK_LABEL(r->self->status_label_), ("Error: " + r->err).c_str());
+                } else {
+                    r->self->entries_ = std::move(r->entries);
+                    r->self->populate_entries();
+                }
+            }
+            delete r;
+            return G_SOURCE_REMOVE;
+        }, res);
+    }).detach();
+}
+
+void ZipPreviewDialog::populate_entries() {
     std::ostringstream ss;
     ss << "Found " << entries_.size() << " files in remote archive (Tail Range probed successfully).";
     gtk_label_set_text(GTK_LABEL(status_label_), ss.str().c_str());
@@ -144,6 +197,9 @@ void ZipPreviewDialog::on_fetch_clicked() {
         child = next;
     }
 
+    selected_entry_index_ = -1;
+    gtk_widget_set_sensitive(btn_extract_, FALSE);
+
     for (size_t i = 0; i < entries_.size(); ++i) {
         const auto& e = entries_[i];
         GtkWidget* row = gtk_frame_new(nullptr);
@@ -154,7 +210,7 @@ void ZipPreviewDialog::on_fetch_clicked() {
         gtk_widget_set_margin_bottom(hbox, 4);
         gtk_frame_set_child(GTK_FRAME(row), hbox);
 
-        GtkWidget* icon_lbl = gtk_label_new(e.is_directory ? "📁" : "📄");
+        GtkWidget* icon_lbl = gtk_label_new(e.is_directory ? "[DIR]" : "[FILE]");
         gtk_box_append(GTK_BOX(hbox), icon_lbl);
 
         GtkWidget* fn_lbl = gtk_label_new(e.filename.c_str());
@@ -173,7 +229,7 @@ void ZipPreviewDialog::on_fetch_clicked() {
         // Click gesture for row selection
         g_object_set_data(G_OBJECT(row), "entry_idx", GINT_TO_POINTER(static_cast<int>(i)));
         GtkGesture* click = gtk_gesture_click_new();
-        g_signal_connect(click, "pressed", G_CALLBACK(+[](GtkGestureClick* g, int n_press, double x, double y, gpointer user_data) {
+        g_signal_connect(click, "pressed", G_CALLBACK(+[](GtkGestureClick* g, int n_press, double, double, gpointer user_data) {
             auto* self = static_cast<ZipPreviewDialog*>(user_data);
             GtkWidget* w = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(g));
             int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w), "entry_idx"));
@@ -197,14 +253,45 @@ void ZipPreviewDialog::on_extract_clicked() {
     std::string dest_file = base_dir + "/" + std::filesystem::path(entry.filename).filename().string();
 
     gtk_label_set_text(GTK_LABEL(status_label_), ("Extracting " + entry.filename + " via HTTP Range...").c_str());
+    gtk_widget_set_sensitive(btn_extract_, FALSE);
 
-    std::string err;
-    bool ok = previewer_.extract_entry(current_url_, entry, dest_file, nullptr, err);
-    if (ok) {
-        gtk_label_set_text(GTK_LABEL(status_label_), ("Extracted successfully: " + dest_file).c_str());
-    } else {
-        gtk_label_set_text(GTK_LABEL(status_label_), ("Extraction error: " + err).c_str());
-    }
+    struct ExtractCtx {
+        ZipPreviewDialog* self;
+        std::shared_ptr<std::atomic<bool>> alive;
+        std::string url;
+        ZipEntry entry;
+        std::string dest_file;
+    };
+    auto* ctx = new ExtractCtx{this, alive_token_, current_url_, entry, dest_file};
+
+    std::thread([ctx]() {
+        std::string err;
+        bool ok = ctx->self->previewer_.extract_entry(ctx->url, ctx->entry, ctx->dest_file, nullptr, err);
+
+        struct ExtractRes {
+            ZipPreviewDialog* self;
+            std::shared_ptr<std::atomic<bool>> alive;
+            bool ok;
+            std::string dest_file;
+            std::string err;
+        };
+        auto* res = new ExtractRes{ctx->self, ctx->alive, ok, ctx->dest_file, std::move(err)};
+        delete ctx;
+
+        g_idle_add(+[](gpointer data) -> gboolean {
+            auto* r = static_cast<ExtractRes*>(data);
+            if (r->alive && r->alive->load() && r->self && !r->self->destroyed_) {
+                gtk_widget_set_sensitive(r->self->btn_extract_, TRUE);
+                if (r->ok) {
+                    gtk_label_set_text(GTK_LABEL(r->self->status_label_), ("Extracted successfully: " + r->dest_file).c_str());
+                } else {
+                    gtk_label_set_text(GTK_LABEL(r->self->status_label_), ("Extraction error: " + r->err).c_str());
+                }
+            }
+            delete r;
+            return G_SOURCE_REMOVE;
+        }, res);
+    }).detach();
 }
 
 } // namespace opendm

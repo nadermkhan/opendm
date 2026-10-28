@@ -87,6 +87,12 @@ public:
     // Stitches all chunks into the target file in order, then removes temporary chunks
     bool join_file(const std::string& destination_filepath, std::function<void(double)> progress_cb = nullptr);
 
+    // Reset chunk state and clear chunks
+    void reset();
+
+    // Clean up temporary .part files from disk
+    void cleanup_temp_files();
+
     // Save and load state for resume
     std::string serialize_state() const;
     bool deserialize_state(const std::string& json_str);

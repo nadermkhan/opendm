@@ -1,10 +1,12 @@
 #include "core/download_queue.hpp"
 #include "core/download_session.hpp"
 #include "core/batch_importer.hpp"
+#include "core/site_logon.hpp"
 #include "cli/cli_parser.hpp"
 #include "ipc/ipc_server.hpp"
 #include "ui/main_window.hpp"
 #include "ui/about_dialog.hpp"
+#include "ui/download_info_dialog.hpp"
 #include <curl/curl.h>
 #include <gtk/gtk.h>
 #include <iostream>
@@ -47,6 +49,8 @@ int main(int argc, char* argv[]) {
             if (!opts.path.empty()) req += ", \"path\": \"" + opts.path + "\"";
             if (!opts.filename.empty()) req += ", \"filename\": \"" + opts.filename + "\"";
             if (opts.add_only) req += ", \"add_only\": \"true\"";
+            if (opts.connections > 0) req += ", \"connections\": \"" + std::to_string(opts.connections) + "\"";
+            if (opts.speed_limit_kb > 0) req += ", \"speed_limit\": \"" + std::to_string(opts.speed_limit_kb) + "\"";
             req += "}";
         } else if (opts.start_queue) {
             req = "{\"action\": \"start_queue\"}";
@@ -59,6 +63,9 @@ int main(int argc, char* argv[]) {
             return 0;
         }
     }
+
+    // Load persisted download state from disk
+    opendm::QueueManager::instance().load_from_file();
 
     // Process batch file import (.ef2 or text file)
     if (!opts.import_file.empty()) {
@@ -74,6 +81,7 @@ int main(int argc, char* argv[]) {
                 static uint64_t counter = 1;
                 std::string id = "import_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
                 auto s = std::make_shared<opendm::DownloadSession>(id, item.url, dest_file);
+                opendm::SiteLogonManager::instance().apply_to_session(*s, item.url);
                 if (!item.referer.empty()) s->set_header("Referer", item.referer);
                 if (!item.cookies.empty()) s->set_header("Cookie", item.cookies);
                 if (!item.user_agent.empty()) s->set_header("User-Agent", item.user_agent);
@@ -84,6 +92,7 @@ int main(int argc, char* argv[]) {
 
     // Start background IPC server for incoming downloads
     opendm::IpcServer ipc_server;
+    ipc_server.set_gui_mode(opts.show_gui);
     ipc_server.start();
 
     // Signal handlers for graceful exit
@@ -101,6 +110,7 @@ int main(int argc, char* argv[]) {
             std::string dest_file = opts.filename.empty() ? (dest_dir + "/download.bin") : (dest_dir + "/" + opts.filename);
             
             auto session = std::make_shared<opendm::DownloadSession>("cli_task", opts.url, dest_file);
+            opendm::SiteLogonManager::instance().apply_to_session(*session, opts.url);
             session->set_max_connections(opts.connections);
             if (opts.speed_limit_kb > 0) {
                 session->set_speed_limit(opts.speed_limit_kb * 1024);
@@ -144,32 +154,77 @@ int main(int argc, char* argv[]) {
             app = gtk_application_new("com.opendm.app", G_APPLICATION_DEFAULT_FLAGS);
         }
 
+        // Register quit action on app for Tasks -> Exit menubar item
+        GSimpleAction* act_quit = g_simple_action_new("quit", nullptr);
+        g_signal_connect(act_quit, "activate", G_CALLBACK(+[](GSimpleAction*, GVariant*, gpointer a) {
+            g_application_quit(G_APPLICATION(a));
+        }), app);
+        g_action_map_add_action(G_ACTION_MAP(app), G_ACTION(act_quit));
+
         struct AppContext {
             opendm::CliOptions opts;
             std::unique_ptr<opendm::MainWindow> main_win;
-        } ctx{opts, nullptr};
+            opendm::IpcServer* ipc{nullptr};
+        } ctx{opts, nullptr, &ipc_server};
 
         g_signal_connect(app, "activate", (GCallback)(+[](GtkApplication* a, gpointer user_data) {
             auto* context = static_cast<AppContext*>(user_data);
             context->main_win = std::make_unique<opendm::MainWindow>(a);
             context->main_win->present();
 
-            if (!context->opts.url.empty()) {
-                context->main_win->add_download_url(
-                    context->opts.url, context->opts.path, context->opts.filename, !context->opts.add_only);
+            if (context->ipc) {
+                context->ipc->set_download_prompt_callback([win = context->main_win.get()](const opendm::DownloadPromptInfo& info) {
+                    win->prompt_download(info);
+                });
             }
 
-            if ((context->opts.show_about || context->opts.show_appreciation) && !context->opts.screenshot_path.empty()) {
+            if (context->opts.start_queue) {
+                opendm::QueueManager::instance().get_main_queue().start_queue();
+            }
+
+            if (context->opts.speed_limit_kb > 0) {
+                opendm::QueueManager::instance().enable_global_speed_limit(true);
+                opendm::QueueManager::instance().set_global_speed_limit(context->opts.speed_limit_kb * 1024);
+            }
+
+            if (context->opts.exit_after_download) {
+                g_timeout_add(500, +[](gpointer) -> gboolean {
+                    auto sessions = opendm::QueueManager::instance().get_main_queue().get_all_sessions();
+                    if (sessions.empty()) return G_SOURCE_CONTINUE;
+                    bool all_done = true;
+                    for (const auto& s : sessions) {
+                        auto st = s->get_status();
+                        if (st != opendm::SessionStatus::COMPLETED && st != opendm::SessionStatus::ERROR) {
+                            all_done = false;
+                            break;
+                        }
+                    }
+                    if (all_done) {
+                        std::cout << "All downloads completed, exiting due to -q / --quit-after flag." << std::endl;
+                        g_application_quit(G_APPLICATION(g_application_get_default()));
+                        return G_SOURCE_REMOVE;
+                    }
+                    return G_SOURCE_CONTINUE;
+                }, nullptr);
+            }
+
+            if (!context->opts.url.empty() && !context->opts.screenshot_path.empty()) {
                 gtk_window_present(GTK_WINDOW(context->main_win->get_widget()));
-                auto* dlg = opendm::AboutDialog::show(GTK_WINDOW(context->main_win->get_widget()));
-                struct AboutSnapData {
-                    opendm::AboutDialog* dlg;
+                opendm::DownloadPromptInfo prompt_info;
+                prompt_info.url = context->opts.url;
+                prompt_info.filename = context->opts.filename.empty() ? "idm_al.zip" : context->opts.filename;
+                prompt_info.category = opendm::QueueManager::detect_category(prompt_info.filename);
+                prompt_info.file_size = 38656; // 37.75 KB
+
+                auto* dlg = opendm::DownloadInfoDialog::show(GTK_WINDOW(context->main_win->get_widget()), prompt_info, nullptr);
+                struct InfoSnapData {
+                    opendm::DownloadInfoDialog* dlg;
                     std::string path;
                     int ticks;
                 };
-                auto* asd = new AboutSnapData{dlg, context->opts.screenshot_path, 0};
+                auto* isd = new InfoSnapData{dlg, context->opts.screenshot_path, 0};
                 gtk_widget_add_tick_callback(dlg->get_widget(), +[](GtkWidget*, GdkFrameClock*, gpointer d) -> gboolean {
-                    auto* data = static_cast<AboutSnapData*>(d);
+                    auto* data = static_cast<InfoSnapData*>(d);
                     data->ticks++;
                     if (data->ticks >= 10) {
                         data->dlg->save_snapshot(data->path);
@@ -178,8 +233,38 @@ int main(int argc, char* argv[]) {
                         return G_SOURCE_REMOVE;
                     }
                     return G_SOURCE_CONTINUE;
-                }, asd, nullptr);
+                }, isd, nullptr);
                 return;
+            }
+
+            if (!context->opts.url.empty()) {
+                context->main_win->add_download_url(
+                    context->opts.url, context->opts.path, context->opts.filename, !context->opts.add_only);
+            }
+
+            if (context->opts.show_about || context->opts.show_appreciation) {
+                gtk_window_present(GTK_WINDOW(context->main_win->get_widget()));
+                auto* dlg = opendm::AboutDialog::show(GTK_WINDOW(context->main_win->get_widget()));
+                if (!context->opts.screenshot_path.empty()) {
+                    struct AboutSnapData {
+                        opendm::AboutDialog* dlg;
+                        std::string path;
+                        int ticks;
+                    };
+                    auto* asd = new AboutSnapData{dlg, context->opts.screenshot_path, 0};
+                    gtk_widget_add_tick_callback(dlg->get_widget(), +[](GtkWidget*, GdkFrameClock*, gpointer d) -> gboolean {
+                        auto* data = static_cast<AboutSnapData*>(d);
+                        data->ticks++;
+                        if (data->ticks >= 10) {
+                            data->dlg->save_snapshot(data->path);
+                            g_application_quit(G_APPLICATION(g_application_get_default()));
+                            delete data;
+                            return G_SOURCE_REMOVE;
+                        }
+                        return G_SOURCE_CONTINUE;
+                    }, asd, nullptr);
+                    return;
+                }
             }
 
             if (!context->opts.screenshot_path.empty()) {
@@ -208,6 +293,7 @@ int main(int argc, char* argv[]) {
         g_object_unref(app);
     }
 
+    opendm::QueueManager::instance().save_to_file();
     ipc_server.stop();
     curl_global_cleanup();
     return exit_code;

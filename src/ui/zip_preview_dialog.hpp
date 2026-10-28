@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <atomic>
 #include "../core/zip_previewer.hpp"
 
 namespace opendm {
@@ -20,6 +21,7 @@ private:
     void setup_ui();
     void on_fetch_clicked();
     void on_extract_clicked();
+    void populate_entries();
 
     GtkWindow* parent_{nullptr};
     std::string current_url_;
@@ -34,6 +36,8 @@ private:
     std::vector<ZipEntry> entries_;
     int selected_entry_index_{-1};
     ZipPreviewer previewer_;
+    bool destroyed_{false};
+    std::shared_ptr<std::atomic<bool>> alive_token_{std::make_shared<std::atomic<bool>>(true)};
 };
 
 } // namespace opendm

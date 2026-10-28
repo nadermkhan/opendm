@@ -19,8 +19,14 @@ void GrabberDialog::show() {
 }
 
 void GrabberDialog::close() {
+    if (alive_token_) {
+        alive_token_->store(false);
+    }
     grabber_.stop();
-    gtk_window_destroy(GTK_WINDOW(window_));
+    if (window_) {
+        gtk_window_destroy(GTK_WINDOW(window_));
+        window_ = nullptr;
+    }
 }
 
 void GrabberDialog::setup_ui() {
@@ -30,6 +36,12 @@ void GrabberDialog::setup_ui() {
     if (parent_) {
         gtk_window_set_transient_for(GTK_WINDOW(window_), parent_);
     }
+
+    g_signal_connect(window_, "close-request", G_CALLBACK(+[](GtkWindow*, gpointer data) -> gboolean {
+        auto* self = static_cast<GrabberDialog*>(data);
+        self->close();
+        return FALSE;
+    }), this);
 
     GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     gtk_widget_set_margin_start(vbox, 16);
@@ -209,25 +221,28 @@ void GrabberDialog::on_start_crawl_clicked() {
             // Marshall to GLib main thread
             struct FileEvent {
                 GrabberDialog* self;
+                std::shared_ptr<std::atomic<bool>> alive;
                 DiscoveredFile file;
             };
-            auto* ev = new FileEvent{this, f};
+            auto* ev = new FileEvent{this, alive_token_, f};
             g_idle_add(+[](gpointer data) -> gboolean {
                 auto* e = static_cast<FileEvent*>(data);
-                e->self->discovered_.push_back(e->file);
+                if (e->alive && e->alive->load() && e->self->window_ && GTK_IS_WIDGET(e->self->window_)) {
+                    e->self->discovered_.push_back(e->file);
 
-                GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-                GtkWidget* icon = gtk_label_new(("[ " + e->file.category + " ]").c_str());
-                GtkWidget* fn = gtk_label_new(e->file.filename.c_str());
-                gtk_label_set_xalign(GTK_LABEL(fn), 0.0f);
-                gtk_label_set_ellipsize(GTK_LABEL(fn), PANGO_ELLIPSIZE_END);
-                gtk_widget_set_hexpand(fn, TRUE);
+                    GtkWidget* row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+                    GtkWidget* icon = gtk_label_new(("[ " + e->file.category + " ]").c_str());
+                    GtkWidget* fn = gtk_label_new(e->file.filename.c_str());
+                    gtk_label_set_xalign(GTK_LABEL(fn), 0.0f);
+                    gtk_label_set_ellipsize(GTK_LABEL(fn), PANGO_ELLIPSIZE_END);
+                    gtk_widget_set_hexpand(fn, TRUE);
 
-                gtk_box_append(GTK_BOX(row), icon);
-                gtk_box_append(GTK_BOX(row), fn);
-                gtk_box_append(GTK_BOX(e->self->results_container_), row);
+                    gtk_box_append(GTK_BOX(row), icon);
+                    gtk_box_append(GTK_BOX(row), fn);
+                    gtk_box_append(GTK_BOX(e->self->results_container_), row);
 
-                gtk_widget_set_sensitive(e->self->btn_download_all_, TRUE);
+                    gtk_widget_set_sensitive(e->self->btn_download_all_, TRUE);
+                }
                 delete e;
                 return G_SOURCE_REMOVE;
             }, ev);
@@ -235,15 +250,18 @@ void GrabberDialog::on_start_crawl_clicked() {
         [this](const std::string& st, size_t pages, size_t files) {
             struct StatEvent {
                 GrabberDialog* self;
+                std::shared_ptr<std::atomic<bool>> alive;
                 std::string status;
             };
-            auto* ev = new StatEvent{this, st};
+            auto* ev = new StatEvent{this, alive_token_, st};
             g_idle_add(+[](gpointer data) -> gboolean {
                 auto* e = static_cast<StatEvent*>(data);
-                gtk_label_set_text(GTK_LABEL(e->self->status_label_), e->status.c_str());
-                if (e->status == "Crawl complete") {
-                    gtk_widget_set_sensitive(e->self->btn_start_, TRUE);
-                    gtk_widget_set_sensitive(e->self->btn_stop_, FALSE);
+                if (e->alive && e->alive->load() && e->self->window_ && GTK_IS_WIDGET(e->self->window_)) {
+                    gtk_label_set_text(GTK_LABEL(e->self->status_label_), e->status.c_str());
+                    if (e->status == "Crawl complete") {
+                        gtk_widget_set_sensitive(e->self->btn_start_, TRUE);
+                        gtk_widget_set_sensitive(e->self->btn_stop_, FALSE);
+                    }
                 }
                 delete e;
                 return G_SOURCE_REMOVE;
@@ -266,6 +284,7 @@ void GrabberDialog::on_download_all_clicked() {
         std::string full_dest = dl_dir + "/" + df.filename;
         std::string id = "grabber_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
         auto session = std::make_shared<DownloadSession>(id, df.url, full_dest);
+        session->set_category("Grabber projects");
         QueueManager::instance().get_main_queue().add_session(session, false);
     }
 

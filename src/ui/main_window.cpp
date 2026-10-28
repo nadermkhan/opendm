@@ -1,10 +1,16 @@
 #include "main_window.hpp"
 #include "progress_dialog.hpp"
+#include "properties_dialog.hpp"
+#include "download_complete_dialog.hpp"
 #include "zip_preview_dialog.hpp"
 #include "grabber_dialog.hpp"
 #include "add_url_dialog.hpp"
 #include "about_dialog.hpp"
+#include "options_dialog.hpp"
 #include "ui_assets.hpp"
+#include "../core/batch_importer.hpp"
+#include "../core/site_logon.hpp"
+#include <gdk/gdkkeysyms.h>
 #include <iomanip>
 #include <sstream>
 #include <filesystem>
@@ -169,6 +175,37 @@ void MainWindow::setup_ui() {
         }
     }), this);
 
+    GtkEventController* key_ctrl = gtk_event_controller_key_new();
+    g_signal_connect(key_ctrl, "key-pressed", G_CALLBACK(+[](GtkEventControllerKey*, guint keyval, guint, GdkModifierType state, gpointer user_data) -> gboolean {
+        auto* self = static_cast<MainWindow*>(user_data);
+        bool ctrl = (state & GDK_CONTROL_MASK) != 0;
+
+        if (ctrl && (keyval == GDK_KEY_n || keyval == GDK_KEY_N)) {
+            self->on_add_url_clicked();
+            return GDK_EVENT_STOP;
+        }
+        if (keyval == GDK_KEY_Delete) {
+            self->on_delete_clicked();
+            return GDK_EVENT_STOP;
+        }
+        if (keyval == GDK_KEY_space) {
+            if (!self->selected_session_id_.empty()) {
+                auto s = QueueManager::instance().find_session(self->selected_session_id_);
+                if (s) {
+                    auto prog = s->get_progress();
+                    if (prog.status == SessionStatus::DOWNLOADING || prog.status == SessionStatus::PROBING) {
+                        self->on_stop_clicked();
+                    } else if (prog.status == SessionStatus::PAUSED || prog.status == SessionStatus::IDLE || prog.status == SessionStatus::ERROR) {
+                        self->on_resume_clicked();
+                    }
+                }
+            }
+            return GDK_EVENT_STOP;
+        }
+        return GDK_EVENT_PROPAGATE;
+    }), this);
+    gtk_widget_add_controller(window_, key_ctrl);
+
     GtkWidget* main_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_window_set_child(GTK_WINDOW(window_), main_vbox);
 
@@ -198,8 +235,10 @@ void MainWindow::setup_menubar(GtkWidget* parent_box) {
     GMenu* tasks_menu = g_menu_new();
     g_menu_append(tasks_menu, "Add new download (Ctrl+N)", "win.add_url");
     g_menu_append(tasks_menu, "Add batch download (.ef2)...", "win.batch_import");
+    g_menu_append(tasks_menu, "Export batch download (.ef2)...", "win.batch_export");
     g_menu_append(tasks_menu, "Run site grabber...", "win.site_grabber");
     g_menu_append(tasks_menu, "Preview remote ZIP archive...", "win.zip_preview");
+    g_menu_append(tasks_menu, "Options...", "win.options");
     g_menu_append(tasks_menu, "Exit", "app.quit");
     g_menu_append_submenu(menubar_model, "Tasks", G_MENU_MODEL(tasks_menu));
 
@@ -208,6 +247,7 @@ void MainWindow::setup_menubar(GtkWidget* parent_box) {
     g_menu_append(file_menu, "Resume Download", "win.resume");
     g_menu_append(file_menu, "Stop Download", "win.stop");
     g_menu_append(file_menu, "Remove Selected", "win.delete");
+    g_menu_append(file_menu, "Properties...", "win.properties");
     g_menu_append_submenu(menubar_model, "File", G_MENU_MODEL(file_menu));
 
     // 3. Downloads Menu
@@ -218,6 +258,7 @@ void MainWindow::setup_menubar(GtkWidget* parent_box) {
     g_menu_append(dl_menu, "Start Queue", "win.start_queue");
     g_menu_append(dl_menu, "Stop Queue", "win.stop_queue");
     g_menu_append(dl_menu, "Speed Limiter", "win.speed_limiter");
+    g_menu_append(dl_menu, "Options...", "win.options");
     g_menu_append_submenu(menubar_model, "Downloads", G_MENU_MODEL(dl_menu));
 
     // 4. View Menu
@@ -243,6 +284,9 @@ void MainWindow::setup_menubar(GtkWidget* parent_box) {
     };
 
     add_win_action("add_url", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_add_url_clicked(); });
+    add_win_action("batch_import", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_batch_import_clicked(); });
+    add_win_action("batch_export", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_batch_export_clicked(); });
+    add_win_action("properties", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_properties_clicked(); });
     add_win_action("resume", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_resume_clicked(); });
     add_win_action("stop", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_stop_clicked(); });
     add_win_action("stop_all", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_stop_all_clicked(); });
@@ -252,6 +296,7 @@ void MainWindow::setup_menubar(GtkWidget* parent_box) {
     add_win_action("stop_queue", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_stop_queue_clicked(); });
     add_win_action("speed_limiter", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_speed_limiter_clicked(); });
     add_win_action("scheduler", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_scheduler_clicked(); });
+    add_win_action("options", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_options_clicked(0); });
     add_win_action("zip_preview", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_zip_preview_clicked(); });
     add_win_action("site_grabber", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_site_grabber_clicked(); });
     add_win_action("toggle_sidebar", +[](GSimpleAction*, GVariant*, gpointer d) { static_cast<MainWindow*>(d)->on_sidebar_toggle_clicked(); });
@@ -284,13 +329,15 @@ void MainWindow::setup_toolbar(GtkWidget* parent_box) {
         "list-add-symbolic", "Add URL", "Add new download address (Ctrl+N)",
         G_CALLBACK(+[](GtkButton*, gpointer d) { static_cast<MainWindow*>(d)->on_add_url_clicked(); }), this, true));
 
-    gtk_box_append(GTK_BOX(tb_box), UiAssets::create_toolbar_button(
+    btn_resume_ = UiAssets::create_toolbar_button(
         "media-playback-start-symbolic", "Resume", "Resume selected download",
-        G_CALLBACK(+[](GtkButton*, gpointer d) { static_cast<MainWindow*>(d)->on_resume_clicked(); }), this));
+        G_CALLBACK(+[](GtkButton*, gpointer d) { static_cast<MainWindow*>(d)->on_resume_clicked(); }), this);
+    gtk_box_append(GTK_BOX(tb_box), btn_resume_);
 
-    gtk_box_append(GTK_BOX(tb_box), UiAssets::create_toolbar_button(
+    btn_stop_ = UiAssets::create_toolbar_button(
         "media-playback-pause-symbolic", "Pause", "Pause selected download",
-        G_CALLBACK(+[](GtkButton*, gpointer d) { static_cast<MainWindow*>(d)->on_stop_clicked(); }), this));
+        G_CALLBACK(+[](GtkButton*, gpointer d) { static_cast<MainWindow*>(d)->on_stop_clicked(); }), this);
+    gtk_box_append(GTK_BOX(tb_box), btn_stop_);
 
     gtk_box_append(GTK_BOX(tb_box), UiAssets::create_toolbar_button(
         "media-playback-stop-symbolic", "Stop All", "Stop all active downloads",
@@ -299,9 +346,10 @@ void MainWindow::setup_toolbar(GtkWidget* parent_box) {
     add_sep();
 
     // Group 2: Delete & Clean
-    gtk_box_append(GTK_BOX(tb_box), UiAssets::create_toolbar_button(
+    btn_delete_ = UiAssets::create_toolbar_button(
         "edit-delete-symbolic", "Delete", "Delete selected download from list",
-        G_CALLBACK(+[](GtkButton*, gpointer d) { static_cast<MainWindow*>(d)->on_delete_clicked(); }), this));
+        G_CALLBACK(+[](GtkButton*, gpointer d) { static_cast<MainWindow*>(d)->on_delete_clicked(); }), this);
+    gtk_box_append(GTK_BOX(tb_box), btn_delete_);
 
     gtk_box_append(GTK_BOX(tb_box), UiAssets::create_toolbar_button(
         "user-trash-symbolic", "Clean", "Delete all completed downloads from list",
@@ -327,11 +375,13 @@ void MainWindow::setup_toolbar(GtkWidget* parent_box) {
     // Group 4: Tools & Options
     gtk_box_append(GTK_BOX(tb_box), UiAssets::create_toolbar_button(
         "preferences-system-symbolic", "Options", "OpenDM Options and Preferences",
-        G_CALLBACK(+[](GtkButton*, gpointer d) { static_cast<MainWindow*>(d)->on_scheduler_clicked(); }), this));
+        G_CALLBACK(+[](GtkButton*, gpointer d) { static_cast<MainWindow*>(d)->on_options_clicked(0); }), this));
 
     gtk_box_append(GTK_BOX(tb_box), UiAssets::create_toolbar_button(
         "network-transmit-receive-symbolic", "Grabber", "Open Site Grabber spider wizard",
         G_CALLBACK(+[](GtkButton*, gpointer d) { static_cast<MainWindow*>(d)->on_site_grabber_clicked(); }), this));
+
+    update_toolbar_sensitivity();
 }
 
 void MainWindow::setup_sidebar(GtkWidget* paned) {
@@ -576,7 +626,9 @@ void MainWindow::on_category_selected(const std::string& category) {
 
 gboolean MainWindow::on_tick_refresh(gpointer user_data) {
     auto* self = static_cast<MainWindow*>(user_data);
-    self->refresh_downloads_list();
+    if (!self->active_context_menu_open_) {
+        self->refresh_downloads_list();
+    }
     return G_SOURCE_CONTINUE;
 }
 
@@ -616,11 +668,12 @@ void MainWindow::refresh_downloads_list() {
         // Apply category filter
         if (current_category_ == "Finished" && prog.status != SessionStatus::COMPLETED) continue;
         if (current_category_ == "Unfinished" && prog.status == SessionStatus::COMPLETED) continue;
-        if (current_category_ != "All Downloads" && current_category_ != "Finished" && current_category_ != "Unfinished" && current_category_ != "Queues" && current_category_ != "Main download queue") {
-            std::string icon = get_file_icon_name(s->get_filename());
-            std::string cat_lower = current_category_;
-            std::transform(cat_lower.begin(), cat_lower.end(), cat_lower.begin(), ::tolower);
-            if (icon.find(cat_lower) == std::string::npos) continue;
+        if (current_category_ == "Grabber projects") {
+            if (s->get_category() != "Grabber projects") continue;
+        } else if (current_category_ != "All Downloads" && current_category_ != "Finished" && current_category_ != "Unfinished" && current_category_ != "Queues" && current_category_ != "Main download queue") {
+            std::string cat = s->get_category();
+            if (cat.empty()) cat = QueueManager::detect_category(s->get_filename());
+            if (cat != current_category_) continue;
         }
 
         rendered_count++;
@@ -629,6 +682,7 @@ void MainWindow::refresh_downloads_list() {
         GtkWidget* row_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
         gtk_widget_add_css_class(row_box, "idm-download-row");
         gtk_widget_set_hexpand(row_box, TRUE);
+        g_object_set_data_full(G_OBJECT(row_box), "session_id", g_strdup(s->get_id().c_str()), g_free);
 
         if (s->get_id() == selected_session_id_) {
             gtk_widget_add_css_class(row_box, "selected");
@@ -708,20 +762,37 @@ void MainWindow::refresh_downloads_list() {
         }
         add_col_cell(5, domain, 11);
 
-        // Click gesture for row selection and double-click activation
+        // Click gesture for row selection, right-click context menu, and double-click activation
         GtkGesture* click = gtk_gesture_click_new();
+        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0); // Listen to all mouse buttons
         g_object_set_data_full(G_OBJECT(click), "session_id", g_strdup(s->get_id().c_str()), g_free);
 
-        g_signal_connect(click, "pressed", G_CALLBACK(+[](GtkGestureClick* gesture, int n_press, double, double, gpointer d) {
+        g_signal_connect(click, "pressed", G_CALLBACK(+[](GtkGestureClick* gesture, int n_press, double x, double y, gpointer d) {
             auto* self = static_cast<MainWindow*>(d);
             const char* sid = static_cast<const char*>(g_object_get_data(G_OBJECT(gesture), "session_id"));
-            if (sid) {
-                self->selected_session_id_ = sid;
+            if (!sid) return;
+            guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
+            self->selected_session_id_ = sid;
+            self->update_toolbar_sensitivity();
+
+            // Visually highlight row without rebuilding DOM/gesture
+            GtkWidget* c = gtk_widget_get_first_child(self->downloads_container_);
+            while (c) {
+                const char* csid = static_cast<const char*>(g_object_get_data(G_OBJECT(c), "session_id"));
+                if (csid && self->selected_session_id_ == csid) {
+                    gtk_widget_add_css_class(c, "selected");
+                } else {
+                    gtk_widget_remove_css_class(c, "selected");
+                }
+                c = gtk_widget_get_next_sibling(c);
+            }
+
+            if (button == 1) { // Left-click
                 if (n_press == 2) {
                     self->on_row_activated(sid);
-                } else {
-                    self->refresh_downloads_list();
                 }
+            } else if (button == 3) { // Right-click context menu
+                self->on_row_right_clicked(gesture, n_press, x, y, sid);
             }
         }), this);
 
@@ -775,83 +846,201 @@ void MainWindow::refresh_downloads_list() {
     }
     gtk_label_set_text(GTK_LABEL(status_panel_count_), count_str.c_str());
     gtk_label_set_text(GTK_LABEL(status_panel_speed_), ("Total Speed: " + format_speed(total_system_speed)).c_str());
+    update_toolbar_sensitivity();
+}
+
+void MainWindow::update_toolbar_sensitivity() {
+    if (selected_session_id_.empty()) {
+        if (btn_resume_) gtk_widget_set_sensitive(btn_resume_, FALSE);
+        if (btn_stop_) gtk_widget_set_sensitive(btn_stop_, FALSE);
+        if (btn_delete_) gtk_widget_set_sensitive(btn_delete_, FALSE);
+        return;
+    }
+
+    auto s = QueueManager::instance().find_session(selected_session_id_);
+    if (!s) {
+        selected_session_id_.clear();
+        if (btn_resume_) gtk_widget_set_sensitive(btn_resume_, FALSE);
+        if (btn_stop_) gtk_widget_set_sensitive(btn_stop_, FALSE);
+        if (btn_delete_) gtk_widget_set_sensitive(btn_delete_, FALSE);
+        return;
+    }
+
+    if (btn_delete_) gtk_widget_set_sensitive(btn_delete_, TRUE);
+    auto prog = s->get_progress();
+    if (prog.status == SessionStatus::DOWNLOADING || prog.status == SessionStatus::PROBING || prog.status == SessionStatus::ASSEMBLING) {
+        if (btn_stop_) gtk_widget_set_sensitive(btn_stop_, TRUE);
+        if (btn_resume_) gtk_widget_set_sensitive(btn_resume_, FALSE);
+    } else if (prog.status == SessionStatus::PAUSED || prog.status == SessionStatus::IDLE || prog.status == SessionStatus::ERROR) {
+        if (btn_stop_) gtk_widget_set_sensitive(btn_stop_, FALSE);
+        if (btn_resume_) gtk_widget_set_sensitive(btn_resume_, TRUE);
+    } else { // COMPLETED
+        if (btn_stop_) gtk_widget_set_sensitive(btn_stop_, FALSE);
+        if (btn_resume_) gtk_widget_set_sensitive(btn_resume_, FALSE);
+    }
 }
 
 void MainWindow::on_speed_limiter_clicked() {
     static bool limiter_active = false;
     limiter_active = !limiter_active;
 
+    QueueManager::instance().enable_global_speed_limit(limiter_active);
+    if (limiter_active) {
+        QueueManager::instance().set_global_speed_limit(500 * 1024); // 500 KB/s default
+    }
+
     auto sessions = QueueManager::instance().get_main_queue().get_all_sessions();
     for (auto& s : sessions) {
         s->enable_speed_limit(limiter_active);
         if (limiter_active) {
-            s->set_speed_limit(500 * 1024); // 500 KB/s default
+            s->set_speed_limit(500 * 1024);
         }
     }
 
     gtk_button_set_label(GTK_BUTTON(status_panel_limiter_),
-        limiter_active ? "⚡ Speed Limiter: ON (500 KB/s)" : "Speed Limiter: OFF");
+        limiter_active ? "Speed Limiter: ON (500 KB/s)" : "Speed Limiter: OFF");
+}
+
+void MainWindow::prompt_download(const DownloadPromptInfo& info) {
+    struct PromptWindowData {
+        MainWindow* main_win;
+        DownloadPromptInfo info;
+    };
+    auto* pwd = new PromptWindowData{this, info};
+    g_idle_add(+[](gpointer user_data) -> gboolean {
+        auto* data = static_cast<PromptWindowData*>(user_data);
+        if (data->main_win && data->main_win->window_) {
+            GtkWindow* parent = GTK_WINDOW(data->main_win->window_);
+            gtk_window_present(parent);
+
+            DownloadInfoDialog::show(parent, data->info, [win = data->main_win](DownloadInfoAction action, const DownloadInfoParams& res) {
+                if (action == DownloadInfoAction::CANCEL) {
+                    return;
+                }
+
+                std::string dest_file = res.save_as_path;
+                if (dest_file.empty()) {
+                    dest_file = (fs::path(res.destination_dir) / (res.filename.empty() ? "download.bin" : res.filename)).string();
+                }
+
+                std::error_code ec;
+                fs::create_directories(fs::path(dest_file).parent_path(), ec);
+
+                static uint64_t counter = 1;
+                std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+
+                auto session = std::make_shared<DownloadSession>(id, res.url, dest_file);
+                if (!res.audio_stream_url.empty()) {
+                    session->set_audio_stream_url(res.audio_stream_url);
+                }
+                SiteLogonManager::instance().apply_to_session(*session, res.url);
+                if (!res.username.empty()) session->set_credentials(res.username, res.password);
+                if (!res.referer.empty()) session->set_header("Referer", res.referer);
+                if (!res.cookies.empty()) session->set_header("Cookie", res.cookies);
+                if (!res.user_agent.empty()) session->set_header("User-Agent", res.user_agent);
+
+                bool start_now = (action == DownloadInfoAction::START_NOW);
+                QueueManager::instance().get_main_queue().add_session(session, start_now);
+                win->refresh_downloads_list();
+
+                if (start_now) {
+                    win->on_row_activated(id);
+                }
+            });
+        }
+        delete data;
+        return G_SOURCE_REMOVE;
+    }, pwd);
 }
 
 void MainWindow::on_add_url_clicked() {
-    AddUrlDialog::show(GTK_WINDOW(window_), "", [this](const AddUrlResult& res) {
-        if (!res.accepted || res.url.empty()) return;
-
-        std::string filename = res.filename;
-        if (filename.empty()) {
-            size_t slash = res.url.find_last_of('/');
-            if (slash != std::string::npos && slash + 1 < res.url.length()) {
-                filename = res.url.substr(slash + 1);
-                size_t q = filename.find('?');
-                if (q != std::string::npos) filename = filename.substr(0, q);
-            } else {
-                filename = "download.bin";
+    GdkClipboard* clipboard = gtk_widget_get_clipboard(window_);
+    gdk_clipboard_read_text_async(clipboard, nullptr, +[](GObject* source, GAsyncResult* res, gpointer data) {
+        auto* self = static_cast<MainWindow*>(data);
+        GError* err = nullptr;
+        char* text = gdk_clipboard_read_text_finish(GDK_CLIPBOARD(source), res, &err);
+        std::string initial_url;
+        if (text) {
+            std::string t = text;
+            while (!t.empty() && (t.front() == ' ' || t.front() == '\t' || t.front() == '\r' || t.front() == '\n')) t.erase(0, 1);
+            if (t.rfind("http://", 0) == 0 || t.rfind("https://", 0) == 0 || t.rfind("ftp://", 0) == 0) {
+                size_t ws = t.find_first_of(" \t\r\n");
+                if (ws != std::string::npos) t = t.substr(0, ws);
+                initial_url = t;
             }
+            g_free(text);
         }
+        if (err) g_error_free(err);
 
-        std::string dest_path = res.path + "/" + filename;
-        static uint64_t counter = 1;
-        std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+        AddUrlDialog::show(GTK_WINDOW(self->window_), initial_url, [self](const AddUrlResult& res) {
+            if (!res.accepted || res.url.empty()) return;
 
-        auto session = std::make_shared<DownloadSession>(id, res.url, dest_path);
-        if (res.use_auth && !res.username.empty()) {
-            session->set_header("Authorization", "Basic " + res.username + ":" + res.password);
-        }
-
-        QueueManager::instance().get_main_queue().add_session(session, res.start_immediately);
-        refresh_downloads_list();
-
-        if (res.start_immediately) {
-            on_row_activated(id);
-        }
-    });
+            DownloadPromptInfo info;
+            info.url = res.url;
+            std::string default_dir = (fs::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string();
+            if (res.path != default_dir && !res.path.empty()) {
+                info.destination_dir = res.path;
+            }
+            info.filename = res.filename;
+            info.username = res.username;
+            info.password = res.password;
+            if (info.filename.empty()) {
+                size_t slash = res.url.find_last_of('/');
+                if (slash != std::string::npos && slash + 1 < res.url.length()) {
+                    info.filename = res.url.substr(slash + 1);
+                    size_t q = info.filename.find('?');
+                    if (q != std::string::npos) info.filename = info.filename.substr(0, q);
+                } else {
+                    info.filename = "download.bin";
+                }
+            }
+            info.category = QueueManager::detect_category(info.filename);
+            self->prompt_download(info);
+        });
+    }, this);
 }
 
 void MainWindow::add_download_url(const std::string& url, const std::string& path,
                                   const std::string& filename, bool start_now) {
-    std::string dest_dir = path.empty() ? (fs::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string() : path;
-    std::string fname = filename;
-    if (fname.empty()) {
-        size_t slash = url.find_last_of('/');
-        if (slash != std::string::npos && slash + 1 < url.length()) {
-            fname = url.substr(slash + 1);
-            size_t q = fname.find('?');
-            if (q != std::string::npos) fname = fname.substr(0, q);
-        } else {
-            fname = "download.bin";
-        }
-    }
-
-    std::string dest_path = dest_dir + "/" + fname;
-    static uint64_t counter = 1;
-    std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
-
-    auto session = std::make_shared<DownloadSession>(id, url, dest_path);
-    QueueManager::instance().get_main_queue().add_session(session, start_now);
-    refresh_downloads_list();
-
     if (start_now) {
-        on_row_activated(id);
+        DownloadPromptInfo info;
+        info.url = url;
+        info.destination_dir = path;
+        info.filename = filename;
+        if (info.filename.empty()) {
+            size_t slash = url.find_last_of('/');
+            if (slash != std::string::npos && slash + 1 < url.length()) {
+                info.filename = url.substr(slash + 1);
+                size_t q = info.filename.find('?');
+                if (q != std::string::npos) info.filename = info.filename.substr(0, q);
+            } else {
+                info.filename = "download.bin";
+            }
+        }
+        info.category = QueueManager::detect_category(info.filename);
+        prompt_download(info);
+    } else {
+        std::string dest_dir = path.empty() ? (fs::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string() : path;
+        std::string fname = filename;
+        if (fname.empty()) {
+            size_t slash = url.find_last_of('/');
+            if (slash != std::string::npos && slash + 1 < url.length()) {
+                fname = url.substr(slash + 1);
+                size_t q = fname.find('?');
+                if (q != std::string::npos) fname = fname.substr(0, q);
+            } else {
+                fname = "download.bin";
+            }
+        }
+
+        std::string dest_path = dest_dir + "/" + fname;
+        static uint64_t counter = 1;
+        std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+
+        auto session = std::make_shared<DownloadSession>(id, url, dest_path);
+        SiteLogonManager::instance().apply_to_session(*session, url);
+        QueueManager::instance().get_main_queue().add_session(session, false);
+        refresh_downloads_list();
     }
 }
 
@@ -883,6 +1072,73 @@ void MainWindow::on_stop_all_clicked() {
 
 void MainWindow::on_delete_clicked() {
     if (selected_session_id_.empty()) return;
+    auto s = QueueManager::instance().find_session(selected_session_id_);
+    if (!s) return;
+
+    GtkWidget* dialog = gtk_window_new();
+    gtk_window_set_title(GTK_WINDOW(dialog), "Delete Download");
+    gtk_window_set_default_size(GTK_WINDOW(dialog), 380, 160);
+    gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(window_));
+    gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
+
+    GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_set_margin_start(vbox, 16);
+    gtk_widget_set_margin_end(vbox, 16);
+    gtk_widget_set_margin_top(vbox, 16);
+    gtk_widget_set_margin_bottom(vbox, 16);
+    gtk_window_set_child(GTK_WINDOW(dialog), vbox);
+
+    std::string msg = "Delete \"" + s->get_filename() + "\" from OpenDM?";
+    GtkWidget* lbl = gtk_label_new(msg.c_str());
+    gtk_label_set_wrap(GTK_LABEL(lbl), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+    gtk_box_append(GTK_BOX(vbox), lbl);
+
+    GtkWidget* chk_disk = gtk_check_button_new_with_label("Also delete downloaded file from disk");
+    gtk_box_append(GTK_BOX(vbox), chk_disk);
+
+    GtkWidget* btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_halign(btn_box, GTK_ALIGN_END);
+    gtk_widget_set_margin_top(btn_box, 8);
+
+    GtkWidget* btn_ok = gtk_button_new_with_label("Delete");
+    gtk_widget_add_css_class(btn_ok, "destructive-action");
+    GtkWidget* btn_cancel = gtk_button_new_with_label("Cancel");
+
+    gtk_box_append(GTK_BOX(btn_box), btn_cancel);
+    gtk_box_append(GTK_BOX(btn_box), btn_ok);
+    gtk_box_append(GTK_BOX(vbox), btn_box);
+
+    struct DelData {
+        MainWindow* win;
+        GtkWidget* dlg;
+        GtkWidget* chk;
+        std::string sid;
+        std::string path;
+    };
+    auto* dd = new DelData{this, dialog, chk_disk, selected_session_id_, s->get_destination_path()};
+
+    g_signal_connect_swapped(btn_cancel, "clicked", G_CALLBACK(+[](DelData* d) {
+        gtk_window_destroy(GTK_WINDOW(d->dlg));
+        delete d;
+    }), dd);
+
+    g_signal_connect_swapped(btn_ok, "clicked", G_CALLBACK(+[](DelData* d) {
+        bool del_file = gtk_check_button_get_active(GTK_CHECK_BUTTON(d->chk));
+        if (del_file && !d->path.empty()) {
+            std::error_code ec;
+            std::filesystem::remove(d->path, ec);
+        }
+        d->win->on_delete_confirmed(del_file);
+        gtk_window_destroy(GTK_WINDOW(d->dlg));
+        delete d;
+    }), dd);
+
+    gtk_window_present(GTK_WINDOW(dialog));
+}
+
+void MainWindow::on_delete_confirmed(bool) {
+    if (selected_session_id_.empty()) return;
     QueueManager::instance().get_main_queue().remove_session(selected_session_id_);
     selected_session_id_.clear();
     refresh_downloads_list();
@@ -909,7 +1165,11 @@ void MainWindow::on_stop_queue_clicked() {
 }
 
 void MainWindow::on_scheduler_clicked() {
-    std::cout << "[OpenDM] Scheduler dialog clicked." << std::endl;
+    on_options_clicked(3);
+}
+
+void MainWindow::on_options_clicked(int initial_tab) {
+    OptionsDialog::show(GTK_WINDOW(window_), initial_tab);
 }
 
 void MainWindow::on_zip_preview_clicked() {
@@ -927,9 +1187,13 @@ void MainWindow::on_row_activated(const std::string& session_id) {
     if (!session) return;
 
     if (session->get_status() == SessionStatus::COMPLETED) {
-        // Open completed file
-        std::string cmd = "xdg-open \"" + session->get_destination_path() + "\" &";
-        (void)system(cmd.c_str());
+        std::string path = session->get_destination_path();
+        std::string uri = "file://" + path;
+        GError* err = nullptr;
+        g_app_info_launch_default_for_uri(uri.c_str(), nullptr, &err);
+        if (err) {
+            g_error_free(err);
+        }
         return;
     }
 
@@ -942,6 +1206,238 @@ void MainWindow::on_row_activated(const std::string& session_id) {
         active_dialogs_[session_id] = dlg;
         dlg->show();
     }
+}
+
+void MainWindow::on_row_right_clicked(GtkGestureClick* gesture, int, double x, double y, const std::string& session_id) {
+    GtkWidget* row_box = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+    if (!row_box) return;
+
+    auto session = QueueManager::instance().find_session(session_id);
+    if (!session) return;
+
+    active_context_menu_open_ = true;
+
+    GtkWidget* popover = gtk_popover_new();
+    gtk_widget_set_parent(popover, row_box);
+    gtk_widget_add_css_class(popover, "idm-context-menu");
+
+    GdkRectangle rect;
+    rect.x = static_cast<int>(x);
+    rect.y = static_cast<int>(y);
+    rect.width = 1;
+    rect.height = 1;
+    gtk_popover_set_pointing_to(GTK_POPOVER(popover), &rect);
+    gtk_popover_set_position(GTK_POPOVER(popover), GTK_POS_BOTTOM);
+    gtk_popover_set_has_arrow(GTK_POPOVER(popover), FALSE);
+
+    g_signal_connect(popover, "closed", G_CALLBACK(+[](GtkPopover* p, gpointer data) {
+        auto* self = static_cast<MainWindow*>(data);
+        if (self) self->active_context_menu_open_ = false;
+        gtk_widget_unparent(GTK_WIDGET(p));
+    }), this);
+
+    GtkWidget* menu_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_set_margin_start(menu_vbox, 4);
+    gtk_widget_set_margin_end(menu_vbox, 4);
+    gtk_widget_set_margin_top(menu_vbox, 4);
+    gtk_widget_set_margin_bottom(menu_vbox, 4);
+    gtk_popover_set_child(GTK_POPOVER(popover), menu_vbox);
+
+    auto add_item = [&](const char* label, const char* icon_name, std::function<void(MainWindow*, const std::string&)> cb, bool enabled = true) {
+        GtkWidget* btn = gtk_button_new();
+        gtk_widget_add_css_class(btn, "flat");
+        gtk_widget_add_css_class(btn, "idm-context-item");
+        gtk_widget_set_sensitive(btn, enabled ? TRUE : FALSE);
+
+        GtkWidget* ibox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        if (icon_name) {
+            GtkWidget* img = gtk_image_new_from_icon_name(icon_name);
+            gtk_image_set_pixel_size(GTK_IMAGE(img), 16);
+            gtk_box_append(GTK_BOX(ibox), img);
+        }
+        GtkWidget* lbl = gtk_label_new(label);
+        gtk_label_set_xalign(GTK_LABEL(lbl), 0.0f);
+        gtk_box_append(GTK_BOX(ibox), lbl);
+        gtk_button_set_child(GTK_BUTTON(btn), ibox);
+
+        struct ItemData {
+            MainWindow* win;
+            GtkWidget* pop;
+            std::string sid;
+            std::function<void(MainWindow*, const std::string&)> callback;
+        };
+        auto* id = new ItemData{this, popover, session_id, cb};
+        g_signal_connect(btn, "clicked", G_CALLBACK(+[](GtkButton*, gpointer data) {
+            auto* d = static_cast<ItemData*>(data);
+            gtk_popover_popdown(GTK_POPOVER(d->pop));
+            if (d->callback) d->callback(d->win, d->sid);
+        }), id);
+        g_object_set_data_full(G_OBJECT(btn), "item_data", id, +[](gpointer p) { delete static_cast<ItemData*>(p); });
+
+        gtk_box_append(GTK_BOX(menu_vbox), btn);
+    };
+
+    auto add_separator = [&]() {
+        GtkWidget* sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+        gtk_box_append(GTK_BOX(menu_vbox), sep);
+    };
+
+    auto prog = session->get_progress();
+    bool is_active = (prog.status == SessionStatus::DOWNLOADING || prog.status == SessionStatus::PROBING || prog.status == SessionStatus::ASSEMBLING);
+    bool is_paused = (prog.status == SessionStatus::PAUSED || prog.status == SessionStatus::IDLE || prog.status == SessionStatus::ERROR);
+    bool is_completed = (prog.status == SessionStatus::COMPLETED);
+
+    add_item("Resume Download", "media-playback-start-symbolic", [](MainWindow* w, const std::string&) {
+        w->on_resume_clicked();
+    }, is_paused);
+
+    add_item("Pause / Stop Download", "media-playback-pause-symbolic", [](MainWindow* w, const std::string&) {
+        w->on_stop_clicked();
+    }, is_active);
+
+    add_item("Redownload", "view-refresh-symbolic", [](MainWindow* w, const std::string& sid) {
+        auto s = QueueManager::instance().find_session(sid);
+        if (s) {
+            s->redownload();
+            w->refresh_downloads_list();
+        }
+    });
+
+    add_separator();
+
+    add_item("Open File", "document-open-symbolic", [](MainWindow*, const std::string& sid) {
+        auto s = QueueManager::instance().find_session(sid);
+        if (s) {
+            std::string path = s->get_destination_path();
+            std::string uri = "file://" + path;
+            g_app_info_launch_default_for_uri(uri.c_str(), nullptr, nullptr);
+        }
+    }, is_completed);
+
+    add_item("Open Folder", "folder-open-symbolic", [](MainWindow*, const std::string& sid) {
+        auto s = QueueManager::instance().find_session(sid);
+        if (s) {
+            std::string path = s->get_destination_path();
+            fs::path p(path);
+            std::string parent_dir = p.parent_path().string();
+            std::string uri = "file://" + parent_dir;
+            g_app_info_launch_default_for_uri(uri.c_str(), nullptr, nullptr);
+        }
+    });
+
+    add_separator();
+
+    add_item("Copy URL to Clipboard", "edit-copy-symbolic", [](MainWindow* w, const std::string& sid) {
+        auto s = QueueManager::instance().find_session(sid);
+        if (s && w->get_widget()) {
+            GdkClipboard* clip = gtk_widget_get_clipboard(w->get_widget());
+            gdk_clipboard_set_text(clip, s->get_url().c_str());
+        }
+    });
+
+    add_item("Delete", "edit-delete-symbolic", [](MainWindow* w, const std::string&) {
+        w->on_delete_clicked();
+    });
+
+    add_separator();
+
+    add_item("Properties", "document-properties-symbolic", [](MainWindow* w, const std::string&) {
+        w->on_properties_clicked();
+    });
+
+    gtk_popover_popup(GTK_POPOVER(popover));
+}
+
+void MainWindow::on_batch_import_clicked() {
+    GtkFileChooserNative* chooser = gtk_file_chooser_native_new(
+        "Import Batch Downloads (.ef2 or text)",
+        GTK_WINDOW(window_),
+        GTK_FILE_CHOOSER_ACTION_OPEN,
+        "_Import",
+        "_Cancel"
+    );
+
+    GtkFileFilter* filter = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter, "IDM Export files (*.ef2, *.txt)");
+    gtk_file_filter_add_pattern(filter, "*.ef2");
+    gtk_file_filter_add_pattern(filter, "*.txt");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), filter);
+
+    g_signal_connect(chooser, "response", G_CALLBACK(+[](GtkNativeDialog* native, int resp, gpointer user_data) {
+        if (resp == GTK_RESPONSE_ACCEPT) {
+            GFile* file = gtk_file_chooser_get_file(GTK_FILE_CHOOSER(native));
+            if (file) {
+                char* path = g_file_get_path(file);
+                if (path) {
+                    auto* self = static_cast<MainWindow*>(user_data);
+                    std::string err;
+                    auto items = BatchImporter::import_file(path, err);
+                    for (const auto& item : items) {
+                        if (!item.url.empty()) {
+                            self->add_download_url(item.url, item.path, item.filename, false);
+                        }
+                    }
+                    self->refresh_downloads_list();
+                    g_free(path);
+                }
+                g_object_unref(file);
+            }
+        }
+        g_object_unref(native);
+    }), this);
+
+    gtk_native_dialog_show(GTK_NATIVE_DIALOG(chooser));
+}
+
+void MainWindow::on_properties_clicked() {
+    if (selected_session_id_.empty()) return;
+    auto s = QueueManager::instance().find_session(selected_session_id_);
+    if (s) {
+        PropertiesDialog::show(GTK_WINDOW(window_), s);
+    }
+}
+
+void MainWindow::on_batch_export_clicked() {
+    GtkFileChooserNative* chooser = gtk_file_chooser_native_new(
+        "Export Batch Downloads to IDM Export File (.ef2)",
+        GTK_WINDOW(window_),
+        GTK_FILE_CHOOSER_ACTION_SAVE,
+        "_Export",
+        "_Cancel"
+    );
+    gtk_file_chooser_set_current_name(GTK_FILE_CHOOSER(chooser), "export.ef2");
+
+    GtkFileFilter* filter = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter, "IDM Export files (*.ef2)");
+    gtk_file_filter_add_pattern(filter, "*.ef2");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(chooser), filter);
+
+    g_signal_connect(chooser, "response", G_CALLBACK(+[](GtkNativeDialog* native, int resp, gpointer user_data) {
+        if (resp == GTK_RESPONSE_ACCEPT) {
+            GFile* file = gtk_file_chooser_get_file(GTK_FILE_CHOOSER(native));
+            if (file) {
+                char* path = g_file_get_path(file);
+                if (path) {
+                    auto sessions = QueueManager::instance().get_main_queue().get_all_sessions();
+                    std::vector<BatchItem> items;
+                    for (const auto& s : sessions) {
+                        BatchItem it;
+                        it.url = s->get_url();
+                        it.path = s->get_destination_path();
+                        it.filename = s->get_filename();
+                        items.push_back(it);
+                    }
+                    std::string err;
+                    BatchImporter::export_ef2(path, items, err);
+                    g_free(path);
+                }
+                g_object_unref(file);
+            }
+        }
+        g_object_unref(native);
+    }), this);
+
+    gtk_native_dialog_show(GTK_NATIVE_DIALOG(chooser));
 }
 
 } // namespace opendm

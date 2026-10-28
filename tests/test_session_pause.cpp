@@ -168,7 +168,10 @@ private:
     std::thread server_thread_;
 };
 
+#include <csignal>
+
 int main() {
+    signal(SIGPIPE, SIG_IGN);
     std::cout << "=== Running DownloadSession Pause/Resume Integration Test ===" << std::endl;
 
     // 1. Generate 2 MB deterministic test payload

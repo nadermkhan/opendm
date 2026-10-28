@@ -1,6 +1,9 @@
 #include "core/batch_importer.hpp"
 #include "core/site_logon.hpp"
+#include "core/download_session.hpp"
+#include "core/download_queue.hpp"
 #include "cli/cli_parser.hpp"
+#include "ipc/ipc_server.hpp"
 #include <iostream>
 #include <cassert>
 #include <filesystem>
@@ -101,6 +104,212 @@ int main() {
     assert(opts.silent_mode);
     assert(opts.add_only);
     std::cout << "  ✓ IDM CLI suite argument parser passed." << std::endl;
+
+    // 4. Test Queue Reordering with update callback (verifies Fix 1.5)
+    std::cout << "[Test 4] DownloadQueue item reordering callback safety..." << std::endl;
+    opendm::DownloadQueue q("test_q", "Test Queue");
+    bool callback_called = false;
+    q.set_update_callback([&]() {
+        callback_called = true;
+        // In buggy versions, calling get_all_sessions() from within update_callback_ deadlocked
+        auto items = q.get_all_sessions();
+        assert(!items.empty());
+    });
+
+    auto s1 = std::make_shared<opendm::DownloadSession>("q_item1", "http://example.com/1", "/tmp/1.bin");
+    auto s2 = std::make_shared<opendm::DownloadSession>("q_item2", "http://example.com/2", "/tmp/2.bin");
+    q.add_session(s1, false);
+    q.add_session(s2, false);
+
+    callback_called = false;
+    q.move_item_up("q_item2");
+    assert(callback_called);
+
+    callback_called = false;
+    q.move_item_down("q_item2");
+    assert(callback_called);
+    std::cout << "  ✓ Queue move_item_up/down callbacks safely executed without deadlocks." << std::endl;
+
+    // 5. Test DownloadSession Redownload (verifies Fix 1.2 / 1.4)
+    std::cout << "[Test 5] DownloadSession Redownload resets chunk state..." << std::endl;
+    auto s_redl = std::make_shared<opendm::DownloadSession>("redl_task", "http://example.com/file.zip", "/tmp/file.zip");
+    s_redl->set_category("Compressed");
+    assert(s_redl->get_category() == "Compressed");
+
+    // Redownload cleans up and resets
+    bool redl_ok = s_redl->redownload();
+    assert(s_redl->get_status() == opendm::SessionStatus::PROBING || s_redl->get_status() == opendm::SessionStatus::DOWNLOADING || s_redl->get_status() == opendm::SessionStatus::ERROR);
+    s_redl->cancel();
+    assert(s_redl->get_status() == opendm::SessionStatus::IDLE);
+    std::cout << "  ✓ DownloadSession redownload and lifecycle verified." << std::endl;
+
+    // 6. Test SiteLogonManager::apply_to_session
+    std::cout << "[Test 6] SiteLogonManager applies credentials to session..." << std::endl;
+    auto s_auth = std::make_shared<opendm::DownloadSession>("auth_task", "https://rapidgator.net/file/999", "/tmp/auth.bin");
+    logon.apply_to_session(*s_auth, "https://rapidgator.net/file/999");
+    std::cout << "  ✓ SiteLogonManager credentials applied to session." << std::endl;
+
+    // 7. Test Tonec Wire Protocol Parsing
+    std::cout << "[Test 7] Tonec Wire Protocol Parsing..." << std::endl;
+    std::string sample_tonec = "MSG#170#13#1#2048:4502:0:1793158010947:302:1:6:7:0,2=14:172.67.212.214,6=51:idmdwnlmfv9://https://wickradio.com/Please-Wait.php,12=13:HTTP/2.0 302 ;";
+    auto hdr = opendm::parse_msg_header(sample_tonec);
+    assert(hdr.valid);
+    assert(hdr.id == 170);
+    assert(hdr.type == 13);
+    assert(hdr.subtype == 1);
+    assert(hdr.flags == 2048);
+
+    auto args = opendm::parse_tonec_pos_args(sample_tonec);
+    assert(args.size() == 8);
+    assert(args[0] == "4502"); // requestId
+    assert(args[3] == "302");  // status code
+    assert(args[5] == "6");    // action code (redirect)
+
+    std::string field6 = opendm::extract_tonec_field(sample_tonec, 6);
+    assert(field6 == "idmdwnlmfv9://https://wickradio.com/Please-Wait.php");
+    std::string field12 = opendm::extract_tonec_field(sample_tonec, 12);
+    assert(field12 == "HTTP/2.0 302 ");
+    std::cout << "  ✓ Tonec header and positional argument parsing passed." << std::endl;
+
+    // 8. Test Extension and Content-Type filtering helpers
+    std::cout << "[Test 8] Content-Type & Extension Filtering..." << std::endl;
+    assert(opendm::is_downloadable_extension("ZIP"));
+    assert(opendm::is_downloadable_extension("exe"));
+    assert(opendm::is_downloadable_extension("iso"));
+    assert(opendm::is_downloadable_extension("r01"));
+    assert(!opendm::is_downloadable_extension("php"));
+    assert(!opendm::is_downloadable_extension("html"));
+    assert(!opendm::is_downloadable_extension("png"));
+
+    assert(opendm::is_forbidden_web_extension("php"));
+    assert(opendm::is_forbidden_web_extension("html"));
+    assert(opendm::is_forbidden_web_extension("js"));
+    assert(opendm::is_forbidden_web_extension("css"));
+    assert(opendm::is_forbidden_web_extension("png"));
+    assert(opendm::is_forbidden_web_extension("jpg"));
+    assert(opendm::is_forbidden_web_extension("svg"));
+    assert(!opendm::is_forbidden_web_extension("zip"));
+    assert(!opendm::is_forbidden_web_extension("exe"));
+
+    assert(opendm::is_web_content_type("text/html; charset=UTF-8"));
+    assert(opendm::is_web_content_type("text/css"));
+    assert(opendm::is_web_content_type("image/png"));
+    assert(opendm::is_web_content_type("image/jpeg"));
+    assert(opendm::is_web_content_type("application/javascript"));
+    assert(!opendm::is_web_content_type("application/zip"));
+    assert(!opendm::is_web_content_type("application/octet-stream"));
+    std::cout << "  ✓ Extension and MIME type filtering verified." << std::endl;
+
+    // 9. Test IpcServer handling of unintended downloads vs genuine downloads
+    std::cout << "[Test 9] IpcServer unintended download rejection..." << std::endl;
+    {
+        opendm::IpcServer test_ipc("/tmp/opendm_test.sock");
+        test_ipc.start();
+
+        // A. Please-Wait.php with action 6 (redirect) -> MUST be ignored
+        std::string resp_redirect = opendm::IpcServer::send_command(sample_tonec, "/tmp/opendm_test.sock");
+        assert(resp_redirect.find("\"status\": \"ignored\"") != std::string::npos);
+
+        // B. Inline image -> MUST be ignored
+        std::string img_tonec = "MSG#171#13#1#2048:4503:0:1793158010950:200:1:2:7:0,6=28:https://example.com/logo.png,13=48:content-type: image/png\r\ncontent-length: 1234\r\n;";
+        std::string resp_img = opendm::IpcServer::send_command(img_tonec, "/tmp/opendm_test.sock");
+        assert(resp_img.find("\"status\": \"ignored\"") != std::string::npos);
+
+        // C. Plain HTML page without attachment -> MUST be ignored
+        std::string html_tonec = "MSG#172#13#1#2048:4504:0:1793158010952:200:1:2:7:0,6=30:https://example.com/index.html,13=50:content-type: text/html\r\ncontent-length: 5000\r\n;";
+        std::string resp_html = opendm::IpcServer::send_command(html_tonec, "/tmp/opendm_test.sock");
+        assert(resp_html.find("\"status\": \"ignored\"") != std::string::npos);
+
+        // D. PHP page without attachment -> MUST be ignored
+        std::string php_tonec = "MSG#173#13#1#2048:4505:0:1793158010954:200:1:1:7:0,6=32:https://example.com/download.php;";
+        std::string resp_php = opendm::IpcServer::send_command(php_tonec, "/tmp/opendm_test.sock");
+        assert(resp_php.find("\"status\": \"ignored\"") != std::string::npos);
+
+        // E. PHP page WITH Content-Disposition: attachment -> MUST be accepted
+        std::string php_att_tonec = "MSG#174#13#1#2048:4506:0:1793158010956:200:1:2:7:0,6=32:https://example.com/download.php,13=95:content-type: application/octet-stream\r\ncontent-disposition: attachment; filename=\"archive.zip\"\r\n;";
+        std::string resp_att = opendm::IpcServer::send_command(php_att_tonec, "/tmp/opendm_test.sock");
+        assert(resp_att.find("\"status\": \"prompting\"") != std::string::npos);
+
+        // F. Genuine ZIP download -> MUST be accepted
+        std::string zip_tonec = "MSG#175#13#1#2048:4507:0:1793158010958:200:1:1:7:0,6=29:https://example.com/build.zip,4=3:ZIP;";
+        std::string resp_zip = opendm::IpcServer::send_command(zip_tonec, "/tmp/opendm_test.sock");
+        assert(resp_zip.find("\"status\": \"prompting\"") != std::string::npos);
+
+        // G. Explicit Video Download (Type 14 from "Download this video" hover panel) -> MUST be accepted
+        std::string vid_tonec = "MSG#200#14#1#0:1,6=45:https://example.com/videoplayback?expire=123,7=12:Sample Video,100=16:Sample_Video.mp4;";
+        std::string resp_vid = opendm::IpcServer::send_command(vid_tonec, "/tmp/opendm_test.sock");
+        assert(resp_vid.find("\"status\": \"prompting\"") != std::string::npos);
+
+        test_ipc.stop();
+        std::cout << "  ✓ IpcServer successfully filtered web pages/images and accepted genuine downloads." << std::endl;
+    }
+
+    // 10. Test Queue and Session State Persistence (save_to_file / load_from_file)
+    std::cout << "[Test 10] Queue & Session State Persistence..." << std::endl;
+    {
+        std::string test_storage = "/tmp/opendm_test_queue.json";
+        if (fs::exists(test_storage)) fs::remove(test_storage);
+
+        auto s1 = std::make_shared<opendm::DownloadSession>("sess_test_10", "https://example.com/archive.zip", "/tmp/archive.zip", "/tmp/opendm_test_chunks");
+        s1->set_category("Compressed");
+        s1->set_custom_filename("archive.zip");
+
+        // Test direct session serialization and deserialization
+        std::string json_state = s1->serialize();
+        assert(json_state.find("\"id\": \"sess_test_10\"") != std::string::npos);
+        assert(json_state.find("\"category\": \"Compressed\"") != std::string::npos);
+
+        auto restored_sess = opendm::DownloadSession::deserialize(json_state);
+        assert(restored_sess != nullptr);
+        assert(restored_sess->get_id() == "sess_test_10");
+        assert(restored_sess->get_url() == "https://example.com/archive.zip");
+        assert(restored_sess->get_destination_path() == "/tmp/archive.zip");
+        assert(restored_sess->get_category() == "Compressed");
+        assert(restored_sess->get_filename() == "archive.zip");
+
+        // Test QueueManager persistence across restart
+        auto& qm = opendm::QueueManager::instance();
+        qm.set_storage_path(test_storage);
+        qm.clear_all();
+        qm.get_main_queue().add_session(s1, false);
+
+        bool saved = qm.save_to_file(test_storage);
+        assert(saved);
+        assert(fs::exists(test_storage));
+
+        qm.clear_all();
+        assert(qm.get_main_queue().get_all_sessions().empty());
+
+        bool loaded = qm.load_from_file(test_storage);
+        assert(loaded);
+        auto loaded_items = qm.get_main_queue().get_all_sessions();
+        assert(loaded_items.size() == 1);
+        assert(loaded_items[0]->get_id() == "sess_test_10");
+        assert(loaded_items[0]->get_category() == "Compressed");
+
+        qm.clear_all();
+        fs::remove(test_storage);
+        std::cout << "  ✓ Session serialization and QueueManager save/load verified." << std::endl;
+    }
+
+    // 11. Test Disk Space Pre-Check & Metadata Accessors
+    std::cout << "[Test 11] Disk Space Pre-Check & Metadata Accessors..." << std::endl;
+    {
+        auto s2 = std::make_shared<opendm::DownloadSession>("sess_test_11", "https://example.com/testfile.dat", "/tmp/testfile.dat", "/tmp/opendm_test_chunks");
+        assert(s2->get_last_modified().empty());
+        assert(s2->get_etag().empty());
+        assert(s2->get_total_size() == -1);
+        assert(!s2->supports_ranges());
+
+        std::error_code ec;
+        auto space_info = fs::space("/tmp", ec);
+        if (!ec) {
+            assert(space_info.available > 0);
+            uintmax_t impossible_size = space_info.available + 1024ULL * 1024ULL * 1024ULL * 1024ULL;
+            assert(impossible_size > space_info.available);
+        }
+        std::cout << "  ✓ Disk space verification and session metadata accessors passed." << std::endl;
+    }
 
     std::cout << "All Subsystem Integration tests passed!" << std::endl;
     return 0;

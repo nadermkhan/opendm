@@ -1,5 +1,8 @@
 #include "progress_dialog.hpp"
+#include "download_complete_dialog.hpp"
 #include "ui_assets.hpp"
+#include "../core/post_download.hpp"
+#include <gio/gio.h>
 #include <iomanip>
 #include <sstream>
 #include <filesystem>
@@ -142,6 +145,12 @@ void ProgressDialog::setup_ui() {
 
     g_signal_connect_swapped(btn_open_folder_, "clicked", G_CALLBACK(+[](ProgressDialog* self) {
         self->on_open_folder_clicked();
+    }), this);
+
+    g_signal_connect(window_, "close-request", G_CALLBACK(+[](GtkWindow*, gpointer data) -> gboolean {
+        auto* self = static_cast<ProgressDialog*>(data);
+        self->close();
+        return FALSE;
     }), this);
 
     update_ui();
@@ -309,17 +318,27 @@ void ProgressDialog::show() {
 }
 
 void ProgressDialog::close() {
-    gtk_window_destroy(GTK_WINDOW(window_));
+    if (timer_id_ > 0) {
+        g_source_remove(timer_id_);
+        timer_id_ = 0;
+    }
+    if (window_) {
+        gtk_window_destroy(GTK_WINDOW(window_));
+        window_ = nullptr;
+    }
 }
 
 gboolean ProgressDialog::on_tick_update(gpointer user_data) {
     auto* self = static_cast<ProgressDialog*>(user_data);
+    if (!self || !self->window_ || !GTK_IS_WIDGET(self->window_)) {
+        return G_SOURCE_REMOVE;
+    }
     self->update_ui();
     return G_SOURCE_CONTINUE;
 }
 
 void ProgressDialog::update_ui() {
-    if (!session_) return;
+    if (!session_ || !window_ || !GTK_IS_WIDGET(window_)) return;
 
     DownloadProgress p = session_->get_progress();
 
@@ -349,12 +368,32 @@ void ProgressDialog::update_ui() {
     // Update buttons
     if (p.status == SessionStatus::PAUSED) {
         gtk_button_set_label(GTK_BUTTON(btn_pause_resume_), "Resume");
-    } else if (p.status == SessionStatus::DOWNLOADING || p.status == SessionStatus::PROBING) {
+    } else if (p.status == SessionStatus::DOWNLOADING || p.status == SessionStatus::PROBING || p.status == SessionStatus::ASSEMBLING) {
         gtk_button_set_label(GTK_BUTTON(btn_pause_resume_), "Pause");
     } else if (p.status == SessionStatus::COMPLETED) {
+        gtk_button_set_label(GTK_BUTTON(btn_cancel_), "Close");
         gtk_widget_set_sensitive(btn_pause_resume_, FALSE);
         gtk_widget_set_sensitive(btn_open_file_, TRUE);
         gtk_widget_set_sensitive(btn_open_folder_, TRUE);
+
+        // Stop tick timer now that download is complete
+        if (timer_id_ > 0) {
+            g_source_remove(timer_id_);
+            timer_id_ = 0;
+        }
+
+        // Show authentic completion dialog if requested
+        if (!completion_dialog_shown_) {
+            completion_dialog_shown_ = true;
+            if (chk_show_complete_ && gtk_check_button_get_active(GTK_CHECK_BUTTON(chk_show_complete_))) {
+                DownloadCompleteDialog::show(parent_ ? parent_ : GTK_WINDOW(window_), session_);
+            }
+        }
+
+        // Execute completion actions if requested
+        if (chk_turn_off_ && gtk_check_button_get_active(GTK_CHECK_BUTTON(chk_turn_off_))) {
+            PostDownloadManager::instance().execute_completion_action(CompletionAction::SHUTDOWN_SYSTEM);
+        }
     }
 }
 
@@ -369,27 +408,30 @@ void ProgressDialog::on_pause_resume_clicked() {
 }
 
 void ProgressDialog::on_cancel_clicked() {
-    if (session_) {
-        session_->cancel();
+    if (session_ && session_->get_status() != SessionStatus::COMPLETED) {
+        session_->pause();
     }
     close();
 }
 
 void ProgressDialog::on_hide_clicked() {
-    gtk_widget_set_visible(window_, FALSE);
+    if (window_) {
+        gtk_widget_set_visible(window_, FALSE);
+    }
 }
 
 void ProgressDialog::on_open_file_clicked() {
     if (!session_) return;
-    std::string cmd = "xdg-open \"" + session_->get_destination_path() + "\" &";
-    (void)system(cmd.c_str());
+    std::string path = session_->get_destination_path();
+    std::string uri = "file://" + path;
+    g_app_info_launch_default_for_uri(uri.c_str(), nullptr, nullptr);
 }
 
 void ProgressDialog::on_open_folder_clicked() {
     if (!session_) return;
     std::filesystem::path p(session_->get_destination_path());
-    std::string cmd = "xdg-open \"" + p.parent_path().string() + "\" &";
-    (void)system(cmd.c_str());
+    std::string uri = "file://" + p.parent_path().string();
+    g_app_info_launch_default_for_uri(uri.c_str(), nullptr, nullptr);
 }
 
 } // namespace opendm

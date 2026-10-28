@@ -443,7 +443,34 @@ bool MediaMuxer::mux_streams(
     MuxProgressCallback progress_cb,
     std::string* out_error) {
 
-    // If both files are MP4/M4V/M4A, run MP4 container muxer
+    // First attempt fast stream-copy via ffmpeg if installed
+    std::string ffmpeg_bin;
+    const char* home = getenv("HOME");
+    std::vector<std::string> search_paths = {
+        home ? std::string(home) + "/.local/bin/ffmpeg" : "",
+        "/usr/local/bin/ffmpeg",
+        "/usr/bin/ffmpeg",
+        "/bin/ffmpeg"
+    };
+    for (const auto& p : search_paths) {
+        if (!p.empty() && access(p.c_str(), X_OK) == 0) {
+            ffmpeg_bin = p;
+            break;
+        }
+    }
+    if (ffmpeg_bin.empty() && system("which ffmpeg >/dev/null 2>&1") == 0) {
+        ffmpeg_bin = "ffmpeg";
+    }
+
+    if (!ffmpeg_bin.empty()) {
+        std::string cmd = ffmpeg_bin + " -y -i \"" + video_file + "\" -i \"" + audio_file + "\" -c copy \"" + output_file + "\" >/dev/null 2>&1";
+        if (system(cmd.c_str()) == 0) {
+            if (progress_cb) progress_cb(100.0);
+            return true;
+        }
+    }
+
+    // Fall back to pure C++ native MP4 container multiplexer
     return mux_mp4_and_mp4(video_file, audio_file, output_file, progress_cb, out_error);
 }
 

@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <atomic>
 #include "../core/site_grabber.hpp"
 
 namespace opendm {
@@ -41,6 +42,7 @@ private:
 
     SiteGrabber grabber_;
     std::vector<DiscoveredFile> discovered_;
+    std::shared_ptr<std::atomic<bool>> alive_token_{std::make_shared<std::atomic<bool>>(true)};
 };
 
 } // namespace opendm

@@ -486,5 +486,130 @@ progressbar > progress {
     border-radius: 0.4rem;
 }
 
+/* Download File Info Dialog (Authentic IDM Aesthetic) */
+.idm-download-info-window {
+    background-color: #242424;
+    color: #eeeeee;
+}
+
+.idm-info-vbox {
+    background-color: #262626;
+    border-radius: 0.4rem;
+}
+
+.idm-info-label {
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: #e0e0e0;
+    min-width: 70px;
+}
+
+.idm-info-entry {
+    background-color: #1a1a1a;
+    color: #ffffff;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 0.3rem;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.88rem;
+}
+
+.idm-info-entry:focus {
+    border-color: #3584e4;
+    box-shadow: 0 0 0 1px #3584e4;
+}
+
+.idm-info-entry-sub {
+    background-color: #181818;
+    color: #dedede;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 0.25rem;
+    padding: 0.25rem 0.45rem;
+    font-size: 0.82rem;
+}
+
+.idm-remember-frame {
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 0.35rem;
+    background-color: rgba(255, 255, 255, 0.03);
+}
+
+.idm-remember-chk,
+.idm-remember-chk label,
+.idm-remember-frame checkbutton,
+.idm-remember-frame checkbutton label {
+    color: #f2f2f2;
+    font-weight: 500;
+    font-size: 0.86rem;
+}
+
+.idm-info-filesize {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #57e389;
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+
+.idm-info-btn {
+    font-size: 0.88rem;
+    font-weight: 500;
+    padding: 0.35rem 0.8rem;
+    border-radius: 0.35rem;
+    background-color: #323232;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #eeeeee;
+}
+
+.idm-info-btn:hover {
+    background-color: #3e3e3e;
+    color: #ffffff;
+}
+
+.idm-info-btn.suggested-action {
+    background-color: #3584e4;
+    border-color: #1c71d8;
+    color: #ffffff;
+}
+
+.idm-info-btn.suggested-action:hover {
+    background-color: #4791ea;
+}
+
+.idm-btn-mini {
+    min-width: 28px;
+    min-height: 28px;
+    padding: 0 0.4rem;
+    font-weight: 700;
+    background-color: #323232;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 0.3rem;
+    color: #eeeeee;
+}
+
+.idm-btn-mini:hover {
+    background-color: #3e3e3e;
+}
+
+/* Context Menu */
+.idm-context-menu {
+    background-color: #2b2d30;
+    border: 1px solid #3c3f41;
+    border-radius: 6px;
+    padding: 4px;
+}
+
+.idm-context-item {
+    font-size: 0.88rem;
+    font-weight: 500;
+    padding: 0.4rem 0.8rem;
+    border-radius: 4px;
+    color: #e0e0e0;
+}
+
+.idm-context-item:hover {
+    background-color: #3584e4;
+    color: #ffffff;
+}
+
 
 

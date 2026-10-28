@@ -4,6 +4,9 @@
 #include <ctime>
 #include <iostream>
 #include <cstdlib>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
 
 namespace opendm {
 
@@ -33,6 +36,11 @@ size_t DownloadQueue::get_max_concurrent() const {
 void DownloadQueue::add_session(std::shared_ptr<DownloadSession> session, bool start_now) {
     if (!session) return;
 
+    if (QueueManager::instance().is_global_speed_limit_enabled()) {
+        session->set_speed_limit(QueueManager::instance().get_global_speed_limit());
+        session->enable_speed_limit(true);
+    }
+
     {
         std::lock_guard<std::mutex> lock(mutex_);
         // Check if already in queue
@@ -48,6 +56,8 @@ void DownloadQueue::add_session(std::shared_ptr<DownloadSession> session, bool s
     if (start_now) {
         session->start();
     }
+
+    QueueManager::instance().save_to_file();
 
     if (update_callback_) {
         update_callback_();
@@ -73,6 +83,8 @@ bool DownloadQueue::remove_session(const std::string& session_id) {
         to_cancel->cancel();
     }
 
+    QueueManager::instance().save_to_file();
+
     if (update_callback_) {
         update_callback_();
     }
@@ -95,11 +107,13 @@ std::vector<std::shared_ptr<DownloadSession>> DownloadQueue::get_all_sessions() 
 }
 
 void DownloadQueue::move_item_up(const std::string& session_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (size_t i = 1; i < items_.size(); ++i) {
-        if (items_[i]->get_id() == session_id) {
-            std::swap(items_[i], items_[i - 1]);
-            break;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (size_t i = 1; i < items_.size(); ++i) {
+            if (items_[i]->get_id() == session_id) {
+                std::swap(items_[i], items_[i - 1]);
+                break;
+            }
         }
     }
     if (update_callback_) {
@@ -108,12 +122,29 @@ void DownloadQueue::move_item_up(const std::string& session_id) {
 }
 
 void DownloadQueue::move_item_down(const std::string& session_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (size_t i = 0; i + 1 < items_.size(); ++i) {
-        if (items_[i]->get_id() == session_id) {
-            std::swap(items_[i], items_[i + 1]);
-            break;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (size_t i = 0; i + 1 < items_.size(); ++i) {
+            if (items_[i]->get_id() == session_id) {
+                std::swap(items_[i], items_[i + 1]);
+                break;
+            }
         }
+    }
+    if (update_callback_) {
+        update_callback_();
+    }
+}
+
+void DownloadQueue::clear() {
+    std::vector<std::shared_ptr<DownloadSession>> to_cancel;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        to_cancel = items_;
+        items_.clear();
+    }
+    for (auto& s : to_cancel) {
+        if (s) s->cancel();
     }
     if (update_callback_) {
         update_callback_();
@@ -244,6 +275,7 @@ void DownloadQueue::process_pending_items() {
 
     // Handle post-completion action if everything finished while queue was running
     if (all_finished && !snapshot.empty() && status_ == QueueStatus::RUNNING) {
+        status_ = QueueStatus::STOPPED;
         SchedulerConfig cfg;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -257,6 +289,10 @@ void DownloadQueue::process_pending_items() {
             if (cfg.shutdown_on_completion) {
                 std::system("shutdown -h now");
             }
+        }
+
+        if (update_callback_) {
+            update_callback_();
         }
     }
 }
@@ -278,6 +314,7 @@ QueueManager& QueueManager::instance() {
 QueueManager::QueueManager() {
     main_queue_ = std::make_shared<DownloadQueue>("main_queue", "Main Download Queue", 2);
     queues_.push_back(main_queue_);
+    storage_path_ = get_default_storage_path();
 }
 
 DownloadQueue& QueueManager::get_main_queue() {
@@ -356,9 +393,19 @@ std::string QueueManager::detect_category(const std::string& filename) {
 void QueueManager::set_global_speed_limit(uint64_t bytes_per_sec) {
     std::lock_guard<std::mutex> lock(mutex_);
     global_limit_bytes_per_sec_ = bytes_per_sec;
+    size_t active_count = 0;
     for (auto& q : queues_) {
         for (auto& s : q->get_all_sessions()) {
-            s->set_speed_limit(bytes_per_sec);
+            auto st = s->get_status();
+            if (st == SessionStatus::DOWNLOADING || st == SessionStatus::PROBING || st == SessionStatus::ASSEMBLING) {
+                active_count++;
+            }
+        }
+    }
+    uint64_t per_session = (active_count > 0) ? (bytes_per_sec / active_count) : bytes_per_sec;
+    for (auto& q : queues_) {
+        for (auto& s : q->get_all_sessions()) {
+            s->set_speed_limit(per_session);
         }
     }
 }
@@ -381,6 +428,145 @@ bool QueueManager::is_global_speed_limit_enabled() const {
 uint64_t QueueManager::get_global_speed_limit() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return global_limit_bytes_per_sec_;
+}
+
+std::string QueueManager::get_default_storage_path() {
+    const char* home = getenv("HOME");
+    std::string base = home ? home : "/home/nader";
+    return base + "/.config/opendm/downloads.json";
+}
+
+void QueueManager::set_storage_path(const std::string& path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    storage_path_ = path;
+}
+
+std::string QueueManager::get_storage_path() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return storage_path_;
+}
+
+void QueueManager::clear_all() {
+    std::vector<std::shared_ptr<DownloadQueue>> queues_copy;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queues_copy = queues_;
+    }
+    for (auto& q : queues_copy) {
+        if (q) q->clear();
+    }
+}
+
+bool QueueManager::save_to_file(const std::string& filepath) const {
+    std::string target;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        target = filepath.empty() ? (storage_path_.empty() ? get_default_storage_path() : storage_path_) : filepath;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(target).parent_path(), ec);
+
+    std::ostringstream ss;
+    ss << "{\n";
+    ss << "  \"version\": 1,\n";
+    ss << "  \"queues\": [\n";
+
+    std::vector<std::shared_ptr<DownloadQueue>> queues_copy;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queues_copy = queues_;
+    }
+
+    for (size_t qi = 0; qi < queues_copy.size(); ++qi) {
+        const auto& q = queues_copy[qi];
+        ss << "    {\n";
+        ss << "      \"name\": \"" << q->get_name() << "\",\n";
+        ss << "      \"items\": [\n";
+        auto items = q->get_all_sessions();
+        for (size_t ii = 0; ii < items.size(); ++ii) {
+            ss << items[ii]->serialize();
+            if (ii + 1 < items.size()) ss << ",\n";
+            else ss << "\n";
+        }
+        ss << "      ]\n";
+        ss << "    }";
+        if (qi + 1 < queues_copy.size()) ss << ",\n";
+        else ss << "\n";
+    }
+    ss << "  ]\n";
+    ss << "}\n";
+
+    std::string tmp_file = target + ".tmp";
+    std::ofstream out(tmp_file, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) return false;
+    out << ss.str();
+    out.close();
+
+    std::filesystem::rename(tmp_file, target, ec);
+    return !ec;
+}
+
+bool QueueManager::load_from_file(const std::string& filepath) {
+    std::string target;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!filepath.empty()) {
+            storage_path_ = filepath;
+        }
+        target = storage_path_.empty() ? get_default_storage_path() : storage_path_;
+    }
+    if (!std::filesystem::exists(target)) return true;
+
+    std::ifstream in(target, std::ios::binary);
+    if (!in.is_open()) return false;
+
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+
+    if (content.empty()) return true;
+
+    // Scan for session objects: each has '"id": "'
+    size_t cursor = 0;
+    while ((cursor = content.find("\"id\": \"", cursor)) != std::string::npos) {
+        size_t obj_start = content.rfind('{', cursor);
+        if (obj_start == std::string::npos) {
+            cursor += 6;
+            continue;
+        }
+
+        // Count balanced braces to find end of session object
+        int depth = 0;
+        size_t obj_end = std::string::npos;
+        for (size_t i = obj_start; i < content.length(); ++i) {
+            if (content[i] == '{') depth++;
+            else if (content[i] == '}') {
+                depth--;
+                if (depth == 0) {
+                    obj_end = i;
+                    break;
+                }
+            }
+        }
+
+        if (obj_end == std::string::npos) break;
+
+        std::string session_json = content.substr(obj_start, obj_end - obj_start + 1);
+        auto session = DownloadSession::deserialize(session_json);
+        if (session) {
+            auto st = session->get_status();
+            if (st == SessionStatus::DOWNLOADING || st == SessionStatus::PROBING || st == SessionStatus::ASSEMBLING) {
+                session->pause();
+            }
+
+            if (!find_session(session->get_id())) {
+                main_queue_->add_session(session, false);
+            }
+        }
+
+        cursor = obj_end + 1;
+    }
+
+    return true;
 }
 
 } // namespace opendm

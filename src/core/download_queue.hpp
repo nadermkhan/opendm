@@ -48,6 +48,7 @@ public:
 
     void move_item_up(const std::string& session_id);
     void move_item_down(const std::string& session_id);
+    void clear();
 
     // Queue control
     void start_queue();
@@ -104,6 +105,14 @@ public:
     bool is_global_speed_limit_enabled() const;
     uint64_t get_global_speed_limit() const;
 
+    // State persistence across application restarts
+    static std::string get_default_storage_path();
+    void set_storage_path(const std::string& path);
+    std::string get_storage_path() const;
+    bool save_to_file(const std::string& filepath = "") const;
+    bool load_from_file(const std::string& filepath = "");
+    void clear_all();
+
 private:
     QueueManager();
     ~QueueManager() = default;
@@ -111,6 +120,7 @@ private:
     mutable std::mutex mutex_;
     std::shared_ptr<DownloadQueue> main_queue_;
     std::vector<std::shared_ptr<DownloadQueue>> queues_;
+    std::string storage_path_;
 
     bool global_limit_enabled_{false};
     uint64_t global_limit_bytes_per_sec_{0};

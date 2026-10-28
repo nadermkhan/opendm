@@ -255,22 +255,37 @@ bool ChunkManager::get_chunk(int chunk_id, Chunk& out_chunk) const {
 }
 
 bool ChunkManager::join_file(const std::string& destination_filepath, std::function<void(double)> progress_cb) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (chunks_.empty()) {
-        return false;
+    std::vector<Chunk> sorted_chunks;
+    int64_t total_size = 0;
+    std::string temp_dir_to_clean;
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (chunks_.empty()) {
+            return false;
+        }
+
+        for (const auto& c : chunks_) {
+            sorted_chunks.push_back(*c);
+            if (temp_dir_to_clean.empty() && !c->temp_filepath.empty()) {
+                std::filesystem::path tp(c->temp_filepath);
+                temp_dir_to_clean = tp.parent_path().string();
+            }
+        }
+        total_size = total_file_size_;
     }
 
     // Sort chunks by start_offset
-    std::vector<std::shared_ptr<Chunk>> sorted_chunks = chunks_;
     std::sort(sorted_chunks.begin(), sorted_chunks.end(),
-        [](const std::shared_ptr<Chunk>& a, const std::shared_ptr<Chunk>& b) {
-            return a->start_offset < b->start_offset;
+        [](const Chunk& a, const Chunk& b) {
+            return a.start_offset < b.start_offset;
         });
 
     // Ensure parent directory exists
     std::filesystem::path dest_p(destination_filepath);
     if (dest_p.has_parent_path()) {
-        std::filesystem::create_directories(dest_p.parent_path());
+        std::error_code ec;
+        std::filesystem::create_directories(dest_p.parent_path(), ec);
     }
 
     std::ofstream dest_file(destination_filepath, std::ios::binary | std::ios::trunc);
@@ -284,7 +299,7 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
 
     for (size_t i = 0; i < sorted_chunks.size(); ++i) {
         const auto& chunk = sorted_chunks[i];
-        std::ifstream part_file(chunk->temp_filepath, std::ios::binary);
+        std::ifstream part_file(chunk.temp_filepath, std::ios::binary);
         if (!part_file.is_open()) {
             dest_file.close();
             return false;
@@ -296,8 +311,8 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
             if (bytes_read > 0) {
                 dest_file.write(buffer.data(), bytes_read);
                 total_written += bytes_read;
-                if (progress_cb && total_file_size_ > 0) {
-                    double progress = static_cast<double>(total_written) / total_file_size_;
+                if (progress_cb && total_size > 0) {
+                    double progress = static_cast<double>(total_written) / total_size;
                     progress_cb(std::min(1.0, progress));
                 }
             }
@@ -306,17 +321,51 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
 
         // Delete temporary part file after stitching
         std::error_code ec;
-        std::filesystem::remove(chunk->temp_filepath, ec);
+        std::filesystem::remove(chunk.temp_filepath, ec);
     }
 
     dest_file.flush();
     dest_file.close();
+
+    // Clean up empty temporary directory
+    if (!temp_dir_to_clean.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(temp_dir_to_clean, ec);
+    }
 
     if (progress_cb) {
         progress_cb(1.0);
     }
 
     return true;
+}
+
+void ChunkManager::cleanup_temp_files() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string temp_dir;
+    for (const auto& c : chunks_) {
+        if (!c->temp_filepath.empty()) {
+            std::error_code ec;
+            std::filesystem::remove(c->temp_filepath, ec);
+            if (temp_dir.empty()) {
+                std::filesystem::path tp(c->temp_filepath);
+                temp_dir = tp.parent_path().string();
+            }
+        }
+    }
+    if (!temp_dir.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(temp_dir, ec);
+    }
+}
+
+void ChunkManager::reset() {
+    cleanup_temp_files();
+    std::lock_guard<std::mutex> lock(mutex_);
+    chunks_.clear();
+    total_file_size_ = -1;
+    next_chunk_id_ = 0;
+    is_streaming_ = false;
 }
 
 std::string ChunkManager::serialize_state() const {

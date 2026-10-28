@@ -150,12 +150,60 @@ void test_speed_limiter() {
     std::cout << "  ✓ SpeedLimiter pacing elapsed ms: " << elapsed_ms << " ms" << std::endl;
 }
 
+void test_join_file_callback_no_deadlock() {
+    std::cout << "[TEST] Running test_join_file_callback_no_deadlock..." << std::endl;
+    opendm::ChunkManager cm;
+    std::string temp_dir = "/tmp/opendm_deadlock_test";
+    std::filesystem::create_directories(temp_dir);
+    int64_t total_size = 500000;
+    cm.init_first_chunk(total_size, temp_dir, "dl_test");
+    int c1_id = cm.split_chunk(0, temp_dir, "dl_test");
+
+    opendm::Chunk c0, c1;
+    cm.get_chunk(0, c0);
+    cm.get_chunk(c1_id, c1);
+
+    std::vector<uint8_t> p0(c0.total_size(), 0x11);
+    std::vector<uint8_t> p1(c1.total_size(), 0x22);
+    {
+        std::ofstream f0(c0.temp_filepath, std::ios::binary);
+        f0.write(reinterpret_cast<const char*>(p0.data()), p0.size());
+    }
+    {
+        std::ofstream f1(c1.temp_filepath, std::ios::binary);
+        f1.write(reinterpret_cast<const char*>(p1.data()), p1.size());
+    }
+    cm.update_chunk_progress(0, c0.total_size(), 0);
+    cm.mark_chunk_completed(0);
+    cm.update_chunk_progress(c1_id, c1.total_size(), 0);
+    cm.mark_chunk_completed(c1_id);
+
+    std::string out_file = temp_dir + "/out.bin";
+    bool callback_invoked = false;
+
+    // Progress callback accesses cm methods that lock mutex_
+    // In buggy versions, this causes self-deadlock because mutex_ was held during callback
+    bool ok = cm.join_file(out_file, [&](double) {
+        callback_invoked = true;
+        int64_t dl = cm.get_total_downloaded_bytes(); // locks mutex_
+        auto snaps = cm.get_chunks_snapshot();        // locks mutex_
+        assert(dl > 0);
+        assert(!snaps.empty());
+    });
+
+    assert(ok);
+    assert(callback_invoked);
+    std::cout << "  ✓ join_file progress callback safely invoked without self-deadlock" << std::endl;
+    std::filesystem::remove_all(temp_dir);
+}
+
 int main() {
     std::cout << "=== OpenDM Core Algorithm Tests ===" << std::endl;
     test_initialization();
     test_idm_need_new_connection_threshold();
     test_idm_midpoint_splitting();
     test_chunk_assembly();
+    test_join_file_callback_no_deadlock();
     test_speed_limiter();
     std::cout << "=== All OpenDM Tests PASSED Successfully! ===" << std::endl;
     return 0;

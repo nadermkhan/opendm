@@ -11,8 +11,8 @@
 
     "background"               : { "scripts": [ "background.js" ] },
     "content_scripts"          : [ { "js": [ "content.js" ], "matches": [ "*://*/*" ], "all_frames": true, "run_at": "document_start" } ],
-    "web_accessible_resources" : [ { "resources": [ "document.js", "debug.js", "captured.js", "captured.html" ], "matches": [ "*://*/*" ] } ],
-    "permissions"              : [ "scripting", "tabs", "cookies", "contextMenus", "webNavigation", "webRequest", "declarativeNetRequest", "downloads", "management", "storage", "proxy", "nativeMessaging" ],
+    "web_accessible_resources" : [ { "resources": [ "document.js", "debug.js", "captured.js", "captured.html", "images/*" ], "matches": [ "*://*/*" ] } ],
+    "permissions"              : [ "scripting", "tabs", "cookies", "contextMenus", "webNavigation", "webRequest", "webRequestBlocking", "declarativeNetRequest", "downloads", "management", "storage", "proxy", "nativeMessaging" ],
     "optional_permissions"     : [ "notifications" ],
     "host_permissions"         : [ "<all_urls>" ],
 

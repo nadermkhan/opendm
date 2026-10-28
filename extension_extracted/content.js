@@ -56,3 +56,637 @@ c&&this.H(b,c[1])}};h.nc=function(b){if(!b){var c=t(document.body,this.Wb);c&&(b
 m=!1;break;case "*":b.querySelectorAll(g).forEach(e.bind(p,c,l));m=!1;break;case "+":g=g?g.endsWith(":scope")?b.closest(g):b.querySelector(g):b;e.call(p,c,l,g);m=!1;break;case "=":if(g=b.getAttribute(g))return g;m=!1;break;case "@":if(g=b.textContent.trim())return g;m=!1}}return p.length?p:m&&b||d}function F(b,c,d,e,f,g,l){if(e==null){e=[];f=t(b,c,[]);var m=f.at(-1),p=m&&typeof f.at(-2)=="number"?f.splice(-2,1).pop():null;e[0]=p;l=new MutationObserver(F.bind(null,b,c,d,e,f));l.observe(b,{childList:!0});
 Q&&b.setAttribute("__idm_watch__",1);Q&&f.forEach(k=>k.setAttribute("__idm_watch__",1));for(var n of f)l.observe(n,{childList:!0});f.length&&d(m,p)}else for(m of g){for(p of m.addedNodes)if(p.nodeType==1)if(n=t(b,c,[]).slice(f.length),(g=n.at(-1))&&p.contains(g)){let k=typeof n.at(-2)=="number"?n.splice(-2,1).pop():null;e[0]=k;P(f,n);Q&&n.forEach(r=>r.setAttribute("__idm_watch__",1));for(let r of n)l.observe(r,{childList:!0});for(let r of g.children)d(r,k)}else m.target.isSameNode(f.at(-1)||b)&&d(p,
 e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.contains(f[n])){f.splice(n);break}}}function M(b,c){for(;b&&c--;b=b.parentElement);return b}new R}!0;
+/* OpenDM / IDM Authentic In-Browser Universal Media Hover Panel */
+(function initIDMUniversalVideoDownloadPanel() {
+  if (typeof window === "undefined" || !document) return;
+  if (window.__idm_universal_panel_initialized__) return;
+  window.__idm_universal_panel_initialized__ = true;
+
+  const extApi = (typeof browser !== "undefined" && browser.runtime) ? browser : (typeof chrome !== "undefined" && chrome.runtime) ? chrome : null;
+
+  // Singleton container and shadow host
+  const host = document.createElement("div");
+  host.id = "__idm_universal_panel_host__";
+  host.style.cssText = "position: absolute; top: 0; left: 0; width: 0; height: 0; z-index: 2147483647; pointer-events: none; border: none; padding: 0; margin: 0;";
+
+  const shadow = host.attachShadow({ mode: "open" });
+
+  const style = document.createElement("style");
+  style.textContent = `
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    #idm-panel {
+      position: fixed;
+      display: none;
+      z-index: 2147483647;
+      pointer-events: auto;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 11px;
+      line-height: normal;
+    }
+    #idm-bar {
+      display: inline-flex;
+      align-items: center;
+      height: 24px;
+      padding: 0 4px 0 6px;
+      background: linear-gradient(180deg, #fbfcfe 0%, #e9eff5 50%, #d8e4ee 100%);
+      border: 1px solid #7592a8;
+      border-radius: 3px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+      color: #102030;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+    }
+    #idm-bar:hover {
+      background: linear-gradient(180deg, #ffffff 0%, #e5f1fb 50%, #cce5ff 100%);
+      border-color: #3399ff;
+      box-shadow: 0 0 5px rgba(51, 153, 255, 0.6);
+    }
+    #idm-bar:active {
+      background: linear-gradient(180deg, #d8e4ee 0%, #c4d8e8 100%);
+    }
+    .idm-logo {
+      display: block;
+      width: 16px;
+      height: 16px;
+      margin-right: 5px;
+      flex-shrink: 0;
+    }
+    .idm-label {
+      font-weight: 600;
+      font-size: 11px;
+      margin-right: 5px;
+      white-space: nowrap;
+      color: #102030;
+    }
+    .idm-btn-sep {
+      width: 1px;
+      height: 14px;
+      background: rgba(0, 0, 0, 0.18);
+      margin: 0 3px;
+    }
+    .idm-dropdown-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 18px;
+      cursor: pointer;
+      border-radius: 2px;
+    }
+    .idm-dropdown-btn:hover {
+      background: rgba(0, 0, 0, 0.08);
+    }
+    .idm-dropdown-arrow {
+      width: 0;
+      height: 0;
+      border-left: 3.5px solid transparent;
+      border-right: 3.5px solid transparent;
+      border-top: 4.5px solid #333333;
+    }
+    .idm-close-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 15px;
+      height: 18px;
+      cursor: pointer;
+      font-size: 11px;
+      color: #555555;
+      font-weight: bold;
+      border-radius: 2px;
+      margin-left: 1px;
+    }
+    .idm-close-btn:hover {
+      background: #e81123;
+      color: #ffffff;
+    }
+    #idm-menu {
+      position: absolute;
+      top: 26px;
+      right: 0;
+      min-width: 220px;
+      max-height: 260px;
+      overflow-y: auto;
+      background: #ffffff;
+      border: 1px solid #7592a8;
+      border-radius: 3px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+      display: none;
+      flex-direction: column;
+      z-index: 2147483647;
+      padding: 3px 0;
+    }
+    .idm-menu-item {
+      padding: 6px 10px;
+      cursor: pointer;
+      white-space: nowrap;
+      font-size: 11px;
+      color: #1a202c;
+      border-bottom: 1px solid #f0f0f0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      transition: background 0.1s;
+    }
+    .idm-menu-item:hover {
+      background: #e5f1fb;
+      color: #000000;
+    }
+    .idm-menu-item:last-child {
+      border-bottom: none;
+    }
+    .idm-menu-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 220px;
+    }
+    .idm-menu-action {
+      color: #2563eb;
+      font-weight: 600;
+      margin-left: 8px;
+      flex-shrink: 0;
+    }
+  `;
+  shadow.appendChild(style);
+
+  const panel = document.createElement("div");
+  panel.id = "idm-panel";
+
+  const bar = document.createElement("div");
+  bar.id = "idm-bar";
+
+  // IDM Logo with SVG fallback
+  const logo = document.createElement("img");
+  logo.className = "idm-logo";
+  logo.width = 16;
+  logo.height = 16;
+  logo.alt = "IDM";
+  const logoUrl = (extApi && extApi.runtime && extApi.runtime.getURL) ? extApi.runtime.getURL("images/logo16.png") : "";
+  logo.src = logoUrl;
+  logo.onerror = function() {
+    const svgWrap = document.createElement("span");
+    svgWrap.className = "idm-logo";
+    svgWrap.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" fill="#1d4ed8" stroke="#1e40af" stroke-width="0.8"/><ellipse cx="8" cy="8" rx="6.8" ry="2.2" stroke="#93c5fd" stroke-width="0.7" fill="none"/><ellipse cx="8" cy="8" rx="2.2" ry="6.8" stroke="#93c5fd" stroke-width="0.7" fill="none"/><line x1="1.2" y1="8" x2="14.8" y2="8" stroke="#93c5fd" stroke-width="0.7"/><path d="M8 2.5 L8 10 M5.2 7.2 L8 10 L10.8 7.2" stroke="#10b981" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    if (logo.parentNode) logo.parentNode.replaceChild(svgWrap, logo);
+  };
+  bar.appendChild(logo);
+
+  const label = document.createElement("span");
+  label.className = "idm-label";
+  label.textContent = "Download this video";
+  bar.appendChild(label);
+
+  const sep1 = document.createElement("div");
+  sep1.className = "idm-btn-sep";
+  bar.appendChild(sep1);
+
+  const dropdownBtn = document.createElement("div");
+  dropdownBtn.className = "idm-dropdown-btn";
+  dropdownBtn.title = "Select format or quality";
+  const arrow = document.createElement("div");
+  arrow.className = "idm-dropdown-arrow";
+  dropdownBtn.appendChild(arrow);
+  bar.appendChild(dropdownBtn);
+
+  const sep2 = document.createElement("div");
+  sep2.className = "idm-btn-sep";
+  bar.appendChild(sep2);
+
+  const closeBtn = document.createElement("div");
+  closeBtn.className = "idm-close-btn";
+  closeBtn.title = "Hide";
+  closeBtn.textContent = "\\u2715";
+  bar.appendChild(closeBtn);
+
+  panel.appendChild(bar);
+
+  const menu = document.createElement("div");
+  menu.id = "idm-menu";
+  panel.appendChild(menu);
+
+  shadow.appendChild(panel);
+
+  function attachHost() {
+    const fsElem = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement;
+    const targetParent = fsElem || document.body || document.documentElement;
+    if (targetParent && host.parentElement !== targetParent) {
+      try {
+        targetParent.appendChild(host);
+      } catch (err) {}
+    }
+  }
+
+  if (document.body) {
+    attachHost();
+  } else {
+    document.addEventListener("DOMContentLoaded", attachHost);
+  }
+
+  document.addEventListener("fullscreenchange", () => { attachHost(); updatePosition(); });
+  document.addEventListener("webkitfullscreenchange", () => { attachHost(); updatePosition(); });
+  document.addEventListener("mozfullscreenchange", () => { attachHost(); updatePosition(); });
+
+  let activeTarget = null;
+  let dismissedTarget = null;
+  let isOverPanel = false;
+  let hideTimer = null;
+
+  function clearHideTimer() {
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  }
+
+  function startHideTimer() {
+    clearHideTimer();
+    hideTimer = setTimeout(() => {
+      if (!isOverPanel) {
+        panel.style.display = "none";
+        menu.style.display = "none";
+        activeTarget = null;
+      }
+    }, 1800);
+  }
+
+  function updatePosition() {
+    if (!activeTarget || panel.style.display === "none") return;
+    let rect;
+    try {
+      rect = activeTarget.getBoundingClientRect();
+    } catch (e) {
+      panel.style.display = "none";
+      return;
+    }
+    if (!rect || rect.width < 40 || rect.height < 20 || rect.bottom <= 0 || rect.top >= window.innerHeight || rect.right <= 0 || rect.left >= window.innerWidth) {
+      panel.style.display = "none";
+      if (menu) menu.style.display = "none";
+      return;
+    }
+    const top = Math.max(6, Math.min(window.innerHeight - 34, rect.top + 8));
+    const right = Math.max(6, Math.min(window.innerWidth - 30, window.innerWidth - rect.right + 8));
+    panel.style.top = top + "px";
+    panel.style.right = right + "px";
+  }
+
+  window.addEventListener("scroll", updatePosition, { passive: true, capture: true });
+  window.addEventListener("resize", updatePosition, { passive: true });
+
+  panel.addEventListener("mouseenter", () => {
+    isOverPanel = true;
+    clearHideTimer();
+  });
+
+  panel.addEventListener("mouseleave", () => {
+    isOverPanel = false;
+    startHideTimer();
+  });
+
+  closeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    dismissedTarget = activeTarget;
+    panel.style.display = "none";
+    menu.style.display = "none";
+    activeTarget = null;
+    clearHideTimer();
+  });
+
+  // Track media elements across DOM mutations
+  const knownMedia = new Set();
+  function registerMedia(el) {
+    if (el && (el.tagName === "VIDEO" || el.tagName === "AUDIO")) {
+      knownMedia.add(el);
+    }
+  }
+
+  function scanMediaTree(root) {
+    if (!root || !root.querySelectorAll) return;
+    try {
+      const list = root.querySelectorAll("video, audio");
+      for (let i = 0; i < list.length; i++) registerMedia(list[i]);
+      const customs = root.querySelectorAll("shreddit-player, ytd-player, [data-testid*='video'], div[class*='player']");
+      for (let i = 0; i < customs.length; i++) {
+        if (customs[i].shadowRoot) {
+          const sList = customs[i].shadowRoot.querySelectorAll("video, audio");
+          for (let j = 0; j < sList.length; j++) registerMedia(sList[j]);
+        }
+      }
+    } catch (err) {}
+  }
+
+  scanMediaTree(document);
+
+  const observer = new MutationObserver((mutations) => {
+    for (let i = 0; i < mutations.length; i++) {
+      const mut = mutations[i];
+      for (let j = 0; j < mut.addedNodes.length; j++) {
+        const node = mut.addedNodes[j];
+        if (node.nodeType === 1) {
+          registerMedia(node);
+          scanMediaTree(node);
+        }
+      }
+    }
+  });
+  if (document.documentElement) {
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+  }
+
+  // 3-Tier Media Detection Under Cursor
+  function findMediaUnderPoint(x, y, event) {
+    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return null;
+
+    // Tier 1: Event composedPath
+    if (event && event.composedPath) {
+      try {
+        const path = event.composedPath();
+        for (let i = 0; i < path.length; i++) {
+          const node = path[i];
+          if (!node || node.nodeType !== 1) continue;
+          const tag = node.tagName.toLowerCase();
+          if (tag === "video" || tag === "audio") {
+            const r = node.getBoundingClientRect();
+            if (r.width >= 40 && r.height >= 20) return node;
+          }
+          if (node.shadowRoot) {
+            const sm = node.shadowRoot.querySelector("video, audio");
+            if (sm) {
+              const r = sm.getBoundingClientRect();
+              if (r.width >= 40 && r.height >= 20) return sm;
+            }
+          }
+          if (tag === "shreddit-player" || tag === "ytd-player" || (node.classList && node.classList.contains("html5-video-player"))) {
+            const m = node.querySelector("video, audio") || (node.shadowRoot && node.shadowRoot.querySelector("video, audio"));
+            if (m) {
+              const r = m.getBoundingClientRect();
+              if (r.width >= 40 && r.height >= 20) return m;
+            }
+          }
+        }
+      } catch (err) {}
+    }
+
+    // Tier 2: document.elementsFromPoint
+    try {
+      const elements = document.elementsFromPoint(x, y);
+      if (elements && elements.length > 0) {
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i];
+          if (!el || el.nodeType !== 1) continue;
+          const tag = el.tagName.toLowerCase();
+          if (tag === "video" || tag === "audio") {
+            const r = el.getBoundingClientRect();
+            if (r.width >= 40 && r.height >= 20) return el;
+          }
+          if (el.shadowRoot) {
+            const sm = el.shadowRoot.querySelector("video, audio");
+            if (sm) {
+              const r = sm.getBoundingClientRect();
+              if (r.width >= 40 && r.height >= 20) return sm;
+            }
+          }
+          const cm = el.querySelector("video, audio");
+          if (cm) {
+            const r = cm.getBoundingClientRect();
+            if (x >= r.left - 5 && x <= r.right + 5 && y >= r.top - 5 && y <= r.bottom + 5) {
+              if (r.width >= 40 && r.height >= 20) return cm;
+            }
+          }
+        }
+      }
+    } catch (err) {}
+
+    // Tier 3: Bounding-box test over registered media elements
+    for (const m of knownMedia) {
+      if (!m.isConnected) {
+        knownMedia.delete(m);
+        continue;
+      }
+      try {
+        const r = m.getBoundingClientRect();
+        if (r.width >= 40 && r.height >= 20) {
+          if (x >= r.left - 2 && x <= r.right + 2 && y >= r.top - 2 && y <= r.bottom + 2) {
+            return m;
+          }
+        }
+      } catch (err) {}
+    }
+
+    return null;
+  }
+
+  function showPanel(media) {
+    activeTarget = media;
+    const isAudio = media.tagName.toLowerCase() === "audio";
+    label.textContent = isAudio ? "Download this audio" : "Download this video";
+    attachHost();
+    updatePosition();
+    panel.style.display = "block";
+  }
+
+  window.addEventListener("mousemove", (e) => {
+    if (isOverPanel) {
+      clearHideTimer();
+      return;
+    }
+    const media = findMediaUnderPoint(e.clientX, e.clientY, e);
+    if (media) {
+      if (dismissedTarget === media) return;
+      clearHideTimer();
+      showPanel(media);
+    } else {
+      if (activeTarget && !isOverPanel) {
+        startHideTimer();
+      }
+      dismissedTarget = null;
+    }
+  }, { capture: true, passive: true });
+
+  function downloadMedia(streamUrl, filename) {
+    if (!extApi || !streamUrl) return;
+    const title = document.title || "media";
+    const referer = window.location.href;
+    extApi.runtime.sendMessage({
+      action: "download_media",
+      url: streamUrl,
+      referer: referer,
+      title: title,
+      filename: filename || ""
+    }, () => {});
+  }
+
+  bar.addEventListener("click", (e) => {
+    if (e.target === closeBtn || (closeBtn.contains && closeBtn.contains(e.target)) || e.target === dropdownBtn || (dropdownBtn.contains && dropdownBtn.contains(e.target))) {
+      return;
+    }
+    e.stopPropagation();
+    e.preventDefault();
+    if (!activeTarget) return;
+
+    const origText = label.textContent;
+    label.textContent = "Requesting IDM...";
+
+    // If on a known streaming platform (e.g. YouTube, Vimeo, TikTok), send the video page URL
+    // so OpenDM's StreamExtractor can extract full quality video & audio and mux them cleanly
+    const isStreamingSite = (typeof location !== "undefined" && location.hostname && (
+      location.hostname.includes("youtube.com") ||
+      location.hostname.includes("youtu.be") ||
+      location.hostname.includes("tiktok.com") ||
+      location.hostname.includes("vimeo.com")
+    ));
+
+    if (isStreamingSite) {
+      downloadMedia(window.location.href);
+      label.textContent = "Sent to IDM!";
+      setTimeout(() => { label.textContent = origText; }, 1500);
+      return;
+    }
+
+    let directSrc = activeTarget.currentSrc || activeTarget.src || "";
+    if (!directSrc) {
+      const srcEl = activeTarget.querySelector("source[src]");
+      if (srcEl) directSrc = srcEl.src;
+    }
+
+    if (directSrc && directSrc.startsWith("http") && !directSrc.startsWith("blob:")) {
+      downloadMedia(directSrc);
+      setTimeout(() => { label.textContent = origText; }, 1200);
+      return;
+    }
+
+    if (extApi) {
+      try {
+        extApi.runtime.sendMessage({ action: "get_tab_media" }, (resp) => {
+          const streams = (resp && resp.streams) || [];
+          const isAudio = activeTarget.tagName.toLowerCase() === "audio";
+          const filtered = streams.filter(s => isAudio ? s.type === "audio" : true);
+          if (filtered.length > 0) {
+            filtered.sort((a, b) => (b.size || 0) - (a.size || 0));
+            downloadMedia(filtered[0].url);
+            label.textContent = "Sent to IDM!";
+          } else if (directSrc) {
+            downloadMedia(directSrc);
+            label.textContent = "Sent to IDM!";
+          } else {
+            const ogVideo = document.querySelector('meta[property="og:video"], meta[property="og:video:url"], meta[name="twitter:player:stream"]');
+            if (ogVideo && ogVideo.content) {
+              downloadMedia(ogVideo.content);
+              label.textContent = "Sent to IDM!";
+            } else {
+              label.textContent = "No stream found";
+            }
+          }
+          setTimeout(() => { label.textContent = origText; }, 1500);
+        });
+        return;
+      } catch (err) {}
+    }
+
+    if (directSrc) {
+      downloadMedia(directSrc);
+    }
+    setTimeout(() => { label.textContent = origText; }, 1200);
+  });
+
+  dropdownBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+
+    if (menu.style.display === "flex") {
+      menu.style.display = "none";
+      return;
+    }
+
+    menu.innerHTML = "";
+    const loadingItem = document.createElement("div");
+    loadingItem.style.cssText = "padding: 6px 10px; color: #666; font-size: 11px;";
+    loadingItem.textContent = "Scanning available streams...";
+    menu.appendChild(loadingItem);
+    menu.style.display = "flex";
+
+    if (!extApi) return;
+
+    extApi.runtime.sendMessage({ action: "get_tab_media" }, (resp) => {
+      menu.innerHTML = "";
+      const streams = (resp && resp.streams) || [];
+      const directSrc = (activeTarget && (activeTarget.currentSrc || activeTarget.src)) || "";
+
+      const items = [];
+      const isStreamingSite = (typeof location !== "undefined" && location.hostname && (
+        location.hostname.includes("youtube.com") ||
+        location.hostname.includes("youtu.be") ||
+        location.hostname.includes("tiktok.com") ||
+        location.hostname.includes("vimeo.com")
+      ));
+
+      if (isStreamingSite) {
+        items.push({
+          url: window.location.href,
+          label: "Video (All Available Qualities)"
+        });
+        items.push({
+          url: window.location.href,
+          label: "Audio Track Only (Music)"
+        });
+      }
+
+      if (directSrc && directSrc.startsWith("http") && !directSrc.startsWith("blob:") && !isStreamingSite) {
+        const ext = directSrc.split(".").pop().split("?")[0].toUpperCase().slice(0, 4) || "MP4";
+        items.push({
+          url: directSrc,
+          label: `Direct Stream (${ext})`
+        });
+      }
+
+      if (!isStreamingSite) {
+        streams.forEach((s) => {
+          let ext = "MP4";
+          if (s.mime) {
+            if (s.mime.includes("webm")) ext = "WEBM";
+            else if (s.mime.includes("audio") || s.mime.includes("mp3")) ext = "MP3";
+            else if (s.mime.includes("m4a")) ext = "M4A";
+            else if (s.mime.includes("mpegurl")) ext = "HLS (M3U8)";
+            else if (s.mime.includes("dash")) ext = "DASH (MPD)";
+          }
+          let sizeStr = "";
+          if (s.size && s.size > 0) {
+            if (s.size > 1048576) sizeStr = ` (${(s.size / 1048576).toFixed(1)} MB)`;
+            else sizeStr = ` (${(s.size / 1024).toFixed(0)} KB)`;
+          }
+          items.push({
+            url: s.url,
+            label: `${ext} Stream${sizeStr}`
+          });
+        });
+      }
+
+      if (items.length === 0) {
+        const noneItem = document.createElement("div");
+        noneItem.style.cssText = "padding: 6px 10px; color: #666; font-size: 11px;";
+        noneItem.textContent = "No additional formats detected";
+        menu.appendChild(noneItem);
+        return;
+      }
+
+      items.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "idm-menu-item";
+        row.innerHTML = `<span class="idm-menu-label">${item.label}</span><span class="idm-menu-action">Download</span>`;
+        row.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          menu.style.display = "none";
+          downloadMedia(item.url);
+        });
+        menu.appendChild(row);
+      });
+    });
+  });
+})();
+

@@ -58,6 +58,7 @@ private:
     GtkWidget* chk_turn_off_{nullptr};
     GtkWidget* chk_force_close_{nullptr};
 
+    bool completion_dialog_shown_{false};
     guint timer_id_{0};
 };
 

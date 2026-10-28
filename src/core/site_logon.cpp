@@ -96,8 +96,9 @@ void SiteLogonManager::apply_to_session(DownloadSession& session, const std::str
         return;
     }
 
-    // Apply Basic Auth
+    // Apply Basic Auth and Userpwd
     if (!cred.username.empty() && !cred.password.empty()) {
+        session.set_credentials(cred.username, cred.password);
         std::string auth_token = base64_encode(cred.username + ":" + cred.password);
         session.set_header("Authorization", "Basic " + auth_token);
     }

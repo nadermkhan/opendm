@@ -77,39 +77,7 @@ std::string unquote_json_string(const std::string& input) {
     return input;
 }
 
-struct MsgHeader {
-    uint32_t id{0};
-    uint32_t type{0};
-    uint32_t subtype{0};
-    uint32_t flags{0};
-    bool valid{false};
-};
 
-MsgHeader parse_msg_header(const std::string& msg) {
-    MsgHeader hdr;
-    if (msg.rfind("MSG#", 0) != 0) return hdr;
-
-    size_t p1 = 4;
-    size_t p2 = msg.find('#', p1);
-    if (p2 == std::string::npos) return hdr;
-    size_t p3 = msg.find('#', p2 + 1);
-    if (p3 == std::string::npos) return hdr;
-    size_t p4 = msg.find('#', p3 + 1);
-    if (p4 == std::string::npos) return hdr;
-    size_t p5 = msg.find_first_of(":,;", p4 + 1);
-    if (p5 == std::string::npos) p5 = msg.length();
-
-    try {
-        hdr.id = std::stoul(msg.substr(p1, p2 - p1));
-        hdr.type = std::stoul(msg.substr(p2 + 1, p3 - p2 - 1));
-        hdr.subtype = std::stoul(msg.substr(p3 + 1, p4 - p3 - 1));
-        hdr.flags = std::stoul(msg.substr(p4 + 1, p5 - p4 - 1));
-        hdr.valid = true;
-    } catch (...) {
-        return hdr;
-    }
-    return hdr;
-}
 
 void ensure_opendm_running() {
     std::string test_resp = IpcServer::send_command("{\"action\": \"ping\"}");
@@ -136,7 +104,11 @@ void ensure_opendm_running() {
             if (devnull > 2) close(devnull);
         }
         setsid();
-        execl(opendm_bin.c_str(), opendm_bin.c_str(), nullptr);
+        if (opendm_bin.find('/') != std::string::npos) {
+            execl(opendm_bin.c_str(), opendm_bin.c_str(), nullptr);
+        } else {
+            execlp(opendm_bin.c_str(), opendm_bin.c_str(), nullptr);
+        }
         _exit(1);
     } else if (pid > 0) {
         usleep(400000); // 400ms
@@ -145,32 +117,72 @@ void ensure_opendm_running() {
 
 } // namespace opendm
 
+#include <fstream>
+#include <csignal>
+
 int main(int argc, char* argv[]) {
-    // Set standard IO to binary mode
+    signal(SIGCHLD, SIG_IGN); // Prevent zombie processes
     std::ios_base::sync_with_stdio(false);
+
+    std::ofstream log("/tmp/opendm_native_host.log", std::ios::app);
+    log << "[NATIVE_HOST] Started. argc=" << argc << std::endl;
+    for (int i = 0; i < argc; ++i) {
+        log << "  argv[" << i << "] = " << argv[i] << std::endl;
+    }
+    log.flush();
 
     std::string incoming;
     while (opendm::read_native_message(incoming)) {
+        log << "[NATIVE_HOST] incoming: " << incoming << std::endl;
+        log.flush();
         std::string raw = opendm::unquote_json_string(incoming);
 
         if (raw.rfind("MSG#", 0) == 0) {
             opendm::MsgHeader hdr = opendm::parse_msg_header(raw);
+            log << "[NATIVE_HOST] parsed MSG header: id=" << hdr.id << " type=" << hdr.type << " subtype=" << hdr.subtype << std::endl;
+            log.flush();
 
             // 1. Handshake request (type == 2)
             if (hdr.type == 2) {
+                log << "[NATIVE_HOST] Sending handshake responses (Type 3 & Type 4)" << std::endl;
+                log.flush();
                 // Packet 1: Handshake confirmation (Type 3)
                 opendm::write_native_json_string("MSG#1#3#0#0:113:0:0:0:96:103481600:0:0:100;");
 
-                // Packet 2: Configuration & activation (Type 4)
-                // Enables context menu, video grabber, and auto-interception for download file types
+                // Packet 2: Configuration & activation (Type 4) matching IDM defaults
                 opendm::write_native_json_string(
-                    "MSG#2#4#0#0:0:0:0:0,12=2:.*,1=127:ZIP|EXE|7Z|RAR|TAR|GZ|BZ2|ISO|DMG|DEB|RPM|PKG|MP4|MKV|AVI|MP3|FLAC|WAV|PDF|EPUB|DOC|DOCX|XLS|XLSX|PPT|PPTX|APK|TORRENT,2=7:(?!.*),3=7:(?!.*),4=2:.*,10=2:.*;"
+                    "MSG#2#4#0#1918:0:0:0:0,12=2:.*,1=245:ZIP|EXE|7Z|RAR|TAR|GZ|BZ2|ISO|DMG|DEB|RPM|PKG|MP4|MKV|AVI|MP3|FLAC|WAV|PDF|EPUB|DOC|DOCX|XLS|XLSX|PPT|PPTX|APK|TORRENT|3GP|AAC|ACE|AIF|ARJ|ASF|BIN|M4A|M4V|MOV|MPA|MPE|MPEG|MPG|MSI|MSU|OGG|OGV|PLJ|PPS|QT|R0*|R1*|RA|SEA|SIT|SITX|TIF|TIFF|WMA|WMV|Z,2=55:CSS|JS|JSON|CRL|OCSP|APNG|GIF|ICO|JPEG|JPG|PNG|SVG|WEBP,3=97:3GP|ASF|AVI|F4V|FLV|M4A|M4V|MKV|MOV|MP3|MP4|MPEG|MPG|OGG|OGV|QT|RA|RM|TS|TSA|TSV|WAV|WEBM|WMA|WMV,4=30:JSON|GZ|Z|BZ2|BIN|ZIP|GZIP|LZH,10=117:application/download|application/force-download|application/x-msdownload|application/octet-stream|binary/octet-stream,20=80:TXT|HTM|HTML|PHP|ASP|ASPX|CGI|JSP|JSPX|CSS|JS|APNG|GIF|ICO|JPEG|JPG|PNG|SVG|WEBP,21=16:/*-internal-*/**;"
                 );
                 continue;
             }
 
-            // 2. Download interception request (type == 14 or has 6= url)
-            if (hdr.type == 14 || raw.find("6=") != std::string::npos) {
+            // 2. Download interception request (type == 13, type == 14, or has 6= url)
+            if (hdr.type == 13 || hdr.type == 14 || raw.find("6=") != std::string::npos) {
+                std::vector<std::string> pos_args = opendm::parse_tonec_pos_args(raw);
+                uint32_t action_code = 0;
+                uint32_t status_code = 0;
+                if (pos_args.size() > 5) {
+                    try {
+                        action_code = std::stoul(pos_args[5]);
+                        status_code = std::stoul(pos_args[3]);
+                    } catch (...) {}
+                }
+
+                log << "[NATIVE_HOST] Interception message received: id=" << hdr.id
+                    << " type=" << hdr.type << " action=" << action_code << " status=" << status_code << std::endl;
+                log.flush();
+
+                // Non-download notifications:
+                // Action 6 = HTTP 3xx redirect notification
+                // Action 5 = HTML page frame navigation notification
+                // Action 4 = Media response started / panel tracking
+                if (action_code == 6 || action_code == 5 || action_code == 4 || (status_code >= 300 && status_code < 400)) {
+                    log << "[NATIVE_HOST] Acknowledging non-download notification without cancel (action=" << action_code << ")" << std::endl;
+                    log.flush();
+                    opendm::write_native_json_string("MSG#" + std::to_string(hdr.id) + "#1#2#0:" + std::to_string(hdr.id) + ":0;");
+                    continue;
+                }
+
                 opendm::ensure_opendm_running();
                 std::string resp = opendm::IpcServer::send_command(raw);
                 if (resp.find("Could not connect") != std::string::npos) {
@@ -178,8 +190,18 @@ int main(int argc, char* argv[]) {
                     resp = opendm::IpcServer::send_command(raw);
                 }
 
-                // Send ACK back to browser
-                opendm::write_native_json_string("MSG#" + std::to_string(hdr.id) + "#1#2#0:" + std::to_string(hdr.id) + ";");
+                log << "[NATIVE_HOST] IPC server response: " << resp << std::endl;
+                log.flush();
+
+                // Only instruct browser to cancel internal download (e[1]=3) if IPC server accepted the download.
+                // If ignored (web resource, HTML/PHP, image without attachment), send e[1]=0 so browser continues.
+                if (resp.find("\"status\": \"prompting\"") != std::string::npos ||
+                    resp.find("\"status\": \"downloading\"") != std::string::npos ||
+                    resp.find("\"status\": \"started\"") != std::string::npos) {
+                    opendm::write_native_json_string("MSG#" + std::to_string(hdr.id) + "#1#2#0:" + std::to_string(hdr.id) + ":3;");
+                } else {
+                    opendm::write_native_json_string("MSG#" + std::to_string(hdr.id) + "#1#2#0:" + std::to_string(hdr.id) + ":0;");
+                }
                 continue;
             }
 
@@ -194,5 +216,7 @@ int main(int argc, char* argv[]) {
         opendm::write_native_raw_json(response);
     }
 
+    log << "[NATIVE_HOST] Exiting." << std::endl;
+    log.flush();
     return 0;
 }

@@ -100,10 +100,12 @@ bool ZipPreviewer::fetch_entries(const std::string& url, std::vector<ZipEntry>& 
     uint32_t cd_size = read_u32(eocd + 12);
     uint32_t cd_offset = read_u32(eocd + 16);
 
+    if (cd_size == 0 || total_entries == 0) {
+        out_entries.clear();
+        return true;
+    }
+
     std::vector<uint8_t> cd_buffer;
-    // Check if Central Directory was fully contained in our tail buffer
-    int64_t tail_start_in_file = -1; // If we know total file size
-    // Alternatively, fetch the exact byte range for Central Directory:
     std::string cd_range = std::to_string(cd_offset) + "-" + std::to_string(cd_offset + cd_size - 1);
     if (!fetch_range(url, cd_range, cd_buffer, out_error)) {
         return false;
@@ -199,6 +201,21 @@ bool ZipPreviewer::extract_entry(const std::string& url, const ZipEntry& entry,
 
     uint16_t fn_len = read_u16(header_buf.data() + 26);
     uint16_t extra_len = read_u16(header_buf.data() + 28);
+
+    if (entry.compressed_size == 0) {
+        std::filesystem::path dest_p(destination_filepath);
+        if (dest_p.has_parent_path()) {
+            std::filesystem::create_directories(dest_p.parent_path());
+        }
+        std::ofstream out_file(destination_filepath, std::ios::binary | std::ios::trunc);
+        if (!out_file.is_open()) {
+            out_error = "Failed to create 0-byte file";
+            return false;
+        }
+        out_file.close();
+        if (progress_cb) progress_cb(1.0);
+        return true;
+    }
 
     // Calculate exact byte range of the compressed payload:
     uint32_t payload_start = entry.local_header_offset + 30 + fn_len + extra_len;
