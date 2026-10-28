@@ -209,25 +209,11 @@ void DownloadInfoDialog::setup_ui() {
     gtk_widget_add_css_class(entry_url_, "idm-info-entry");
     gtk_grid_attach(GTK_GRID(content_grid), entry_url_, 1, 0, 2, 1);
 
-    // Row 1: Format / Quality (for streaming media)
-    lbl_format_ = gtk_label_new("Quality");
-    gtk_widget_add_css_class(lbl_format_, "idm-info-label");
-    gtk_label_set_xalign(GTK_LABEL(lbl_format_), 1.0f);
-    gtk_grid_attach(GTK_GRID(content_grid), lbl_format_, 0, 1, 1, 1);
-    gtk_widget_set_visible(lbl_format_, FALSE);
-
-    const char* dummy_fmt[] = { "Auto (Best Quality)", nullptr };
-    combo_stream_format_ = gtk_drop_down_new_from_strings(dummy_fmt);
-    gtk_widget_set_hexpand(combo_stream_format_, TRUE);
-    row_stream_format_ = combo_stream_format_;
-    gtk_grid_attach(GTK_GRID(content_grid), row_stream_format_, 1, 1, 2, 1);
-    gtk_widget_set_visible(row_stream_format_, FALSE);
-
-    // Row 2: Category
+    // Row 1: Category
     GtkWidget* lbl_category = gtk_label_new("Category");
     gtk_widget_add_css_class(lbl_category, "idm-info-label");
     gtk_label_set_xalign(GTK_LABEL(lbl_category), 1.0f);
-    gtk_grid_attach(GTK_GRID(content_grid), lbl_category, 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(content_grid), lbl_category, 0, 1, 1, 1);
 
     GtkWidget* cat_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     combo_category_ = gtk_drop_down_new_from_strings(kCategories);
@@ -240,13 +226,13 @@ void DownloadInfoDialog::setup_ui() {
     gtk_widget_add_css_class(btn_add_cat_, "idm-btn-mini");
     gtk_box_append(GTK_BOX(cat_box), btn_add_cat_);
 
-    gtk_grid_attach(GTK_GRID(content_grid), cat_box, 1, 2, 2, 1);
+    gtk_grid_attach(GTK_GRID(content_grid), cat_box, 1, 1, 2, 1);
 
-    // Row 3: Save As
+    // Row 2: Save As
     GtkWidget* lbl_save_as = gtk_label_new("Save As");
     gtk_widget_add_css_class(lbl_save_as, "idm-info-label");
     gtk_label_set_xalign(GTK_LABEL(lbl_save_as), 1.0f);
-    gtk_grid_attach(GTK_GRID(content_grid), lbl_save_as, 0, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(content_grid), lbl_save_as, 0, 2, 1, 1);
 
     GtkWidget* save_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     entry_save_as_ = gtk_entry_new();
@@ -260,9 +246,9 @@ void DownloadInfoDialog::setup_ui() {
     gtk_widget_add_css_class(btn_browse_, "idm-btn-mini");
     gtk_box_append(GTK_BOX(save_box), btn_browse_);
 
-    gtk_grid_attach(GTK_GRID(content_grid), save_box, 1, 3, 2, 1);
+    gtk_grid_attach(GTK_GRID(content_grid), save_box, 1, 2, 2, 1);
 
-    // Row 4: Remember path frame
+    // Row 3: Remember path frame
     GtkWidget* remember_frame = gtk_frame_new(nullptr);
     gtk_widget_add_css_class(remember_frame, "idm-remember-frame");
     GtkWidget* remember_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
@@ -283,13 +269,13 @@ void DownloadInfoDialog::setup_ui() {
     gtk_widget_add_css_class(entry_cat_dir_, "idm-info-entry-sub");
     gtk_box_append(GTK_BOX(remember_vbox), entry_cat_dir_);
 
-    gtk_grid_attach(GTK_GRID(content_grid), remember_frame, 1, 4, 2, 1);
+    gtk_grid_attach(GTK_GRID(content_grid), remember_frame, 1, 3, 2, 1);
 
-    // Row 5: Description
+    // Row 4: Description
     GtkWidget* lbl_desc = gtk_label_new("Description");
     gtk_widget_add_css_class(lbl_desc, "idm-info-label");
     gtk_label_set_xalign(GTK_LABEL(lbl_desc), 1.0f);
-    gtk_grid_attach(GTK_GRID(content_grid), lbl_desc, 0, 5, 1, 1);
+    gtk_grid_attach(GTK_GRID(content_grid), lbl_desc, 0, 4, 1, 1);
 
     entry_desc_ = gtk_entry_new();
     gtk_widget_set_hexpand(entry_desc_, TRUE);
@@ -297,9 +283,9 @@ void DownloadInfoDialog::setup_ui() {
         gtk_editable_set_text(GTK_EDITABLE(entry_desc_), params_.description.c_str());
     }
     gtk_widget_add_css_class(entry_desc_, "idm-info-entry");
-    gtk_grid_attach(GTK_GRID(content_grid), entry_desc_, 1, 5, 2, 1);
+    gtk_grid_attach(GTK_GRID(content_grid), entry_desc_, 1, 4, 2, 1);
 
-    // Right Column: Icon, File Size, Preview Button (spanning rows 1 to 5)
+    // Right Column: Icon, File Size, Preview Button (spanning rows 1 to 4)
     right_icon_box_ = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_widget_set_valign(right_icon_box_, GTK_ALIGN_CENTER);
     gtk_widget_set_halign(right_icon_box_, GTK_ALIGN_CENTER);
@@ -318,7 +304,7 @@ void DownloadInfoDialog::setup_ui() {
     gtk_widget_add_css_class(btn_preview_, "idm-info-btn");
     gtk_box_append(GTK_BOX(right_icon_box_), btn_preview_);
 
-    gtk_grid_attach(GTK_GRID(content_grid), right_icon_box_, 3, 1, 1, 5);
+    gtk_grid_attach(GTK_GRID(content_grid), right_icon_box_, 3, 1, 1, 4);
 
     // Bottom Action Buttons
     GtkWidget* action_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
@@ -343,10 +329,6 @@ void DownloadInfoDialog::setup_ui() {
     gtk_box_append(GTK_BOX(action_box), btn_cancel_);
 
     // Connect signals
-    g_signal_connect(combo_stream_format_, "notify::selected", G_CALLBACK(+[](GObject*, GParamSpec*, gpointer data) {
-        auto* self = static_cast<DownloadInfoDialog*>(data);
-        self->on_stream_format_changed();
-    }), this);
 
     g_signal_connect(combo_category_, "notify::selected", G_CALLBACK(+[](GObject* obj, GParamSpec*, gpointer data) {
         auto* self = static_cast<DownloadInfoDialog*>(data);
@@ -548,118 +530,8 @@ void DownloadInfoDialog::update_file_size_display() {
     }
 }
 
-void DownloadInfoDialog::on_stream_format_changed() {
-    if (!combo_stream_format_ || available_stream_formats_.empty()) return;
-    guint idx = gtk_drop_down_get_selected(GTK_DROP_DOWN(combo_stream_format_));
-    if (idx < available_stream_formats_.size()) {
-        const auto& fmt = available_stream_formats_[idx];
-        params_.url = fmt.video_url;
-        params_.audio_stream_url = fmt.audio_url;
-        params_.file_size = fmt.filesize;
-        params_.is_streaming_media = true;
-
-        if (!params_.filename.empty()) {
-            size_t dot = params_.filename.find_last_of('.');
-            if (dot != std::string::npos) {
-                params_.filename = params_.filename.substr(0, dot + 1) + fmt.ext;
-            } else {
-                params_.filename += "." + fmt.ext;
-            }
-            params_.save_as_path = (fs::path(params_.destination_dir) / params_.filename).string();
-            if (entry_save_as_) {
-                gtk_editable_set_text(GTK_EDITABLE(entry_save_as_), params_.save_as_path.c_str());
-            }
-        }
-
-        if (fmt.is_audio_only) {
-            update_category_ui("Music", true);
-        } else {
-            update_category_ui("Video", true);
-        }
-        update_file_size_display();
-    }
-}
-
-void DownloadInfoDialog::update_stream_formats_ui(const StreamMediaInfo& info) {
-    if (destroyed_) return;
-    available_stream_formats_ = info.formats;
-    if (available_stream_formats_.empty()) {
-        gtk_label_set_text(GTK_LABEL(lbl_size_), "Unknown");
-        return;
-    }
-
-    std::vector<const char*> labels;
-    for (const auto& fmt : available_stream_formats_) {
-        labels.push_back(fmt.label.c_str());
-    }
-    labels.push_back(nullptr);
-
-    GtkStringList* str_list = gtk_string_list_new(labels.data());
-    gtk_drop_down_set_model(GTK_DROP_DOWN(combo_stream_format_), G_LIST_MODEL(str_list));
-    g_object_unref(str_list);
-
-    gtk_drop_down_set_selected(GTK_DROP_DOWN(combo_stream_format_), 0);
-
-    const auto& best = available_stream_formats_[0];
-    params_.url = best.video_url;
-    params_.audio_stream_url = best.audio_url;
-    params_.file_size = best.filesize;
-    params_.is_streaming_media = true;
-
-    std::string safe_title = StreamExtractor::sanitize_filename(info.title, best.ext);
-    params_.filename = safe_title;
-    params_.save_as_path = (fs::path(params_.destination_dir) / safe_title).string();
-    if (entry_save_as_) {
-        gtk_editable_set_text(GTK_EDITABLE(entry_save_as_), params_.save_as_path.c_str());
-    }
-    if (entry_desc_ && !info.uploader.empty()) {
-        std::string desc = "Uploader: " + info.uploader;
-        gtk_editable_set_text(GTK_EDITABLE(entry_desc_), desc.c_str());
-        params_.description = desc;
-    }
-
-    if (best.is_audio_only) {
-        update_category_ui("Music", true);
-    } else {
-        update_category_ui("Video", true);
-    }
-
-    update_file_size_display();
-
-    if (row_stream_format_) gtk_widget_set_visible(row_stream_format_, TRUE);
-    if (lbl_format_) gtk_widget_set_visible(lbl_format_, TRUE);
-}
-
 void DownloadInfoDialog::probe_remote_info() {
     if (params_.file_size > 0 || params_.url.empty()) return;
-
-    if (StreamExtractor::is_streaming_url(params_.url) && StreamExtractor::is_available()) {
-        gtk_label_set_text(GTK_LABEL(lbl_size_), "Extracting...");
-
-        StreamExtractor::extract_info_async(params_.url, [this, alive = alive_token_](bool ok, const StreamMediaInfo& info, const std::string&) {
-            if (!alive->load() || destroyed_) return;
-            struct StreamProbeData {
-                DownloadInfoDialog* self;
-                std::shared_ptr<std::atomic<bool>> alive;
-                bool ok;
-                StreamMediaInfo info;
-            };
-            auto* data = new StreamProbeData{this, alive, ok, info};
-            g_idle_add([](gpointer p) -> gboolean {
-                auto* d = static_cast<StreamProbeData*>(p);
-                if (d->alive->load() && !d->self->destroyed_) {
-                    if (d->ok) {
-                        d->self->update_stream_formats_ui(d->info);
-                    } else {
-                        gtk_label_set_text(GTK_LABEL(d->self->lbl_size_), "Unknown");
-                    }
-                }
-                delete d;
-                return G_SOURCE_REMOVE;
-            }, data);
-        });
-        return;
-    }
 
     gtk_label_set_text(GTK_LABEL(lbl_size_), "Checking...");
 
@@ -942,30 +814,7 @@ void DownloadInfoDialog::on_preview_clicked() {
 void DownloadInfoDialog::on_action_clicked(DownloadInfoAction action) {
     if (action != DownloadInfoAction::CANCEL) {
         // Retrieve latest user-modified fields
-        if (!params_.is_streaming_media) {
-            params_.url = gtk_editable_get_text(GTK_EDITABLE(entry_url_));
-        }
-
-        // If the URL is a streaming site and background extraction hasn't completed yet, do synchronous resolution
-        if (StreamExtractor::is_streaming_url(params_.url) && !params_.is_streaming_media && StreamExtractor::is_available()) {
-            StreamMediaInfo sinfo;
-            if (StreamExtractor::extract_info(params_.url, sinfo) && !sinfo.formats.empty()) {
-                const auto& best = sinfo.formats[0];
-                params_.url = best.video_url;
-                params_.audio_stream_url = best.audio_url;
-                params_.file_size = best.filesize;
-                params_.is_streaming_media = true;
-                std::string fname = StreamExtractor::sanitize_filename(sinfo.title, best.ext);
-                params_.filename = fname;
-                fs::path cur_save(gtk_editable_get_text(GTK_EDITABLE(entry_save_as_)));
-                params_.destination_dir = cur_save.parent_path().string();
-                if (params_.destination_dir.empty()) {
-                    params_.destination_dir = (fs::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string();
-                }
-                params_.save_as_path = (fs::path(params_.destination_dir) / fname).string();
-            }
-        }
-
+        params_.url = gtk_editable_get_text(GTK_EDITABLE(entry_url_));
         params_.save_as_path = gtk_editable_get_text(GTK_EDITABLE(entry_save_as_));
         params_.description = gtk_editable_get_text(GTK_EDITABLE(entry_desc_));
 

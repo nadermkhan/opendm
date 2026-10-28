@@ -1,7 +1,6 @@
 #include "download_session.hpp"
 #include "post_download.hpp"
 #include "core/media_muxer.hpp"
-#include "core/stream_extractor.hpp"
 #include <curl/curl.h>
 #include <filesystem>
 #include <fstream>
@@ -330,26 +329,6 @@ bool DownloadSession::redownload() {
 }
 
 bool DownloadSession::probe_resource() {
-    // If url_ is a web streaming URL (e.g. YouTube, Vimeo, TikTok) and has not been resolved,
-    // invoke StreamExtractor to obtain the direct video and audio streams.
-    if (StreamExtractor::is_streaming_url(url_) && audio_stream_url_.empty() && StreamExtractor::is_available()) {
-        StreamMediaInfo info;
-        std::string err;
-        if (StreamExtractor::extract_info(url_, info, &err) && !info.formats.empty()) {
-            const auto& best = info.formats[0];
-            url_ = best.video_url;
-            audio_stream_url_ = best.audio_url;
-            if (best.filesize > 0) total_size_ = best.filesize;
-
-            std::lock_guard<std::mutex> lock(meta_mutex_);
-            if (!custom_filename_set_ || filename_ == "download.bin" || filename_.find("watch?") != std::string::npos || filename_.find("video_download") != std::string::npos) {
-                filename_ = StreamExtractor::sanitize_filename(info.title, best.ext);
-                std::filesystem::path p(destination_path_);
-                destination_path_ = (p.parent_path() / filename_).string();
-            }
-        }
-    }
-
     CURL* curl = curl_easy_init();
     if (!curl) {
         last_error_ = "Failed to initialize CURL probe";

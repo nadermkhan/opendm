@@ -30,7 +30,6 @@ add_library(opendm_core STATIC
     src/core/batch_importer.cpp
     src/core/media_muxer.cpp
     src/core/dash_parser.cpp
-    src/core/stream_extractor.cpp
     src/core/post_download.cpp
     src/cli/cli_parser.cpp
     src/ipc/ipc_server.cpp
@@ -122,14 +121,6 @@ target_link_libraries(test_session_pause PRIVATE
     opendm_core
 )
 add_test(NAME SessionPauseTest COMMAND test_session_pause)
-
-add_executable(test_stream_extractor
-    tests/test_stream_extractor.cpp
-)
-target_link_libraries(test_stream_extractor PRIVATE
-    opendm_core
-)
-add_test(NAME StreamExtractorTest COMMAND test_stream_extractor)
 
 # Installation targets
 install(TARGETS opendm opendm-native-host

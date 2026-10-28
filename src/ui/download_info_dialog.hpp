@@ -9,7 +9,6 @@
 #include <vector>
 
 #include "../ipc/ipc_server.hpp"
-#include "../core/stream_extractor.hpp"
 
 namespace opendm {
 
@@ -43,8 +42,6 @@ private:
     void update_category_ui(const std::string& category, bool update_path = true);
     void update_file_size_display();
     void probe_remote_info();
-    void update_stream_formats_ui(const StreamMediaInfo& info);
-    void on_stream_format_changed();
     void on_browse_clicked();
     void on_add_category_clicked();
     void on_preview_clicked();
@@ -71,10 +68,6 @@ private:
     GtkWidget* btn_download_later_{nullptr};
     GtkWidget* btn_start_download_{nullptr};
     GtkWidget* btn_cancel_{nullptr};
-    GtkWidget* row_stream_format_{nullptr};
-    GtkWidget* lbl_format_{nullptr};
-    GtkWidget* combo_stream_format_{nullptr};
-    std::vector<StreamFormat> available_stream_formats_;
 
     bool destroyed_{false};
     std::shared_ptr<std::atomic<bool>> alive_token_{std::make_shared<std::atomic<bool>>(true)};

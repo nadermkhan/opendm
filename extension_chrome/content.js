@@ -533,22 +533,6 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     const origText = label.textContent;
     label.textContent = "Requesting IDM...";
 
-    // If on a known streaming platform (e.g. YouTube, Vimeo, TikTok), send the video page URL
-    // so OpenDM's StreamExtractor can extract full quality video & audio and mux them cleanly
-    const isStreamingSite = (typeof location !== "undefined" && location.hostname && (
-      location.hostname.includes("youtube.com") ||
-      location.hostname.includes("youtu.be") ||
-      location.hostname.includes("tiktok.com") ||
-      location.hostname.includes("vimeo.com")
-    ));
-
-    if (isStreamingSite) {
-      downloadMedia(window.location.href);
-      label.textContent = "Sent to IDM!";
-      setTimeout(() => { label.textContent = origText; }, 1500);
-      return;
-    }
-
     let directSrc = activeTarget.currentSrc || activeTarget.src || "";
     if (!directSrc) {
       const srcEl = activeTarget.querySelector("source[src]");
@@ -619,25 +603,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       const directSrc = (activeTarget && (activeTarget.currentSrc || activeTarget.src)) || "";
 
       const items = [];
-      const isStreamingSite = (typeof location !== "undefined" && location.hostname && (
-        location.hostname.includes("youtube.com") ||
-        location.hostname.includes("youtu.be") ||
-        location.hostname.includes("tiktok.com") ||
-        location.hostname.includes("vimeo.com")
-      ));
-
-      if (isStreamingSite) {
-        items.push({
-          url: window.location.href,
-          label: "Video (All Available Qualities)"
-        });
-        items.push({
-          url: window.location.href,
-          label: "Audio Track Only (Music)"
-        });
-      }
-
-      if (directSrc && directSrc.startsWith("http") && !directSrc.startsWith("blob:") && !isStreamingSite) {
+      if (directSrc && directSrc.startsWith("http") && !directSrc.startsWith("blob:")) {
         const ext = directSrc.split(".").pop().split("?")[0].toUpperCase().slice(0, 4) || "MP4";
         items.push({
           url: directSrc,
@@ -645,27 +611,25 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
         });
       }
 
-      if (!isStreamingSite) {
-        streams.forEach((s) => {
-          let ext = "MP4";
-          if (s.mime) {
-            if (s.mime.includes("webm")) ext = "WEBM";
-            else if (s.mime.includes("audio") || s.mime.includes("mp3")) ext = "MP3";
-            else if (s.mime.includes("m4a")) ext = "M4A";
-            else if (s.mime.includes("mpegurl")) ext = "HLS (M3U8)";
-            else if (s.mime.includes("dash")) ext = "DASH (MPD)";
-          }
-          let sizeStr = "";
-          if (s.size && s.size > 0) {
-            if (s.size > 1048576) sizeStr = ` (${(s.size / 1048576).toFixed(1)} MB)`;
-            else sizeStr = ` (${(s.size / 1024).toFixed(0)} KB)`;
-          }
-          items.push({
-            url: s.url,
-            label: `${ext} Stream${sizeStr}`
-          });
+      streams.forEach((s) => {
+        let ext = "MP4";
+        if (s.mime) {
+          if (s.mime.includes("webm")) ext = "WEBM";
+          else if (s.mime.includes("audio") || s.mime.includes("mp3")) ext = "MP3";
+          else if (s.mime.includes("m4a")) ext = "M4A";
+          else if (s.mime.includes("mpegurl")) ext = "HLS (M3U8)";
+          else if (s.mime.includes("dash")) ext = "DASH (MPD)";
+        }
+        let sizeStr = "";
+        if (s.size && s.size > 0) {
+          if (s.size > 1048576) sizeStr = ` (${(s.size / 1048576).toFixed(1)} MB)`;
+          else sizeStr = ` (${(s.size / 1024).toFixed(0)} KB)`;
+        }
+        items.push({
+          url: s.url,
+          label: `${ext} Stream${sizeStr}`
         });
-      }
+      });
 
       if (items.length === 0) {
         const noneItem = document.createElement("div");
