@@ -62,6 +62,37 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   if (window.__idm_universal_panel_initialized__) return;
   window.__idm_universal_panel_initialized__ = true;
 
+  // Disable YouTube SABR / Web UMP streaming to enforce direct DASH chunks
+  try {
+    if (typeof location !== "undefined" && location.hostname && location.hostname.includes("youtube.com")) {
+      const sabrPatch = document.createElement("script");
+      sabrPatch.textContent = `
+        (function() {
+          function patch(c) {
+            if (!c) return;
+            c.html5_enable_sabr_vod_streaming_xhr = false;
+            c.html5_enable_sabr_vod_non_streaming_xhr = false;
+            c.html5_disable_sabr = true;
+            c.html5_remove_client_sabr_determination = true;
+            c.web_streaming_fast = false;
+            c.web_streaming_watch = false;
+          }
+          try {
+            if (window.ytcfg) {
+              if (window.ytcfg.get) { var e = window.ytcfg.get("EXPERIMENT_FLAGS"); if (e) patch(e); }
+              if (window.ytcfg.set) {
+                var orig = window.ytcfg.set;
+                window.ytcfg.set = function(o) { if (o && o.EXPERIMENT_FLAGS) patch(o.EXPERIMENT_FLAGS); return orig.apply(this, arguments); };
+              }
+            }
+          } catch(e) {}
+        })();
+      `;
+      (document.head || document.documentElement).appendChild(sabrPatch);
+      sabrPatch.remove();
+    }
+  } catch(e) {}
+
   const extApi = (typeof browser !== "undefined" && browser.runtime) ? browser : (typeof chrome !== "undefined" && chrome.runtime) ? chrome : null;
 
   // Singleton container and shadow host
@@ -518,9 +549,13 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       parsed.searchParams.delete("len");
       parsed.searchParams.delete("ump");
       parsed.searchParams.delete("bytes");
+      parsed.searchParams.delete("sq");
+      parsed.searchParams.delete("rn");
+      parsed.searchParams.delete("rbuf");
+      parsed.searchParams.delete("otf");
       return parsed.toString();
     } catch (e) {
-      return u.replace(/[?&](range|begin|len|ump|bytes)=[^&]*/g, "");
+      return u.replace(/[?&](range|begin|len|ump|bytes|sq|rn|rbuf|otf)=[^&]*/g, "");
     }
   }
 
@@ -543,15 +578,115 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     return t || "video";
   }
 
+  function getYtQualityRank(url) {
+    if (!url) return 0;
+    const m = url.match(/[?&]itag=(\d+)/);
+    if (!m) return 0;
+    const itag = parseInt(m[1], 10);
+    switch (itag) {
+      case 313: case 401: case 272: return 2160;
+      case 271: case 308: case 400: return 1440;
+      case 137: case 248: case 399: case 299: case 270: return 1080;
+      case 136: case 247: case 398: case 298: case 22: return 720;
+      case 135: case 244: case 397: return 480;
+      case 134: case 243: case 396: case 18: return 360;
+      case 133: case 242: case 395: return 240;
+      case 160: case 278: case 394: return 144;
+      default: return 100;
+    }
+  }
+
+  function getYouTubeFormatsFromDOM() {
+    let playerResp = null;
+    try {
+      const scripts = document.getElementsByTagName("script");
+      for (let i = 0; i < scripts.length; i++) {
+        const txt = scripts[i].textContent || "";
+        if (txt.includes("ytInitialPlayerResponse")) {
+          const m = txt.match(/ytInitialPlayerResponse\s*=\s*(\{.+?\});/s) ||
+                    txt.match(/var\s+ytInitialPlayerResponse\s*=\s*(\{.+?\});/s);
+          if (m) {
+            try {
+              playerResp = JSON.parse(m[1]);
+              break;
+            } catch (e) {
+              const idx = txt.indexOf("ytInitialPlayerResponse");
+              const start = txt.indexOf("{", idx);
+              if (start !== -1) {
+                let depth = 0;
+                let inStr = false;
+                let esc = false;
+                for (let j = start; j < txt.length; j++) {
+                  const ch = txt[j];
+                  if (esc) { esc = false; continue; }
+                  if (ch === '\\') { esc = true; continue; }
+                  if (ch === '"') { inStr = !inStr; continue; }
+                  if (!inStr) {
+                    if (ch === '{') depth++;
+                    else if (ch === '}') {
+                      depth--;
+                      if (depth === 0) {
+                        try {
+                          playerResp = JSON.parse(txt.substring(start, j + 1));
+                        } catch (e2) {}
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (playerResp) break;
+      }
+    } catch (err) {}
+    return playerResp;
+  }
+
+  function switchYouTubeQuality(quality) {
+    try {
+      window.postMessage({ action: "idm_set_quality", quality: quality }, "*");
+    } catch (e) {}
+    try {
+      const s = document.createElement("script");
+      s.textContent = `
+        try {
+          const p = document.getElementById("movie_player");
+          if (p) {
+            if (p.setPlaybackQualityRange) p.setPlaybackQualityRange("${quality}", "${quality}");
+            if (p.setPlaybackQuality) p.setPlaybackQuality("${quality}");
+          }
+        } catch(e) {}
+      `;
+      (document.head || document.documentElement).appendChild(s);
+      s.remove();
+    } catch (e) {}
+  }
+
   function findPairedStreams(streams) {
-    const isYtOrDash = streams.some(s => s.url && (s.url.includes("googlevideo.com") || s.url.includes("videoplayback")));
+    const isYtOrDash = (typeof location !== "undefined" && location.hostname && location.hostname.includes("youtube.com")) ||
+                       streams.some(s => s.url && (s.url.includes("googlevideo.com") || s.url.includes("videoplayback")));
     const videoStreams = [];
     const audioStreams = [];
 
     for (const s of streams) {
       const u = s.url || "";
+      if (u.includes("sabr=1") || u.includes("alr=yes") || u.includes("failure.mp3") || u.includes("/s/search/audio/")) {
+        continue;
+      }
+      if (u.includes("googlevideo.com") && !u.match(/[?&]itag=\d+/)) {
+        continue;
+      }
       const mime = (s.mime || "").toLowerCase();
-      const isAudio = s.type === "audio" || mime.includes("audio") || u.includes("mime=audio") || u.includes("mime%2Faudio");
+      let isAudio = s.type === "audio" || mime.includes("audio") || u.includes("mime=audio") || u.includes("mime%2Faudio");
+      const itagM = u.match(/[?&]itag=(\d+)/);
+      if (itagM) {
+        const itg = parseInt(itagM[1], 10);
+        if (itg === 140 || itg === 141 || itg === 251 || itg === 250 || itg === 249 || itg === 171 || itg === 139) {
+          isAudio = true;
+        }
+      }
       if (isAudio) {
         audioStreams.push(s);
       } else {
@@ -560,11 +695,17 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     }
 
     audioStreams.sort((a, b) => {
-      const a140 = (a.url.includes("itag=140") || (a.mime && a.mime.includes("mp4"))) ? 1 : 0;
-      const b140 = (b.url.includes("itag=140") || (b.mime && b.mime.includes("mp4"))) ? 1 : 0;
-      if (a140 !== b140) return b140 - a140;
+      const aScore = (a.url.includes("itag=140") || (a.mime && a.mime.includes("mp4"))) ? 2 : (a.url.includes("itag=251") ? 1 : 0);
+      const bScore = (b.url.includes("itag=140") || (b.mime && b.mime.includes("mp4"))) ? 2 : (b.url.includes("itag=251") ? 1 : 0);
+      if (aScore !== bScore) return bScore - aScore;
       return (b.size || 0) - (a.size || 0);
     });
+
+    if (isYtOrDash) {
+      videoStreams.sort((a, b) => getYtQualityRank(b.url) - getYtQualityRank(a.url));
+    } else {
+      videoStreams.sort((a, b) => (b.size || 0) - (a.size || 0));
+    }
 
     const bestAudio = audioStreams.length > 0 ? cleanMediaStreamUrl(audioStreams[0].url) : "";
     return { isYtOrDash, videoStreams, audioStreams, bestAudio };
@@ -627,7 +768,6 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
           const { isYtOrDash, videoStreams, bestAudio } = findPairedStreams(streams);
 
           if (videoStreams.length > 0) {
-            videoStreams.sort((a, b) => (b.size || 0) - (a.size || 0));
             const bestVideo = cleanMediaStreamUrl(videoStreams[0].url);
             let finalUrl = bestVideo;
             if (isYtOrDash && bestAudio) {
@@ -635,6 +775,37 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             }
             downloadMedia(finalUrl, mediaTitle + ".mp4");
             label.textContent = "Sent to IDM!";
+          } else if (isYtOrDash) {
+            const ytData = getYouTubeFormatsFromDOM();
+            const adaptive = (ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || [];
+            const directFmt = adaptive.find(f => f.url && f.mimeType && f.mimeType.includes("video"));
+            if (directFmt) {
+              const bestV = cleanMediaStreamUrl(directFmt.url);
+              const directAud = adaptive.find(f => f.url && f.mimeType && f.mimeType.includes("audio"));
+              const bestA = directAud ? cleanMediaStreamUrl(directAud.url) : "";
+              const finalUrl = bestA ? `yta2toidm://${bestV}##${bestA}` : bestV;
+              downloadMedia(finalUrl, mediaTitle + ".mp4");
+              label.textContent = "Sent to IDM!";
+            } else {
+              label.textContent = "Buffering stream...";
+              switchYouTubeQuality("hd1080");
+              setTimeout(() => {
+                extApi.runtime.sendMessage({ action: "get_tab_media" }, (retryResp) => {
+                  const retryStreams = (retryResp && retryResp.streams) || [];
+                  const paired = findPairedStreams(retryStreams);
+                  if (paired.videoStreams.length > 0) {
+                    const bestV = cleanMediaStreamUrl(paired.videoStreams[0].url);
+                    const finalUrl = paired.bestAudio ? `yta2toidm://${bestV}##${paired.bestAudio}` : bestV;
+                    downloadMedia(finalUrl, mediaTitle + ".mp4");
+                    label.textContent = "Sent to IDM!";
+                  } else {
+                    label.textContent = "Please play video first";
+                  }
+                  setTimeout(() => { label.textContent = origText; }, 1500);
+                });
+              }, 800);
+              return;
+            }
           } else if (streams.length > 0) {
             downloadMedia(cleanMediaStreamUrl(streams[0].url), mediaTitle + ".mp4");
             label.textContent = "Sent to IDM!";
@@ -688,40 +859,140 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       const mediaTitle = getMediaTitle();
       const items = [];
 
-      if (isYtOrDash && videoStreams.length > 0) {
-        const seenResolutions = new Set();
+      if (isYtOrDash) {
+        const ytData = getYouTubeFormatsFromDOM();
+        const adaptiveFormats = (ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || [];
+        const resolutionDefs = [
+          { label: "1080p Full HD (Video + Audio)", qName: "hd1080", itags: [137, 248, 399, 299, 270], minRes: 1080 },
+          { label: "720p HD (Video + Audio)", qName: "hd720", itags: [136, 247, 398, 298, 22], minRes: 720 },
+          { label: "480p SD (Video + Audio)", qName: "large", itags: [135, 244, 397], minRes: 480 },
+          { label: "360p (Video + Audio)", qName: "medium", itags: [134, 243, 396, 18], minRes: 360 },
+          { label: "240p (Video + Audio)", qName: "small", itags: [133, 242, 395], minRes: 240 },
+          { label: "144p (Video + Audio)", qName: "tiny", itags: [160, 278, 394], minRes: 144 }
+        ];
+
+        let audioSize = 0;
+        if (audioStreams.length > 0 && audioStreams[0].size) {
+          audioSize = audioStreams[0].size;
+        } else {
+          const af140 = adaptiveFormats.find(f => f.itag === 140 || (f.mimeType && f.mimeType.includes("audio")));
+          if (af140 && af140.contentLength) audioSize = parseInt(af140.contentLength, 10) || 0;
+        }
+
+        const seenLabels = new Set();
+
+        if (adaptiveFormats.length > 0) {
+          for (const rDef of resolutionDefs) {
+            const matchFormat = adaptiveFormats.find(f => rDef.itags.includes(f.itag) || (f.qualityLabel && f.qualityLabel.includes(String(rDef.minRes))));
+            if (!matchFormat) continue;
+
+            const captured = videoStreams.find(vs => {
+              const it = vs.url.match(/[?&]itag=(\d+)/);
+              return it && rDef.itags.includes(parseInt(it[1], 10));
+            });
+
+            let sizeBytes = 0;
+            if (matchFormat.contentLength) {
+              sizeBytes = parseInt(matchFormat.contentLength, 10) + audioSize;
+            } else if (captured && captured.size) {
+              sizeBytes = captured.size + audioSize;
+            }
+
+            let sizeStr = "";
+            if (sizeBytes > 1048576) {
+              sizeStr = ` (${(sizeBytes / 1048576).toFixed(1)} MB)`;
+            } else if (sizeBytes > 1024) {
+              sizeStr = ` (${(sizeBytes / 1024).toFixed(0)} KB)`;
+            }
+
+            let targetUrl = "";
+            if (captured) {
+              const cleanV = cleanMediaStreamUrl(captured.url);
+              targetUrl = bestAudio ? `yta2toidm://${cleanV}##${bestAudio}` : cleanV;
+            } else if (matchFormat.url) {
+              const cleanV = cleanMediaStreamUrl(matchFormat.url);
+              targetUrl = bestAudio ? `yta2toidm://${cleanV}##${bestAudio}` : cleanV;
+            }
+
+            seenLabels.add(rDef.label);
+            items.push({
+              url: targetUrl,
+              qName: rDef.qName,
+              needsSwitch: !targetUrl,
+              filename: `${mediaTitle}.mp4`,
+              label: `${rDef.label}${sizeStr}`
+            });
+          }
+        }
+
         for (const vs of videoStreams) {
           const u = vs.url || "";
-          let itagMatch = u.match(/[?&]itag=(\d+)/);
-          let itag = itagMatch ? parseInt(itagMatch[1], 10) : 0;
+          const itagMatch = u.match(/[?&]itag=(\d+)/);
+          const itag = itagMatch ? parseInt(itagMatch[1], 10) : 0;
           let labelText = "";
-          if (itag === 137 || itag === 248 || itag === 399) labelText = "1080p Full HD (Video + Audio)";
-          else if (itag === 136 || itag === 247 || itag === 398) labelText = "720p HD (Video + Audio)";
-          else if (itag === 135 || itag === 244 || itag === 397) labelText = "480p SD (Video + Audio)";
-          else if (itag === 134 || itag === 243 || itag === 396) labelText = "360p (Video + Audio)";
-          else if (itag === 133 || itag === 242) labelText = "240p (Video + Audio)";
+          let qName = "auto";
+          if (itag === 137 || itag === 248 || itag === 399) { labelText = "1080p Full HD (Video + Audio)"; qName = "hd1080"; }
+          else if (itag === 136 || itag === 247 || itag === 398) { labelText = "720p HD (Video + Audio)"; qName = "hd720"; }
+          else if (itag === 135 || itag === 244 || itag === 397) { labelText = "480p SD (Video + Audio)"; qName = "large"; }
+          else if (itag === 134 || itag === 243 || itag === 396) { labelText = "360p (Video + Audio)"; qName = "medium"; }
+          else if (itag === 133 || itag === 242) { labelText = "240p (Video + Audio)"; qName = "small"; }
           else labelText = "Video Stream (Video + Audio)";
 
-          if (seenResolutions.has(labelText)) continue;
-          seenResolutions.add(labelText);
+          if (seenLabels.has(labelText)) continue;
+          seenLabels.add(labelText);
+
+          let sizeBytes = (vs.size || 0) + audioSize;
+          let sizeStr = "";
+          if (sizeBytes > 1048576) sizeStr = ` (${(sizeBytes / 1048576).toFixed(1)} MB)`;
+          else if (sizeBytes > 1024) sizeStr = ` (${(sizeBytes / 1024).toFixed(0)} KB)`;
 
           const cleanVideo = cleanMediaStreamUrl(u);
           const finalUrl = bestAudio ? `yta2toidm://${cleanVideo}##${bestAudio}` : cleanVideo;
           items.push({
             url: finalUrl,
+            qName: qName,
+            needsSwitch: false,
             filename: `${mediaTitle}.mp4`,
-            label: labelText
+            label: `${labelText}${sizeStr}`
           });
         }
 
         if (audioStreams.length > 0) {
-          const cleanAudio = cleanMediaStreamUrl(audioStreams[0].url);
-          const isM4a = audioStreams[0].url.includes("itag=140") || (audioStreams[0].mime && audioStreams[0].mime.includes("mp4"));
-          items.push({
-            url: cleanAudio,
-            filename: `${mediaTitle}.${isM4a ? "m4a" : "opus"}`,
-            label: `Audio Only (${isM4a ? "M4A / 128 kbps" : "Opus"})`
-          });
+          for (const as of audioStreams) {
+            const cleanAudio = cleanMediaStreamUrl(as.url);
+            const isM4a = as.url.includes("itag=140") || (as.mime && as.mime.includes("mp4"));
+            const aLabel = isM4a ? "Audio Only (M4A / 128 kbps)" : "Audio Only (Opus / 160 kbps)";
+            if (seenLabels.has(aLabel)) continue;
+            seenLabels.add(aLabel);
+
+            let aSizeStr = "";
+            if (as.size && as.size > 0) {
+              aSizeStr = ` (${(as.size / 1048576).toFixed(1)} MB)`;
+            }
+            items.push({
+              url: cleanAudio,
+              needsSwitch: false,
+              filename: `${mediaTitle}.${isM4a ? "m4a" : "opus"}`,
+              label: `${aLabel}${aSizeStr}`
+            });
+          }
+        } else if (adaptiveFormats.length > 0) {
+          const audioFormats = adaptiveFormats.filter(f => f.mimeType && f.mimeType.includes("audio"));
+          for (const af of audioFormats) {
+            const isM4a = af.itag === 140 || (af.mimeType && af.mimeType.includes("mp4"));
+            const aLabel = isM4a ? "Audio Only (M4A / 128 kbps)" : "Audio Only (Opus / 160 kbps)";
+            if (seenLabels.has(aLabel)) continue;
+            seenLabels.add(aLabel);
+
+            let aSize = parseInt(af.contentLength || "0", 10);
+            let aSizeStr = aSize > 1048576 ? ` (${(aSize / 1048576).toFixed(1)} MB)` : "";
+            items.push({
+              url: af.url ? cleanMediaStreamUrl(af.url) : "",
+              needsSwitch: !af.url,
+              filename: `${mediaTitle}.${isM4a ? "m4a" : "opus"}`,
+              label: `${aLabel}${aSizeStr}`
+            });
+          }
         }
       } else {
         if (directSrc && directSrc.startsWith("http") && !directSrc.startsWith("blob:")) {
@@ -770,7 +1041,29 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
         row.addEventListener("click", (ev) => {
           ev.stopPropagation();
           menu.style.display = "none";
-          downloadMedia(item.url, item.filename);
+          if (item.url) {
+            downloadMedia(item.url, item.filename);
+            label.textContent = "Sent to IDM!";
+            setTimeout(() => { label.textContent = origText; }, 1500);
+          } else if (item.qName) {
+            label.textContent = "Switching quality...";
+            switchYouTubeQuality(item.qName);
+            setTimeout(() => {
+              extApi.runtime.sendMessage({ action: "get_tab_media" }, (newResp) => {
+                const newStreams = (newResp && newResp.streams) || [];
+                const paired = findPairedStreams(newStreams);
+                if (paired.videoStreams.length > 0) {
+                  const bestV = cleanMediaStreamUrl(paired.videoStreams[0].url);
+                  const fUrl = paired.bestAudio ? `yta2toidm://${bestV}##${paired.bestAudio}` : bestV;
+                  downloadMedia(fUrl, item.filename);
+                  label.textContent = "Sent to IDM!";
+                } else {
+                  label.textContent = "Stream buffered, click again";
+                }
+                setTimeout(() => { label.textContent = origText; }, 2000);
+              });
+            }, 600);
+          }
         });
         menu.appendChild(row);
       });

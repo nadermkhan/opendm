@@ -248,6 +248,9 @@ std::pair<std::string, std::string> split_dual_stream_url(const std::string& raw
     }
     std::string video_url = normalize_stream_scheme(s.substr(0, hash_pos));
     std::string audio_url = normalize_stream_scheme(s.substr(hash_pos + 2));
+    if (audio_url.find("failure.mp3") != std::string::npos || audio_url.find("/s/search/audio/") != std::string::npos) {
+        audio_url.clear();
+    }
     return {video_url, audio_url};
 }
 
@@ -278,7 +281,8 @@ std::string clean_stream_query_parameters(const std::string& url) {
         while (!key.empty() && (key.front() == ' ' || key.front() == '\t')) key.erase(0, 1);
 
         if (is_googlevideo) {
-            if (key == "range" || key == "begin" || key == "len" || key == "ump") {
+            if (key == "range" || key == "begin" || key == "len" || key == "ump" ||
+                key == "sq" || key == "otf") {
                 continue;
             }
         }

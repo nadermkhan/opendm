@@ -731,6 +731,22 @@ void DownloadSession::assemble_file() {
     });
 
     if (ok) {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        if (fs::exists(dest_path) && fs::file_size(dest_path) <= 64) {
+            std::ifstream chk(dest_path, std::ios::binary);
+            std::string body((std::istreambuf_iterator<char>(chk)), std::istreambuf_iterator<char>());
+            if (body.find("sabr.malformed_config") != std::string::npos) {
+                fs::remove(dest_path, ec);
+                status_ = SessionStatus::ERROR;
+                {
+                    std::lock_guard<std::mutex> lock(meta_mutex_);
+                    last_error_ = "YouTube SABR control response intercepted instead of media stream";
+                }
+                return;
+            }
+        }
+
         // If an audio stream URL is present (adaptive streaming / separate tracks),
         // download the audio stream and multiplex into the final destination_path.
         std::string audio_url;
@@ -739,10 +755,8 @@ void DownloadSession::assemble_file() {
             audio_url = audio_stream_url_;
         }
         if (!audio_url.empty()) {
-            namespace fs = std::filesystem;
             std::string video_tmp = dest_path + ".video.tmp";
             std::string audio_tmp = dest_path + ".audio.tmp";
-            std::error_code ec;
             fs::rename(dest_path, video_tmp, ec);
             if (!ec) {
                 CURL* acurl = curl_easy_init();

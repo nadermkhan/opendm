@@ -93,6 +93,18 @@ mockDocument.body = new MockNode("BODY");
 mockDocument.documentElement.appendChild(mockDocument.body);
 
 mockDocument.createElement = (tag) => new MockNode(tag);
+mockDocument.getElementsByTagName = (tag) => {
+  const res = [];
+  function search(node) {
+    if (!node || !node.children) return;
+    for (const c of node.children) {
+      if (c.tagName && c.tagName.toLowerCase() === tag.toLowerCase()) res.push(c);
+      search(c);
+    }
+  }
+  search(mockDocument);
+  return res;
+};
 mockDocument.addEventListener = (ev, fn) => {
   listeners[ev] = listeners[ev] || [];
   listeners[ev].push(fn);
@@ -355,7 +367,84 @@ setTimeout(() => {
           assert(menuHtml.includes("Audio Only (M4A / 128 kbps)"), "Menu must list Audio Only (M4A)");
           console.log("[PASS] Case 9: YouTube dropdown resolution and audio options populated successfully");
 
-          console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+          // Test Case 10: Strict rejection of SABR URLs and failure.mp3
+          currentMockStreams = [
+            {
+              url: "https://rr1---sn.googlevideo.com/videoplayback?expire=123&sabr=1&ump=1",
+              type: "video",
+              mime: "application/vnd.yt-ump",
+              size: 31
+            },
+            {
+              url: "https://www.youtube.com/s/search/audio/failure.mp3",
+              type: "audio",
+              mime: "audio/mp3",
+              size: 6529
+            },
+            {
+              url: "https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?expire=123&itag=136&mime=video%2Fmp4",
+              type: "video",
+              mime: "video/mp4",
+              size: 25000000
+            },
+            {
+              url: "https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?expire=123&itag=140&mime=audio%2Fmp4",
+              type: "audio",
+              mime: "audio/mp4",
+              size: 3500000
+            }
+          ];
+
+          sentMessages.length = 0;
+          bar.dispatch("click", {
+            target: bar,
+            stopPropagation: () => {},
+            preventDefault: () => {}
+          });
+
+          setTimeout(() => {
+            const rejectedDl = sentMessages.find(m => m.action === "download_media" && (m.url.includes("sabr=1") || m.url.includes("failure.mp3")));
+            assert(!rejectedDl, "SABR and failure.mp3 must be strictly rejected and never sent to download");
+            const validDl = sentMessages.find(m => m.action === "download_media" && m.url.includes("itag=136") && m.url.includes("itag=140"));
+            assert(validDl, "Valid stream with itag 136 and 140 must be selected");
+            console.log("[PASS] Case 10: SABR control URL and failure.mp3 rejection verified");
+
+            // Test Case 11: YouTube DOM metadata resolution list extraction
+            const ytScript = new MockNode("SCRIPT");
+            ytScript.textContent = `var ytInitialPlayerResponse = ${JSON.stringify({
+              streamingData: {
+                adaptiveFormats: [
+                  { itag: 137, qualityLabel: "1080p", contentLength: "80000000", mimeType: "video/mp4; codecs=\"avc1.640028\"" },
+                  { itag: 136, qualityLabel: "720p", contentLength: "40000000", mimeType: "video/mp4; codecs=\"avc1.4d401f\"" },
+                  { itag: 135, qualityLabel: "480p", contentLength: "20000000", mimeType: "video/mp4; codecs=\"avc1.4d401f\"" },
+                  { itag: 134, qualityLabel: "360p", contentLength: "12000000", mimeType: "video/mp4; codecs=\"avc1.4d401e\"" },
+                  { itag: 140, mimeType: "audio/mp4; codecs=\"mp4a.40.2\"", contentLength: "4000000" }
+                ]
+              }
+            })};`;
+            mockDocument.body.appendChild(ytScript);
+
+            // Close and re-open dropdown menu
+            menu.style.display = "none";
+            dropdownBtn.dispatch("click", {
+              target: dropdownBtn,
+              stopPropagation: () => {},
+              preventDefault: () => {}
+            });
+
+            setTimeout(() => {
+              assert.strictEqual(menu.style.display, "flex", "Menu must open on dropdown click");
+              const fullMenuHtml = menu.children.map(c => c.innerHTML || "").join(" ");
+              assert(fullMenuHtml.includes("1080p Full HD (Video + Audio)"), "DOM extracted 1080p must be in menu");
+              assert(fullMenuHtml.includes("720p HD (Video + Audio)"), "DOM extracted 720p must be in menu");
+              assert(fullMenuHtml.includes("480p SD (Video + Audio)"), "DOM extracted 480p must be in menu");
+              assert(fullMenuHtml.includes("360p (Video + Audio)"), "DOM extracted 360p must be in menu");
+              assert(fullMenuHtml.includes("Audio Only (M4A / 128 kbps)"), "DOM extracted audio must be in menu");
+              console.log("[PASS] Case 11: YouTube DOM metadata resolution list extraction verified 100%");
+
+              console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+            }, 50);
+          }, 50);
         }, 50);
       }, 50);
     }, 50);
