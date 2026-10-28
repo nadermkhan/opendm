@@ -611,5 +611,146 @@ progressbar > progress {
     color: #ffffff;
 }
 
+/* Authentic IDM Progress Dialog Aesthetic */
+.idm-progress-window {
+    background-color: #242424;
+    color: #eeeeee;
+}
 
+.idm-metadata-frame {
+    background-color: #2a2a2a;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+}
 
+.idm-url-label {
+    font-size: 0.88rem;
+    font-weight: 500;
+    color: #f2f2f2;
+    padding-bottom: 2px;
+}
+
+.idm-meta-title {
+    font-size: 0.86rem;
+    font-weight: 600;
+    color: #a0a0a0;
+    min-width: 130px;
+}
+
+.idm-meta-val {
+    font-size: 0.86rem;
+    color: #e0e0e0;
+}
+
+.idm-status-blue {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: #3584e4;
+}
+
+/* Authentic IDM Green Progress Bar */
+.idm-main-progress-bar {
+    min-height: 16px;
+}
+
+.idm-main-progress-bar trough {
+    min-height: 16px;
+    background-color: #1a1a1a;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-radius: 2px;
+    padding: 1px;
+}
+
+.idm-main-progress-bar progress {
+    min-height: 14px;
+    background: linear-gradient(to bottom, #2ee02e 0%, #00bb00 45%, #009900 70%, #007700 100%);
+    border: 1px solid #006600;
+    border-radius: 1px;
+}
+
+/* Dialog Action Buttons */
+.idm-dialog-btn {
+    min-width: 75px;
+    padding: 0.35rem 0.9rem;
+    font-size: 0.88rem;
+    font-weight: 500;
+    background-color: #323232;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 3px;
+    color: #eeeeee;
+    transition: background-color 100ms ease;
+}
+
+.idm-dialog-btn:hover {
+    background-color: #3e3e3e;
+    color: #ffffff;
+}
+
+.idm-dialog-btn:active {
+    background-color: #282828;
+}
+
+.idm-btn-details {
+    font-size: 0.84rem;
+}
+
+/* Connection Visualizer Section */
+.idm-conns-title {
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: #a0a0a0;
+    margin-top: 4px;
+    margin-bottom: 2px;
+}
+
+.idm-visualizer-canvas {
+    border-radius: 2px;
+    min-height: 18px;
+}
+
+.idm-table-border-frame {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 3px;
+    background-color: #1e1e1e;
+}
+
+.idm-conns-header {
+    background-color: #282828;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+    padding: 3px 0;
+}
+
+.idm-conns-hcell {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #cccccc;
+}
+
+.idm-conns-scrolled {
+    background-color: #1c1c1c;
+}
+
+.idm-conns-table {
+    background-color: #1c1c1c;
+}
+
+.idm-conns-row {
+    padding: 1px 0;
+    min-height: 19px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.idm-conns-row.even {
+    background-color: rgba(255, 255, 255, 0.02);
+}
+
+.idm-conns-cell {
+    font-size: 0.82rem;
+    font-family: monospace, sans-serif;
+    color: #e0e0e0;
+}
+
+.idm-options-frame {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 4px;
+}

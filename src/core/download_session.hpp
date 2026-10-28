@@ -50,6 +50,8 @@ public:
     void set_credentials(const std::string& username, const std::string& password);
     void set_speed_limit(uint64_t bytes_per_sec);
     void enable_speed_limit(bool enable);
+    bool is_speed_limit_enabled() const { return speed_limiter_.is_enabled(); }
+    uint64_t get_speed_limit() const { return speed_limiter_.get_limit_bytes_per_sec(); }
     void set_audio_stream_url(const std::string& audio_url) {
         std::lock_guard<std::mutex> lock(meta_mutex_);
         audio_stream_url_ = audio_url;

@@ -31,6 +31,10 @@
 *Prompts before downloading: auto-categorization, folder synchronization, remote file size probe, and ZIP preview.*
 ![OpenDM Download File Info](docs/screenshots/download_file_info.png)
 
+### Download Progress & Connection Visualizer
+*Authentic IDM download status dialog with single segmented connection visualizer bar, red start-position indicators, per-connection progress table, and speed limiter tab.*
+![OpenDM Download Progress](docs/screenshots/download_progress.png)
+
 </div>
 
 ---

@@ -7,6 +7,7 @@
 #include "ui/main_window.hpp"
 #include "ui/about_dialog.hpp"
 #include "ui/download_info_dialog.hpp"
+#include "ui/progress_dialog.hpp"
 #include <curl/curl.h>
 #include <gtk/gtk.h>
 #include <iostream>
@@ -41,8 +42,8 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    // Try communicating with an existing instance if URL or action provided
-    if (!opts.url.empty() || opts.start_queue) {
+    // Try communicating with an existing instance if URL or action provided (skip if screenshot requested)
+    if ((!opts.url.empty() || opts.start_queue) && opts.screenshot_path.empty()) {
         std::string req;
         if (!opts.url.empty()) {
             req = "{\"action\": \"download\", \"url\": \"" + opts.url + "\"";
@@ -206,6 +207,58 @@ int main(int argc, char* argv[]) {
                     }
                     return G_SOURCE_CONTINUE;
                 }, nullptr);
+            }
+
+            if (context->opts.url == "demo_progress" && !context->opts.screenshot_path.empty()) {
+                gtk_window_present(GTK_WINDOW(context->main_win->get_widget()));
+                std::string json_state = R"({
+                    "id": "demo_prog",
+                    "url": "https://www.internetdownloadmanager.com/video2/idm.ogv",
+                    "destination_path": "/home/nader/Downloads/Video/idm.ogv",
+                    "filename": "idm.ogv",
+                    "category": "Video",
+                    "total_size": 18607144960,
+                    "supports_ranges": true,
+                    "status": 2,
+                    "chunk_manager": {
+                        "total_file_size": 18607144960,
+                        "is_streaming": false,
+                        "next_chunk_id": 6,
+                        "chunks": [
+                            {"id": 0, "start_offset": 0, "end_offset": 3101190826, "downloaded_bytes": 671744000, "status": 1, "temp_filepath": ""},
+                            {"id": 1, "start_offset": 3101190827, "end_offset": 6202381653, "downloaded_bytes": 808895488, "status": 1, "temp_filepath": ""},
+                            {"id": 2, "start_offset": 6202381654, "end_offset": 9303572480, "downloaded_bytes": 656000000, "status": 1, "temp_filepath": ""},
+                            {"id": 3, "start_offset": 9303572481, "end_offset": 12404763307, "downloaded_bytes": 592000000, "status": 1, "temp_filepath": ""},
+                            {"id": 4, "start_offset": 12404763308, "end_offset": 15505954134, "downloaded_bytes": 464000000, "status": 1, "temp_filepath": ""},
+                            {"id": 5, "start_offset": 15505954135, "end_offset": 18607144959, "downloaded_bytes": 439999488, "status": 1, "temp_filepath": ""}
+                        ]
+                    }
+                })";
+                auto mock_sess = opendm::DownloadSession::deserialize(json_state);
+                if (!mock_sess) {
+                    mock_sess = std::make_shared<opendm::DownloadSession>("demo_prog", "https://www.internetdownloadmanager.com/video2/idm.ogv", "/tmp/idm.ogv");
+                }
+                auto* dlg = new opendm::ProgressDialog(mock_sess, GTK_WINDOW(context->main_win->get_widget()));
+                dlg->show();
+
+                struct ProgSnapData {
+                    opendm::ProgressDialog* dlg;
+                    std::string path;
+                    int ticks;
+                };
+                auto* psd = new ProgSnapData{dlg, context->opts.screenshot_path, 0};
+                gtk_widget_add_tick_callback(dlg->get_widget(), +[](GtkWidget*, GdkFrameClock*, gpointer d) -> gboolean {
+                    auto* data = static_cast<ProgSnapData*>(d);
+                    data->ticks++;
+                    if (data->ticks >= 15) {
+                        data->dlg->save_snapshot(data->path);
+                        g_application_quit(G_APPLICATION(g_application_get_default()));
+                        delete data;
+                        return G_SOURCE_REMOVE;
+                    }
+                    return G_SOURCE_CONTINUE;
+                }, psd, nullptr);
+                return;
             }
 
             if (!context->opts.url.empty() && !context->opts.screenshot_path.empty()) {
