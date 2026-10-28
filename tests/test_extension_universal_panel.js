@@ -500,7 +500,52 @@ setTimeout(() => {
                 setTimeout(() => {
                   assert(sentMessages.length > 0, "Download all must dispatch download requests");
                   console.log("[PASS] Case 13: Download all action functionality verified 100%");
-                  console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+
+                  // Test Case 14: SABR stream without itag in query string matched via itag property
+                  currentMockStreams = [
+                    {
+                      url: "https://rr2---sn-wngz.googlevideo.com/videoplayback?expire=789&sabr=1&alr=yes&cpn=abc",
+                      itag: 137,
+                      type: "video",
+                      mime: "video/mp4",
+                      size: 45000000
+                    },
+                    {
+                      url: "https://rr2---sn-wngz.googlevideo.com/videoplayback?expire=789&sabr=1&alr=yes&cpn=abc&itag=140",
+                      itag: 140,
+                      type: "audio",
+                      mime: "audio/mp4",
+                      size: 5000000
+                    }
+                  ];
+                  sentMessages.length = 0;
+                  bar.dispatch("click", {
+                    target: bar,
+                    stopPropagation: () => {},
+                    preventDefault: () => {}
+                  });
+
+                  setTimeout(() => {
+                    const sabrDl = sentMessages.find(m => m.action === "download_media" && m.url.startsWith("yta2toidm://"));
+                    assert(sabrDl, "SABR stream with itag property must be matched and downloaded");
+                    assert(sabrDl.url.includes("rr2---sn-wngz.googlevideo.com"), "SABR video stream URL must be preserved");
+                    console.log("[PASS] Case 14: SABR stream matching and fallback resolution verified 100%");
+
+                    // Test Case 15: Dropdown click fallback to active video stream
+                    sentMessages.length = 0;
+                    const formatItems = menu.children.filter(c => c.className === "idm-menu-item");
+                    assert(formatItems.length > 0, "Format items must exist in menu");
+                    formatItems[0].dispatch("click", {
+                      stopPropagation: () => {},
+                      preventDefault: () => {}
+                    });
+
+                    setTimeout(() => {
+                      assert(sentMessages.length > 0, "Clicking dropdown item must dispatch download without getting stuck");
+                      console.log("[PASS] Case 15: Dropdown resolution selection with active stream verified 100%");
+                      console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+                    }, 700);
+                  }, 50);
                 }, 300);
               }, 50);
             }, 50);
@@ -510,4 +555,5 @@ setTimeout(() => {
     }, 50);
   }, 50);
 }, 50);
+
 

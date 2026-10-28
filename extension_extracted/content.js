@@ -64,13 +64,25 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
   const extApi = (typeof browser !== "undefined" && browser.runtime) ? browser : (typeof chrome !== "undefined" && chrome.runtime) ? chrome : null;
 
-  // Disable YouTube SABR / Web UMP streaming to enforce direct DASH chunks
+  // Safe-patch YouTube ytcfg if available in page context without CSP violation
   try {
-    if (typeof location !== "undefined" && location.hostname && location.hostname.includes("youtube.com") && extApi) {
-      const sabrScript = document.createElement("script");
-      sabrScript.src = extApi.runtime.getURL("document.js");
-      sabrScript.onload = () => sabrScript.remove();
-      (document.head || document.documentElement).appendChild(sabrScript);
+    if (typeof location !== "undefined" && location.hostname && location.hostname.includes("youtube.com")) {
+      const w = (typeof window !== "undefined" && window.wrappedJSObject) ? window.wrappedJSObject : window;
+      function patchSabrFlags(c) {
+        if (!c) return;
+        try {
+          c.html5_enable_sabr_vod_streaming_xhr = false;
+          c.html5_enable_sabr_vod_non_streaming_xhr = false;
+          c.html5_disable_sabr = true;
+          c.html5_remove_client_sabr_determination = true;
+          c.web_streaming_fast = false;
+          c.web_streaming_watch = false;
+        } catch (e) {}
+      }
+      if (w && w.ytcfg && typeof w.ytcfg.get === "function") {
+        const exp = w.ytcfg.get("EXPERIMENT_FLAGS");
+        if (exp) patchSabrFlags(exp);
+      }
     }
   } catch(e) {}
 
@@ -716,12 +728,20 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             try {
               const item = pf[i];
               if (item) {
+                let u = item.url ? String(item.url) : "";
+                if (!u && (item.signatureCipher || item.cipher)) {
+                  const cStr = String(item.signatureCipher || item.cipher);
+                  const m = cStr.match(/(?:^|&)url=([^&]+)/);
+                  if (m) {
+                    try { u = decodeURIComponent(m[1]); } catch(e) {}
+                  }
+                }
                 clean.streamingData.formats.push({
                   itag: Number(item.itag || 0),
                   mimeType: String(item.mimeType || ""),
                   qualityLabel: item.qualityLabel ? String(item.qualityLabel) : "",
                   contentLength: item.contentLength ? String(item.contentLength) : "",
-                  url: item.url ? String(item.url) : ""
+                  url: u
                 });
               }
             } catch (err) {}
@@ -733,12 +753,20 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             try {
               const item = af[i];
               if (item) {
+                let u = item.url ? String(item.url) : "";
+                if (!u && (item.signatureCipher || item.cipher)) {
+                  const cStr = String(item.signatureCipher || item.cipher);
+                  const m = cStr.match(/(?:^|&)url=([^&]+)/);
+                  if (m) {
+                    try { u = decodeURIComponent(m[1]); } catch(e) {}
+                  }
+                }
                 clean.streamingData.adaptiveFormats.push({
                   itag: Number(item.itag || 0),
                   mimeType: String(item.mimeType || ""),
                   qualityLabel: item.qualityLabel ? String(item.qualityLabel) : "",
                   contentLength: item.contentLength ? String(item.contentLength) : "",
-                  url: item.url ? String(item.url) : "",
+                  url: u,
                   bitrate: Number(item.bitrate || 0)
                 });
               }
@@ -848,7 +876,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       if (u.includes("failure.mp3") || u.includes("/s/search/audio/")) {
         continue;
       }
-      if (u.includes("googlevideo.com") && !u.match(/[?&]itag=\d+/)) {
+      if (u.includes("googlevideo.com") && (u.includes("/videostats") || u.includes("/stats") || u.includes("/ptracking") || u.includes("/generate_204") || u.includes("/check2"))) {
         continue;
       }
       const mime = (s.mime || "").toLowerCase();
@@ -1113,6 +1141,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
               let targetUrl = "";
               const captured = videoStreams.find(vs => {
+                if (vs.itag && vs.itag === itag) return true;
                 const it = vs.url && vs.url.match(/[?&]itag=(\d+)/);
                 return it && parseInt(it[1], 10) === itag;
               });
@@ -1133,6 +1162,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
                 }
               } else {
                 const capturedAudio = audioStreams.find(as => {
+                  if (as.itag && as.itag === itag) return true;
                   const it = as.url && as.url.match(/[?&]itag=(\d+)/);
                   return it && parseInt(it[1], 10) === itag;
                 });
@@ -1357,6 +1387,11 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
                 if (paired.videoStreams.length > 0) {
                   const bestV = cleanMediaStreamUrl(paired.videoStreams[0].url);
                   const fUrl = paired.bestAudio ? (`yta2toidm://${bestV}##${paired.bestAudio}`) : bestV;
+                  downloadMedia(fUrl, item.filename);
+                  label.textContent = "Sent to IDM!";
+                } else if (videoStreams.length > 0) {
+                  const bestV = cleanMediaStreamUrl(videoStreams[0].url);
+                  const fUrl = bestAudio ? (`yta2toidm://${bestV}##${bestAudio}`) : bestV;
                   downloadMedia(fUrl, item.filename);
                   label.textContent = "Sent to IDM!";
                 } else {
