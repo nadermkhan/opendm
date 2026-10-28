@@ -1,0 +1,41 @@
+OpenDM
+Copyright (C) 2026 Nader Mahbub Khan <muhammadnadermahbubkhan@gmail.com>
+https://github.com/nadermkhan/opendm
+
+================================================================================
+ATTRIBUTION & NON-THEFT NOTICE (GNU GPLv3 Section 7)
+================================================================================
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+In accordance with Section 7(b) and Section 7(c) of the GNU General Public
+License, Version 3, the following additional terms apply to all copies,
+forks, derivative works, and substantial portions of this software:
+
+1. MANDATORY AUTHOR ATTRIBUTION:
+   Any redistribution of this source code or compiled binary, in modified or
+   unmodified form, MUST retain this NOTICE file, all original copyright
+   notices, and the AUTHORS file. You must visibly credit the original creator:
+   "Created by Nader Mahbub Khan (https://github.com/nadermkhan/opendm)"
+   in user-facing documentation, README files, and About dialogs.
+
+2. NO PLAGIARISM OR MISREPRESENTATION OF ORIGIN:
+   You may NOT misrepresent the origin of this software or claim that you wrote
+   the original code. Stripping author names, erasing git history to claim
+   authorship, or rebranding this work without clear, prominent attribution
+   to the original developer is strictly prohibited and constitutes copyright
+   infringement.
+
+3. MARKING OF MODIFICATIONS:
+   All modified versions must be clearly marked as changed, and must not be
+   misrepresented as being the official upstream OpenDM project.
+
+4. COPYLEFT REQUIREMENT:
+   Under GNU GPLv3, any derivative work or application containing code from
+   OpenDM must also be released under the GNU General Public License v3.0 with
+   full complete corresponding source code made freely available. Stealing or
+   incorporating this code into proprietary, closed-source software is
+   strictly forbidden and illegal.

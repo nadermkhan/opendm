@@ -5,14 +5,15 @@
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg?style=for-the-badge&logo=c%2B%2B)](https://en.wikipedia.org/wiki/C%2B%2B20)
 [![GTK4](https://img.shields.io/badge/GUI-GTK4-green.svg?style=for-the-badge&logo=gtk)](https://www.gtk.org/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-orange.svg?style=for-the-badge)](LICENSE)
+[![Author: Nader Mahbub Khan](https://img.shields.io/badge/Author-Nader%20Mahbub%20Khan-blue?style=for-the-badge&logo=github)](https://github.com/nadermkhan)
 [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-lightgrey.svg?style=for-the-badge&logo=linux)](https://kernel.org)
 [![Tests: 100% Passing](https://img.shields.io/badge/Tests-6%2F6%20Passed-brightgreen.svg?style=for-the-badge)](tests/)
 [![Zero Telemetry](https://img.shields.io/badge/Telemetry-0%25%20(None)-success.svg?style=for-the-badge)](SECURITY.md)
 
 **A high-performance, native C++20 / GTK4 recreation of Internet Download Manager (IDM).**  
-*Dynamic multipart socket segmentation, browser integration, remote ZIP inspection, and audio/video stream muxing — 100% free, open-source, and privacy-first.*
+*Created by [Nader Mahbub Khan](https://github.com/nadermkhan). Dynamic multipart socket segmentation, browser integration, remote ZIP inspection, and audio/video stream muxing — 100% free, open-source, and privacy-first.*
 
-[Key Features](#key-features) • [Why Trust OpenDM?](#why-trust-opendm) • [Why OpenDM is Faster](#why-opendm-is-faster-than-traditional-downloaders) • [Comparison Table](#comparison-table) • [Quick Start](#quick-start) • [Browser Integration](#browser-integration) • [Architecture](#architecture--transparency) • [FAQ](#frequently-asked-questions-faq)
+[Key Features](#key-features) • [Author & Maintainer](#author--maintainer) • [Why Trust OpenDM?](#why-trust-opendm) • [Why OpenDM is Faster](#why-opendm-is-faster-than-traditional-downloaders) • [Quick Start](#quick-start) • [Contributing](#contributing) • [License & Attribution](#license-attribution--anti-theft-policy)
 
 </div>
 
@@ -282,19 +283,39 @@ Yes. Debian (Debian 11, 12, Bookworm, Sid), Ubuntu, Linux Mint, Kali Linux, Pop!
 
 ---
 
-## Contributing
+## Author & Maintainer
 
-Contributions, bug reports, and pull requests are welcome:
-1. Fork the repository.
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`).
-3. Commit your changes (`git commit -m 'Add AmazingFeature'`).
-4. Ensure all tests pass (`ctest --test-dir build --output-on-failure`).
-5. Push to the branch (`git push origin feature/AmazingFeature`).
-6. Open a Pull Request.
+OpenDM was created and is actively maintained by:
+
+* **Nader Mahbub Khan**
+  * GitHub: [@nadermkhan](https://github.com/nadermkhan)
+  * Email: muhammadnadermahbubkhan@gmail.com
+  * Project Repository: [https://github.com/nadermkhan/opendm](https://github.com/nadermkhan/opendm)
+
+For credit attribution, feature inquiries, or security disclosures, please reach out via GitHub issues or email.
 
 ---
 
-## License & Legal Disclaimer
+## Contributing
 
-* **License**: OpenDM is licensed under the [GNU General Public License v3.0](LICENSE).
-* **Clean-Room Implementation**: OpenDM is an independent open-source project created via clean-room reverse engineering. It is not affiliated with, endorsed by, or sponsored by Tonec Inc. Internet Download Manager (IDM) is a registered trademark of Tonec Inc.
+OpenDM is an open-source community project, and contributions are warmly welcomed! Anyone is encouraged to report bugs, suggest features, optimize performance, or submit pull requests.
+
+Please review our [**Contributing Guidelines (CONTRIBUTING.md)**](CONTRIBUTING.md) before submitting code:
+
+1. **Mandatory Attribution**: You must cite the real developer (**Nader Mahbub Khan**) and link back to this repository in all derivative works, forks, and distributions.
+2. **Strict Anti-Theft & Plagiarism Policy**: Stripping copyright notices, rebranding the project to claim original authorship, or wiping git history is strictly prohibited.
+3. **Copyleft Protection**: Code must remain free and open under GPL-3.0. Re-licensing or locking code behind closed-source proprietary software is strictly forbidden.
+4. **Testing Standards**: All changes must pass the automated C++ test suite (`ctest --test-dir build --output-on-failure`).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for complete details on setting up your development environment and opening pull requests.
+
+---
+
+## License, Attribution & Anti-Theft Policy
+
+* **License**: OpenDM is licensed under the [GNU General Public License v3.0 (GPL-3.0)](LICENSE).
+* **Attribution Notice (GPL-3.0 Section 7)**: All copies, forks, distributions, and substantial portions of this software must retain the [NOTICE](NOTICE) file and prominently credit the original creator:  
+  `Created by Nader Mahbub Khan (https://github.com/nadermkhan/opendm)`
+* **Code Theft Strictly Prohibited**: Any unauthorized appropriation, closed-source distribution, or removal of author credits is a direct violation of the GNU GPLv3 license and applicable copyright law.
+* **Clean-Room Implementation**: OpenDM is an independent open-source clean-room implementation. It is not affiliated with, endorsed by, or sponsored by Tonec Inc. Internet Download Manager (IDM) is a registered trademark of Tonec Inc.
+
