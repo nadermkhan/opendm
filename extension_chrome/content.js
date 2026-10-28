@@ -681,23 +681,100 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     return info ? info.rank : 100;
   }
 
+  function sanitizePageObject(rawObj, pageWin) {
+    if (!rawObj) return null;
+    const w = pageWin || (typeof window !== "undefined" && window.wrappedJSObject ? window.wrappedJSObject : window);
+    // 1. Try page-level JSON.stringify to return a safe primitive string across compartment boundary
+    try {
+      const stringifyFn = (w && w.JSON && w.JSON.stringify) ? w.JSON.stringify : JSON.stringify;
+      const str = stringifyFn(rawObj);
+      if (str && str.length > 2) {
+        return JSON.parse(str);
+      }
+    } catch (e) {}
+
+    // 2. Try Firefox cloneInto if available
+    try {
+      if (typeof cloneInto === "function" && typeof window !== "undefined") {
+        return cloneInto(rawObj, window);
+      }
+    } catch (e) {}
+
+    // 3. Manual safe copy of primitive values into content script memory
+    try {
+      if (rawObj.streamingData) {
+        const clean = {
+          videoDetails: {},
+          streamingData: { formats: [], adaptiveFormats: [] }
+        };
+        if (rawObj.videoDetails && rawObj.videoDetails.title) {
+          clean.videoDetails.title = String(rawObj.videoDetails.title);
+        }
+        const pf = rawObj.streamingData.formats;
+        if (pf && pf.length) {
+          for (let i = 0; i < pf.length; i++) {
+            try {
+              const item = pf[i];
+              if (item) {
+                clean.streamingData.formats.push({
+                  itag: Number(item.itag || 0),
+                  mimeType: String(item.mimeType || ""),
+                  qualityLabel: item.qualityLabel ? String(item.qualityLabel) : "",
+                  contentLength: item.contentLength ? String(item.contentLength) : "",
+                  url: item.url ? String(item.url) : ""
+                });
+              }
+            } catch (err) {}
+          }
+        }
+        const af = rawObj.streamingData.adaptiveFormats;
+        if (af && af.length) {
+          for (let i = 0; i < af.length; i++) {
+            try {
+              const item = af[i];
+              if (item) {
+                clean.streamingData.adaptiveFormats.push({
+                  itag: Number(item.itag || 0),
+                  mimeType: String(item.mimeType || ""),
+                  qualityLabel: item.qualityLabel ? String(item.qualityLabel) : "",
+                  contentLength: item.contentLength ? String(item.contentLength) : "",
+                  url: item.url ? String(item.url) : "",
+                  bitrate: Number(item.bitrate || 0)
+                });
+              }
+            } catch (err) {}
+          }
+        }
+        return clean;
+      }
+    } catch (e) {}
+
+    return null;
+  }
+
   function getYouTubeFormatsFromDOM() {
     let playerResp = null;
     try {
       if (typeof window !== "undefined") {
-        if (window.ytInitialPlayerResponse) {
-          playerResp = window.ytInitialPlayerResponse;
-        } else if (window.wrappedJSObject && window.wrappedJSObject.ytInitialPlayerResponse) {
-          playerResp = window.wrappedJSObject.ytInitialPlayerResponse;
+        const w = window.wrappedJSObject || window;
+        let raw = null;
+        if (w.ytInitialPlayerResponse) {
+          raw = w.ytInitialPlayerResponse;
+        } else if (window.ytInitialPlayerResponse) {
+          raw = window.ytInitialPlayerResponse;
         } else {
           const mp = document.getElementById("movie_player");
           const wmp = mp && (mp.wrappedJSObject || mp);
           if (wmp && typeof wmp.getPlayerResponse === "function") {
-            playerResp = wmp.getPlayerResponse();
+            try { raw = wmp.getPlayerResponse(); } catch (e) {}
           }
+        }
+        if (raw) {
+          playerResp = sanitizePageObject(raw, w);
         }
       }
     } catch (e) {}
+
     if (playerResp && playerResp.streamingData) return playerResp;
 
     try {
@@ -964,148 +1041,179 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       const items = [];
 
       if (isYtOrDash) {
-        const ytData = getYouTubeFormatsFromDOM();
+        let ytData = null;
+        try {
+          ytData = getYouTubeFormatsFromDOM();
+        } catch (e) {}
+
         const progFormats = (ytData && ytData.streamingData && ytData.streamingData.formats) || [];
         const adapFormats = (ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || [];
 
         // Build list of candidate format objects: progressive formats first, then adaptive
         const rawFmts = [];
-        progFormats.forEach(f => rawFmts.push({ fmt: f, isProg: true }));
-        adapFormats.forEach(f => rawFmts.push({ fmt: f, isProg: false }));
+        try {
+          if (progFormats && progFormats.length) {
+            for (let i = 0; i < progFormats.length; i++) {
+              const f = progFormats[i];
+              if (f) rawFmts.push({ fmt: f, isProg: true });
+            }
+          }
+        } catch (e) {}
+
+        try {
+          if (adapFormats && adapFormats.length) {
+            for (let i = 0; i < adapFormats.length; i++) {
+              const f = adapFormats[i];
+              if (f) rawFmts.push({ fmt: f, isProg: false });
+            }
+          }
+        } catch (e) {}
 
         const seenQualities = new Set();
 
         if (rawFmts.length > 0) {
-          for (const itemObj of rawFmts) {
-            const f = itemObj.fmt;
-            const isProg = itemObj.isProg;
-            const itag = f.itag || 0;
-            const info = getYoutubeItagInfo(itag);
+          for (let i = 0; i < rawFmts.length; i++) {
+            try {
+              const itemObj = rawFmts[i];
+              const f = itemObj.fmt;
+              const isProg = itemObj.isProg;
+              const itag = Number(f.itag || 0);
+              const info = getYoutubeItagInfo(itag);
 
-            let container = "MP4";
-            let quality = "";
-            let qName = "medium";
-            let isAudio = false;
+              let container = "MP4";
+              let quality = "";
+              let qName = "medium";
+              let isAudio = false;
 
-            if (info) {
-              container = info.container;
-              quality = info.quality;
-              qName = info.qName;
-              isAudio = info.isAudio;
-            } else {
-              isAudio = (f.mimeType && f.mimeType.includes("audio")) || false;
-              container = (f.mimeType && f.mimeType.includes("webm")) ? "WEBM" : (isAudio ? "M4A" : "MP4");
-              if (f.qualityLabel) {
-                quality = f.qualityLabel.includes("HD") ? f.qualityLabel : (parseInt(f.qualityLabel, 10) >= 720 ? (f.qualityLabel + " HD") : f.qualityLabel);
-              } else if (f.height) {
-                quality = f.height >= 720 ? (f.height + "p HD") : (f.height + "p");
-              } else if (isAudio) {
-                quality = f.bitrate ? (Math.round(f.bitrate / 1000) + " kbps") : "128 kbps";
+              if (info) {
+                container = info.container;
+                quality = info.quality;
+                qName = info.qName;
+                isAudio = info.isAudio;
+              } else {
+                const mimeType = String(f.mimeType || f.mime || "");
+                isAudio = mimeType.includes("audio");
+                container = mimeType.includes("webm") ? "WEBM" : (isAudio ? "M4A" : "MP4");
+                const qLabel = f.qualityLabel ? String(f.qualityLabel) : "";
+                if (qLabel) {
+                  quality = qLabel.includes("HD") ? qLabel : (parseInt(qLabel, 10) >= 720 ? (qLabel + " HD") : qLabel);
+                } else if (f.height) {
+                  const h = Number(f.height);
+                  quality = h >= 720 ? (h + "p HD") : (h + "p");
+                } else if (isAudio) {
+                  quality = f.bitrate ? (Math.round(Number(f.bitrate) / 1000) + " kbps") : "128 kbps";
+                }
               }
-            }
 
-            if (!quality) continue;
+              if (!quality) continue;
 
-            const dedupeKey = isAudio ? ("audio_" + container + "_" + quality) : quality;
-            if (seenQualities.has(dedupeKey)) continue;
-            seenQualities.add(dedupeKey);
+              const dedupeKey = isAudio ? ("audio_" + container + "_" + quality) : quality;
+              if (seenQualities.has(dedupeKey)) continue;
+              seenQualities.add(dedupeKey);
 
-            let targetUrl = "";
-            const captured = videoStreams.find(vs => {
-              const it = vs.url && vs.url.match(/[?&]itag=(\d+)/);
-              return it && parseInt(it[1], 10) === itag;
-            });
-
-            if (isProg) {
-              if (f.url) {
-                targetUrl = cleanMediaStreamUrl(f.url);
-              } else if (captured) {
-                targetUrl = cleanMediaStreamUrl(captured.url);
-              }
-            } else if (!isAudio) {
-              if (captured) {
-                const cleanV = cleanMediaStreamUrl(captured.url);
-                targetUrl = bestAudio ? (`yta2toidm://${cleanV}##${bestAudio}`) : cleanV;
-              } else if (f.url) {
-                const cleanV = cleanMediaStreamUrl(f.url);
-                targetUrl = bestAudio ? (`yta2toidm://${cleanV}##${bestAudio}`) : cleanV;
-              }
-            } else {
-              const capturedAudio = audioStreams.find(as => {
-                const it = as.url && as.url.match(/[?&]itag=(\d+)/);
+              let targetUrl = "";
+              const captured = videoStreams.find(vs => {
+                const it = vs.url && vs.url.match(/[?&]itag=(\d+)/);
                 return it && parseInt(it[1], 10) === itag;
               });
-              if (capturedAudio) {
-                targetUrl = cleanMediaStreamUrl(capturedAudio.url);
-              } else if (f.url) {
-                targetUrl = cleanMediaStreamUrl(f.url);
-              } else {
-                targetUrl = bestAudio || "";
-              }
-            }
 
-            const ext = isAudio ? (container === "WEBM" ? "opus" : "m4a") : (container === "WEBM" ? "webm" : "mp4");
-            items.push({
-              url: targetUrl,
-              qName: qName,
-              needsSwitch: !targetUrl,
-              filename: `${mediaTitle}.${ext}`,
-              container: container,
-              quality: quality,
-              isAudio: isAudio
-            });
+              if (isProg) {
+                if (f.url) {
+                  targetUrl = cleanMediaStreamUrl(String(f.url));
+                } else if (captured) {
+                  targetUrl = cleanMediaStreamUrl(captured.url);
+                }
+              } else if (!isAudio) {
+                if (captured) {
+                  const cleanV = cleanMediaStreamUrl(captured.url);
+                  targetUrl = bestAudio ? (`yta2toidm://${cleanV}##${bestAudio}`) : cleanV;
+                } else if (f.url) {
+                  const cleanV = cleanMediaStreamUrl(String(f.url));
+                  targetUrl = bestAudio ? (`yta2toidm://${cleanV}##${bestAudio}`) : cleanV;
+                }
+              } else {
+                const capturedAudio = audioStreams.find(as => {
+                  const it = as.url && as.url.match(/[?&]itag=(\d+)/);
+                  return it && parseInt(it[1], 10) === itag;
+                });
+                if (capturedAudio) {
+                  targetUrl = cleanMediaStreamUrl(capturedAudio.url);
+                } else if (f.url) {
+                  targetUrl = cleanMediaStreamUrl(String(f.url));
+                } else {
+                  targetUrl = bestAudio || "";
+                }
+              }
+
+              const ext = isAudio ? (container === "WEBM" ? "opus" : "m4a") : (container === "WEBM" ? "webm" : "mp4");
+              items.push({
+                url: targetUrl,
+                qName: qName,
+                needsSwitch: !targetUrl,
+                filename: `${mediaTitle}.${ext}`,
+                container: container,
+                quality: quality,
+                isAudio: isAudio
+              });
+            } catch (errItem) {}
           }
         }
 
         // Also check any captured video streams that may not have been in DOM metadata
-        for (const vs of videoStreams) {
-          const u = vs.url || "";
-          const itMatch = u.match(/[?&]itag=(\d+)/);
-          const itag = itMatch ? parseInt(itMatch[1], 10) : 0;
-          const info = getYoutubeItagInfo(itag);
-          let container = info ? info.container : "MP4";
-          let quality = info ? info.quality : "720p HD";
-          let qName = info ? info.qName : "hd720";
+        for (let i = 0; i < videoStreams.length; i++) {
+          try {
+            const vs = videoStreams[i];
+            const u = vs.url || "";
+            const itMatch = u.match(/[?&]itag=(\d+)/);
+            const itag = itMatch ? parseInt(itMatch[1], 10) : 0;
+            const info = getYoutubeItagInfo(itag);
+            let container = info ? info.container : "MP4";
+            let quality = info ? info.quality : "720p HD";
+            let qName = info ? info.qName : "hd720";
 
-          if (seenQualities.has(quality)) continue;
-          seenQualities.add(quality);
+            if (seenQualities.has(quality)) continue;
+            seenQualities.add(quality);
 
-          const cleanVideo = cleanMediaStreamUrl(u);
-          const finalUrl = bestAudio ? (`yta2toidm://${cleanVideo}##${bestAudio}`) : cleanVideo;
-          items.push({
-            url: finalUrl,
-            qName: qName,
-            needsSwitch: false,
-            filename: `${mediaTitle}.mp4`,
-            container: container,
-            quality: quality,
-            isAudio: false
-          });
+            const cleanVideo = cleanMediaStreamUrl(u);
+            const finalUrl = bestAudio ? (`yta2toidm://${cleanVideo}##${bestAudio}`) : cleanVideo;
+            items.push({
+              url: finalUrl,
+              qName: qName,
+              needsSwitch: false,
+              filename: `${mediaTitle}.mp4`,
+              container: container,
+              quality: quality,
+              isAudio: false
+            });
+          } catch (errVs) {}
         }
 
         // Audio streams from captured network traffic
         if (audioStreams.length > 0) {
-          for (const as of audioStreams) {
-            const cleanAudio = cleanMediaStreamUrl(as.url);
-            const itMatch = as.url.match(/[?&]itag=(\d+)/);
-            const itag = itMatch ? parseInt(itMatch[1], 10) : 0;
-            const info = getYoutubeItagInfo(itag);
-            const isM4a = (info && info.container === "M4A") || as.url.includes("itag=140") || (as.mime && as.mime.includes("mp4"));
-            const container = isM4a ? "M4A" : "WEBM";
-            const quality = info ? info.quality : (isM4a ? "128 kbps" : "160 kbps");
-            const dedupeKey = "audio_" + container + "_" + quality;
-            if (seenQualities.has(dedupeKey)) continue;
-            seenQualities.add(dedupeKey);
+          for (let i = 0; i < audioStreams.length; i++) {
+            try {
+              const as = audioStreams[i];
+              const cleanAudio = cleanMediaStreamUrl(as.url);
+              const itMatch = as.url.match(/[?&]itag=(\d+)/);
+              const itag = itMatch ? parseInt(itMatch[1], 10) : 0;
+              const info = getYoutubeItagInfo(itag);
+              const isM4a = (info && info.container === "M4A") || as.url.includes("itag=140") || (as.mime && as.mime.includes("mp4"));
+              const container = isM4a ? "M4A" : "WEBM";
+              const quality = info ? info.quality : (isM4a ? "128 kbps" : "160 kbps");
+              const dedupeKey = "audio_" + container + "_" + quality;
+              if (seenQualities.has(dedupeKey)) continue;
+              seenQualities.add(dedupeKey);
 
-            items.push({
-              url: cleanAudio,
-              qName: "tiny",
-              needsSwitch: false,
-              filename: `${mediaTitle}.${isM4a ? "m4a" : "opus"}`,
-              container: container,
-              quality: quality,
-              isAudio: true
-            });
+              items.push({
+                url: cleanAudio,
+                qName: "tiny",
+                needsSwitch: false,
+                filename: `${mediaTitle}.${isM4a ? "m4a" : "opus"}`,
+                container: container,
+                quality: quality,
+                isAudio: true
+              });
+            } catch (errAs) {}
           }
         }
 
@@ -1119,7 +1227,8 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             { container: "MP4", quality: "240p", qName: "small" },
             { container: "MP4", quality: "144p", qName: "tiny" }
           ];
-          for (const fd of fallbackDefs) {
+          for (let i = 0; i < fallbackDefs.length; i++) {
+            const fd = fallbackDefs[i];
             items.push({
               url: "",
               qName: fd.qName,
@@ -1153,24 +1262,27 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
           });
         }
 
-        streams.forEach((s) => {
-          let container = "MP4";
-          let isAudio = false;
-          if (s.mime) {
-            if (s.mime.includes("webm")) container = "WEBM";
-            else if (s.mime.includes("audio") || s.mime.includes("mp3")) { container = "MP3"; isAudio = true; }
-            else if (s.mime.includes("m4a")) { container = "M4A"; isAudio = true; }
-            else if (s.mime.includes("mpegurl")) container = "HLS";
-            else if (s.mime.includes("dash")) container = "DASH";
-          }
-          items.push({
-            url: cleanMediaStreamUrl(s.url),
-            filename: `${mediaTitle}.${container.toLowerCase().slice(0, 3)}`,
-            container: container,
-            quality: "",
-            isAudio: isAudio
-          });
-        });
+        for (let i = 0; i < streams.length; i++) {
+          try {
+            const s = streams[i];
+            let container = "MP4";
+            let isAudio = false;
+            if (s.mime) {
+              if (s.mime.includes("webm")) container = "WEBM";
+              else if (s.mime.includes("audio") || s.mime.includes("mp3")) { container = "MP3"; isAudio = true; }
+              else if (s.mime.includes("m4a")) { container = "M4A"; isAudio = true; }
+              else if (s.mime.includes("mpegurl")) container = "HLS";
+              else if (s.mime.includes("dash")) container = "DASH";
+            }
+            items.push({
+              url: cleanMediaStreamUrl(s.url),
+              filename: `${mediaTitle}.${container.toLowerCase().slice(0, 3)}`,
+              container: container,
+              quality: "",
+              isAudio: isAudio
+            });
+          } catch (errS) {}
+        }
       }
 
       if (items.length === 0) {
@@ -1191,11 +1303,13 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
         const downloadable = items.filter(it => it.url);
         if (downloadable.length > 0) {
           label.textContent = "Downloading all (" + downloadable.length + ")...";
-          downloadable.forEach((it, idx) => {
+          for (let i = 0; i < downloadable.length; i++) {
+            const it = downloadable[i];
+            const idx = i;
             setTimeout(() => {
               downloadMedia(it.url, it.filename);
             }, idx * 250);
-          });
+          }
           setTimeout(() => { label.textContent = origText; }, (downloadable.length * 250) + 1200);
         } else if (items.length > 0 && items[0].qName) {
           label.textContent = "Buffering stream...";
@@ -1212,7 +1326,8 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
       // 2. Numbered format items in IDM exact style:
       // "${index}. ${title}, ${container} file, quality ${quality}"
-      items.forEach((item, idx) => {
+      for (let idx = 0; idx < items.length; idx++) {
+        const item = items[idx];
         const itemNumber = idx + 1;
         let lineText = "";
         if (item.quality) {
@@ -1253,7 +1368,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
           }
         });
         menu.appendChild(row);
-      });
+      }
     });
   });
 })();
