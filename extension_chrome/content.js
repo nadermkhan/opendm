@@ -62,38 +62,17 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   if (window.__idm_universal_panel_initialized__) return;
   window.__idm_universal_panel_initialized__ = true;
 
+  const extApi = (typeof browser !== "undefined" && browser.runtime) ? browser : (typeof chrome !== "undefined" && chrome.runtime) ? chrome : null;
+
   // Disable YouTube SABR / Web UMP streaming to enforce direct DASH chunks
   try {
-    if (typeof location !== "undefined" && location.hostname && location.hostname.includes("youtube.com")) {
-      const sabrPatch = document.createElement("script");
-      sabrPatch.textContent = `
-        (function() {
-          function patch(c) {
-            if (!c) return;
-            c.html5_enable_sabr_vod_streaming_xhr = false;
-            c.html5_enable_sabr_vod_non_streaming_xhr = false;
-            c.html5_disable_sabr = true;
-            c.html5_remove_client_sabr_determination = true;
-            c.web_streaming_fast = false;
-            c.web_streaming_watch = false;
-          }
-          try {
-            if (window.ytcfg) {
-              if (window.ytcfg.get) { var e = window.ytcfg.get("EXPERIMENT_FLAGS"); if (e) patch(e); }
-              if (window.ytcfg.set) {
-                var orig = window.ytcfg.set;
-                window.ytcfg.set = function(o) { if (o && o.EXPERIMENT_FLAGS) patch(o.EXPERIMENT_FLAGS); return orig.apply(this, arguments); };
-              }
-            }
-          } catch(e) {}
-        })();
-      `;
-      (document.head || document.documentElement).appendChild(sabrPatch);
-      sabrPatch.remove();
+    if (typeof location !== "undefined" && location.hostname && location.hostname.includes("youtube.com") && extApi) {
+      const sabrScript = document.createElement("script");
+      sabrScript.src = extApi.runtime.getURL("document.js");
+      sabrScript.onload = () => sabrScript.remove();
+      (document.head || document.documentElement).appendChild(sabrScript);
     }
   } catch(e) {}
-
-  const extApi = (typeof browser !== "undefined" && browser.runtime) ? browser : (typeof chrome !== "undefined" && chrome.runtime) ? chrome : null;
 
   // Singleton container and shadow host
   const host = document.createElement("div");
@@ -292,7 +271,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   const closeBtn = document.createElement("div");
   closeBtn.className = "idm-close-btn";
   closeBtn.title = "Hide";
-  closeBtn.textContent = "\\u2715";
+  closeBtn.textContent = "✕";
   bar.appendChild(closeBtn);
 
   panel.appendChild(bar);
@@ -599,6 +578,23 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   function getYouTubeFormatsFromDOM() {
     let playerResp = null;
     try {
+      if (typeof window !== "undefined") {
+        if (window.ytInitialPlayerResponse) {
+          playerResp = window.ytInitialPlayerResponse;
+        } else if (window.wrappedJSObject && window.wrappedJSObject.ytInitialPlayerResponse) {
+          playerResp = window.wrappedJSObject.ytInitialPlayerResponse;
+        } else {
+          const mp = document.getElementById("movie_player");
+          const wmp = mp && (mp.wrappedJSObject || mp);
+          if (wmp && typeof wmp.getPlayerResponse === "function") {
+            playerResp = wmp.getPlayerResponse();
+          }
+        }
+      }
+    } catch (e) {}
+    if (playerResp && playerResp.streamingData) return playerResp;
+
+    try {
       const scripts = document.getElementsByTagName("script");
       for (let i = 0; i < scripts.length; i++) {
         const txt = scripts[i].textContent || "";
@@ -638,7 +634,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             }
           }
         }
-        if (playerResp) break;
+        if (playerResp && playerResp.streamingData) break;
       }
     } catch (err) {}
     return playerResp;
@@ -649,18 +645,12 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       window.postMessage({ action: "idm_set_quality", quality: quality }, "*");
     } catch (e) {}
     try {
-      const s = document.createElement("script");
-      s.textContent = `
-        try {
-          const p = document.getElementById("movie_player");
-          if (p) {
-            if (p.setPlaybackQualityRange) p.setPlaybackQualityRange("${quality}", "${quality}");
-            if (p.setPlaybackQuality) p.setPlaybackQuality("${quality}");
-          }
-        } catch(e) {}
-      `;
-      (document.head || document.documentElement).appendChild(s);
-      s.remove();
+      const mp = document.getElementById("movie_player");
+      const wmp = mp && (mp.wrappedJSObject || mp);
+      if (wmp) {
+        if (wmp.setPlaybackQualityRange) wmp.setPlaybackQualityRange(quality, quality);
+        if (wmp.setPlaybackQuality) wmp.setPlaybackQuality(quality);
+      }
     } catch (e) {}
   }
 
@@ -672,7 +662,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
     for (const s of streams) {
       const u = s.url || "";
-      if (u.includes("sabr=1") || u.includes("alr=yes") || u.includes("failure.mp3") || u.includes("/s/search/audio/")) {
+      if (u.includes("failure.mp3") || u.includes("/s/search/audio/")) {
         continue;
       }
       if (u.includes("googlevideo.com") && !u.match(/[?&]itag=\d+/)) {
@@ -789,6 +779,10 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             } else {
               label.textContent = "Buffering stream...";
               switchYouTubeQuality("hd1080");
+              try {
+                const vElem = document.querySelector("video");
+                if (vElem && vElem.paused) vElem.play().catch(() => {});
+              } catch(e) {}
               setTimeout(() => {
                 extApi.runtime.sendMessage({ action: "get_tab_media" }, (retryResp) => {
                   const retryStreams = (retryResp && retryResp.streams) || [];
@@ -993,6 +987,26 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
               label: `${aLabel}${aSizeStr}`
             });
           }
+        }
+
+        if (items.length === 0) {
+          for (const rDef of resolutionDefs) {
+            seenLabels.add(rDef.label);
+            items.push({
+              url: "",
+              qName: rDef.qName,
+              needsSwitch: true,
+              filename: `${mediaTitle}.mp4`,
+              label: rDef.label
+            });
+          }
+          items.push({
+            url: "",
+            qName: "tiny",
+            needsSwitch: true,
+            filename: `${mediaTitle}.m4a`,
+            label: "Audio Only (M4A / 128 kbps)"
+          });
         }
       } else {
         if (directSrc && directSrc.startsWith("http") && !directSrc.startsWith("blob:")) {

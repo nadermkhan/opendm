@@ -294,9 +294,10 @@ setTimeout(() => {
       assert(menu.children.length >= 2, "Menu must contain stream options");
       console.log("[PASS] Case 6: Dropdown stream options populated successfully");
 
-      // Test Case 7: Close button dismisses panel
+      // Test Case 7: Close button dismisses panel and displays authentic glyph
       const closeBtn = bar.children.find(c => c.className === "idm-close-btn");
       assert(closeBtn, "Close button must exist");
+      assert.strictEqual(closeBtn.textContent, "✕", "Close button must display authentic ✕ glyph, not escaped string");
       closeBtn.dispatch("click", {
         target: closeBtn,
         stopPropagation: () => {},
@@ -304,7 +305,7 @@ setTimeout(() => {
       });
 
       assert.strictEqual(panel.style.display, "none", "Panel must hide when close button is clicked");
-      console.log("[PASS] Case 7: Close button dismisses panel cleanly");
+      console.log("[PASS] Case 7: Close button glyph and dismiss panel verified");
 
       // Test Case 8: YouTube DASH Dual-Stream Pairing & Range Stripping
       const ytVideo = new MockNode("VIDEO");
@@ -442,7 +443,38 @@ setTimeout(() => {
               assert(fullMenuHtml.includes("Audio Only (M4A / 128 kbps)"), "DOM extracted audio must be in menu");
               console.log("[PASS] Case 11: YouTube DOM metadata resolution list extraction verified 100%");
 
-              console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+              // Test Case 12: YouTube streams containing alr=yes must be captured and accepted
+              currentMockStreams = [
+                {
+                  url: "https://rr2---sn-4g5ednks.googlevideo.com/videoplayback?expire=456&itag=137&mime=video%2Fmp4&alr=yes&cpn=xyz123",
+                  type: "video",
+                  mime: "video/mp4",
+                  size: 60000000
+                },
+                {
+                  url: "https://rr2---sn-4g5ednks.googlevideo.com/videoplayback?expire=456&itag=140&mime=audio%2Fmp4&alr=yes&cpn=xyz123",
+                  type: "audio",
+                  mime: "audio/mp4",
+                  size: 6000000
+                }
+              ];
+
+              sentMessages.length = 0;
+              bar.dispatch("click", {
+                target: bar,
+                stopPropagation: () => {},
+                preventDefault: () => {}
+              });
+
+              setTimeout(() => {
+                const alrDl = sentMessages.find(m => m.action === "download_media" && m.url.startsWith("yta2toidm://"));
+                assert(alrDl, "YouTube requests with alr=yes must NOT be discarded");
+                assert(alrDl.url.includes("itag=137"), "Video with itag=137 must be present in alr request");
+                assert(alrDl.url.includes("itag=140"), "Audio with itag=140 must be present in alr request");
+                console.log("[PASS] Case 12: YouTube streams containing alr=yes captured and accepted 100%");
+
+                console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+              }, 50);
             }, 50);
           }, 50);
         }, 50);
