@@ -303,7 +303,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       } else if (typeof window !== "undefined" && window.alert) {
         window.alert('This is IDM download panel.\nIt can be customized or turned off on "IDM->Options dialog->General tab"');
       }
-    } catch (err) {}
+    } catch (err) { console.error("CATCH IN CONTENT.JS:", err); }
   });
   bar.appendChild(helpBtn);
 
@@ -314,7 +314,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   const closeBtn = document.createElement("div");
   closeBtn.className = "idm-close-btn";
   closeBtn.title = "Close";
-  closeBtn.textContent = "✕";
+  closeBtn.textContent = "\u2715";
   bar.appendChild(closeBtn);
 
   panel.appendChild(bar);
@@ -563,22 +563,22 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   }, { capture: true, passive: true });
 
   function cleanMediaStreamUrl(u) {
-    if (!u) return "";
-    try {
-      const parsed = new URL(u);
-      parsed.searchParams.delete("range");
-      parsed.searchParams.delete("begin");
-      parsed.searchParams.delete("len");
-      parsed.searchParams.delete("ump");
-      parsed.searchParams.delete("bytes");
-      parsed.searchParams.delete("sq");
-      parsed.searchParams.delete("rn");
-      parsed.searchParams.delete("rbuf");
-      parsed.searchParams.delete("otf");
-      return parsed.toString();
-    } catch (e) {
-      return u.replace(/[?&](range|begin|len|ump|bytes|sq|rn|rbuf|otf)=[^&]*/g, "");
+    if (!u || typeof u !== "string") return "";
+    if (u.includes("sabr=1") || u.includes("sabr=2")) return "";
+    // Extract signed parameters list (sparams) so we never strip a signed parameter
+    let signedParams = new Set();
+    const spMatch = u.match(/[?&]sparams=([^&]+)/);
+    if (spMatch) {
+      try {
+        decodeURIComponent(spMatch[1]).split(",").forEach(p => signedParams.add(p.trim()));
+      } catch (e) {}
     }
+    const removable = ["range", "begin", "len", "ump", "bytes", "sq", "rn", "rbuf"].filter(p => !signedParams.has(p));
+    if (removable.length === 0) return u;
+    const re = new RegExp("([?&])(?:" + removable.join("|") + ")=[^&]*(&|$)", "g");
+    let cleaned = u.replace(re, (match, p1, p2) => (p1 === "?" && p2 === "&") ? "?" : (p2 === "&" ? p1 : ""));
+    cleaned = cleaned.replace(/[?&]+$/, "").replace(/\?&+/, "?");
+    return cleaned;
   }
 
   function getMediaTitle() {
@@ -780,7 +780,67 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     return null;
   }
 
+  let cachedBgYtData = null;
+
+  function getYouTubeVideoId() {
+    try {
+      if (!location.hostname.includes("youtube.com")) return "";
+      const v = new URLSearchParams(location.search).get("v");
+      if (v) return v;
+      const m = location.pathname.match(/^\/(?:shorts|embed|live|v)\/([a-zA-Z0-9_-]{11})/);
+      if (m) return m[1];
+      const flexy = document.querySelector("ytd-watch-flexy[video-id]");
+      if (flexy) return flexy.getAttribute("video-id") || "";
+    } catch (e) {}
+    return "";
+  }
+
+  function getYouTubeVisitorData() {
+    try {
+      return (document.documentElement && document.documentElement.getAttribute("data-idm-visitor-data")) || "";
+    } catch (e) {}
+    return "";
+  }
+
+  function isPlayableStream(f) {
+    if (!f || !f.url) return false;
+    const u = f.url;
+    if (u.includes("sabr=1") || u.includes("sabr=2") || u.includes("svpuc=1")) return false;
+    if (/[?&]c=WEB\b/i.test(u) && /[?&]n=[^&]+/.test(u)) return false;
+    return true;
+  }
+
+  function isUnplayableFormat(f) {
+    if (!f || !f.url) return false;
+    const u = f.url;
+    if (u.includes("sabr=1") || u.includes("sabr=2") || u.includes("svpuc=1")) return true;
+    if (/[?&]c=WEB\b/i.test(u) && /[?&]n=[^&]+/.test(u)) return true;
+    return false;
+  }
+
+  function hasValidStreamUrl(pr) {
+    if (!pr || !pr.streamingData) return false;
+    const af = pr.streamingData.adaptiveFormats || [];
+    const pf = pr.streamingData.formats || [];
+    return af.some(isPlayableStream) || pf.some(isPlayableStream);
+  }
+
   function getYouTubeFormatsFromDOM() {
+    const curVid = getYouTubeVideoId();
+    if (cachedBgYtData && hasValidStreamUrl(cachedBgYtData) &&
+        (!curVid || !cachedBgYtData.videoDetails || cachedBgYtData.videoDetails.videoId === curVid)) {
+      return cachedBgYtData;
+    }
+    try {
+      const attr = document.documentElement && document.documentElement.getAttribute("data-idm-player-response");
+      if (attr) {
+        const parsed = JSON.parse(attr);
+        if (hasValidStreamUrl(parsed) && (!curVid || !parsed.videoDetails || parsed.videoDetails.videoId === curVid)) {
+          return parsed;
+        }
+      }
+    } catch (e) {}
+
     let playerResp = null;
     try {
       if (typeof window !== "undefined") {
@@ -803,7 +863,15 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       }
     } catch (e) {}
 
-    if (playerResp && playerResp.streamingData) return playerResp;
+    if (playerResp && playerResp.streamingData) {
+      if (playerResp.streamingData.formats) {
+        playerResp.streamingData.formats = playerResp.streamingData.formats.filter(f => !isUnplayableFormat(f));
+      }
+      if (playerResp.streamingData.adaptiveFormats) {
+        playerResp.streamingData.adaptiveFormats = playerResp.streamingData.adaptiveFormats.filter(f => !isUnplayableFormat(f));
+      }
+      return playerResp;
+    }
 
     try {
       const scripts = document.getElementsByTagName("script");
@@ -814,7 +882,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
                     txt.match(/var\s+ytInitialPlayerResponse\s*=\s*(\{.+?\});/s);
           if (m) {
             try {
-              playerResp = JSON.parse(m[1]);
+              playerResp = sanitizePageObject(JSON.parse(m[1]), window);
               break;
             } catch (e) {
               const idx = txt.indexOf("ytInitialPlayerResponse");
@@ -834,7 +902,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
                       depth--;
                       if (depth === 0) {
                         try {
-                          playerResp = JSON.parse(txt.substring(start, j + 1));
+                          playerResp = sanitizePageObject(JSON.parse(txt.substring(start, j + 1)), window);
                         } catch (e2) {}
                         break;
                       }
@@ -848,7 +916,16 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
         if (playerResp && playerResp.streamingData) break;
       }
     } catch (err) {}
-    return playerResp;
+    if (playerResp && playerResp.streamingData) {
+      if (playerResp.streamingData.formats) {
+        playerResp.streamingData.formats = playerResp.streamingData.formats.filter(f => !isUnplayableFormat(f));
+      }
+      if (playerResp.streamingData.adaptiveFormats) {
+        playerResp.streamingData.adaptiveFormats = playerResp.streamingData.adaptiveFormats.filter(f => !isUnplayableFormat(f));
+      }
+      return playerResp;
+    }
+    return null;
   }
 
   function switchYouTubeQuality(quality) {
@@ -873,10 +950,13 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
     for (const s of streams) {
       const u = s.url || "";
+      if (u.includes("sabr=1") || u.includes("sabr=2") || u.includes("svpuc=1") || (/[?&]c=WEB\b/i.test(u) && /[?&]n=[^&]+/.test(u)) || (s.mime && s.mime.includes("yt-ump"))) {
+        continue;
+      }
       if (u.includes("failure.mp3") || u.includes("/s/search/audio/")) {
         continue;
       }
-      if (u.includes("googlevideo.com") && (u.includes("/videostats") || u.includes("/stats") || u.includes("/ptracking") || u.includes("/generate_204") || u.includes("/check2"))) {
+      if (u.includes("googlevideo.com") && (u.includes("/videostats") || u.includes("/stats") || u.includes("/api/stats") || u.includes("/ptracking") || u.includes("/generate_204") || u.includes("/check2"))) {
         continue;
       }
       const mime = (s.mime || "").toLowerCase();
@@ -912,16 +992,20 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     return { isYtOrDash, videoStreams, audioStreams, bestAudio };
   }
 
-  function downloadMedia(streamUrl, filename) {
+  function downloadMedia(streamUrl, filename, userAgent) {
     if (!extApi || !streamUrl) return;
+    if (streamUrl.includes("sabr=1") || streamUrl.includes("sabr=2") || streamUrl.includes("svpuc=1")) return;
+    if (/[?&]c=WEB\b/i.test(streamUrl) && /[?&]n=[^&]+/.test(streamUrl)) return;
+    const cleanUrl = streamUrl.replace(/^(?:yta\d*toidm|mpda?toidm|hls2toidm|idmhlstomp4v2):\/\/+/i, "").split("##")[0];
     const title = getMediaTitle();
     const referer = window.location.href;
     extApi.runtime.sendMessage({
       action: "download_media",
-      url: streamUrl,
+      url: cleanUrl,
       referer: referer,
       title: title,
-      filename: filename || ""
+      filename: filename || "",
+      userAgent: userAgent || ""
     }, () => {});
   }
 
@@ -952,7 +1036,12 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
     if (extApi) {
       try {
-        extApi.runtime.sendMessage({ action: "get_tab_media" }, (resp) => {
+        extApi.runtime.sendMessage({
+          action: "get_tab_media",
+          videoId: getYouTubeVideoId(),
+          visitorData: getYouTubeVisitorData()
+        }, (resp) => {
+          if (resp && resp.ytData) cachedBgYtData = resp.ytData;
           const streams = (resp && resp.streams) || [];
           const isAudio = activeTarget.tagName.toLowerCase() === "audio";
           const mediaTitle = getMediaTitle();
@@ -968,51 +1057,87 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             }
           }
 
-          const { isYtOrDash, videoStreams, bestAudio } = findPairedStreams(streams);
+          const { isYtOrDash, videoStreams, audioStreams, bestAudio } = findPairedStreams(streams);
+          if (isYtOrDash) {
+            const ytData = (resp && resp.ytData) || getYouTubeFormatsFromDOM();
+            const ytUa = (ytData && ytData.userAgent) || "";
+            const prog = ((ytData && ytData.streamingData && ytData.streamingData.formats) || [])
+              .filter(isPlayableStream);
+            const adaptive = ((ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || [])
+              .filter(f => isPlayableStream(f) && f.mimeType && f.mimeType.includes("video"));
+            prog.sort((a, b) => (getYoutubeItagInfo(b.itag)?.rank || 0) - (getYoutubeItagInfo(a.itag)?.rank || 0));
+            adaptive.sort((a, b) => (getYoutubeItagInfo(b.itag)?.rank || 0) - (getYoutubeItagInfo(a.itag)?.rank || 0));
+            // Prefer highest quality verified stream: if adaptive has higher resolution than progressive and audio is available, pair via yta2toidm
+            const progTop = prog[0];
+            const adapTop = adaptive[0];
+            const audTop = ((ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || [])
+              .find(f => isPlayableStream(f) && f.mimeType && f.mimeType.includes("audio"));
+            const bestAudioUrl = audTop ? cleanMediaStreamUrl(audTop.url) : bestAudio;
 
-          if (videoStreams.length > 0) {
-            const bestVideo = cleanMediaStreamUrl(videoStreams[0].url);
-            let finalUrl = bestVideo;
-            if (isYtOrDash && bestAudio) {
-              finalUrl = `yta2toidm://${bestVideo}##${bestAudio}`;
+            let targetDownloadUrl = "";
+            let targetDownloadUa = ytUa;
+
+            if (adapTop && adapTop.url && (!progTop || (getYoutubeItagInfo(adapTop.itag)?.rank || 0) > (getYoutubeItagInfo(progTop.itag)?.rank || 0))) {
+              const cleanV = cleanMediaStreamUrl(adapTop.url);
+              if (cleanV) {
+                targetDownloadUrl = bestAudioUrl ? `yta2toidm://${cleanV}##${bestAudioUrl}` : cleanV;
+                targetDownloadUa = adapTop.userAgent || ytUa;
+              }
+            } else if (progTop && progTop.url) {
+              targetDownloadUrl = cleanMediaStreamUrl(progTop.url);
+              targetDownloadUa = progTop.userAgent || ytUa;
+            } else if (adapTop && adapTop.url) {
+              const cleanV = cleanMediaStreamUrl(adapTop.url);
+              if (cleanV) {
+                targetDownloadUrl = bestAudioUrl ? `yta2toidm://${cleanV}##${bestAudioUrl}` : cleanV;
+                targetDownloadUa = adapTop.userAgent || ytUa;
+              }
             }
-            downloadMedia(finalUrl, mediaTitle + ".mp4");
-            label.textContent = "Sent to IDM!";
-          } else if (isYtOrDash) {
-            const ytData = getYouTubeFormatsFromDOM();
-            const adaptive = (ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || [];
-            const directFmt = adaptive.find(f => f.url && f.mimeType && f.mimeType.includes("video"));
-            if (directFmt) {
-              const bestV = cleanMediaStreamUrl(directFmt.url);
-              const directAud = adaptive.find(f => f.url && f.mimeType && f.mimeType.includes("audio"));
-              const bestA = directAud ? cleanMediaStreamUrl(directAud.url) : "";
-              const finalUrl = bestA ? `yta2toidm://${bestV}##${bestA}` : bestV;
-              downloadMedia(finalUrl, mediaTitle + ".mp4");
+
+            if (targetDownloadUrl) {
+              downloadMedia(targetDownloadUrl, mediaTitle + ".mp4", targetDownloadUa);
               label.textContent = "Sent to IDM!";
-            } else {
-              label.textContent = "Buffering stream...";
-              switchYouTubeQuality("hd1080");
-              try {
-                const vElem = document.querySelector("video");
-                if (vElem && vElem.paused) vElem.play().catch(() => {});
-              } catch(e) {}
-              setTimeout(() => {
-                extApi.runtime.sendMessage({ action: "get_tab_media" }, (retryResp) => {
-                  const retryStreams = (retryResp && retryResp.streams) || [];
-                  const paired = findPairedStreams(retryStreams);
-                  if (paired.videoStreams.length > 0) {
-                    const bestV = cleanMediaStreamUrl(paired.videoStreams[0].url);
-                    const finalUrl = paired.bestAudio ? `yta2toidm://${bestV}##${paired.bestAudio}` : bestV;
-                    downloadMedia(finalUrl, mediaTitle + ".mp4");
-                    label.textContent = "Sent to IDM!";
-                  } else {
-                    label.textContent = "Please play video first";
-                  }
-                  setTimeout(() => { label.textContent = origText; }, 1500);
-                });
-              }, 800);
+              setTimeout(() => { label.textContent = origText; }, 1500);
               return;
             }
+          }
+          if (videoStreams.length > 0) {
+            const bestVideo = cleanMediaStreamUrl(videoStreams[0].url);
+            if (bestVideo) {
+              downloadMedia(bestVideo, mediaTitle + ".mp4");
+              label.textContent = "Sent to IDM!";
+              setTimeout(() => { label.textContent = origText; }, 1500);
+              return;
+            } else {
+              label.textContent = "Please reload page";
+            }
+          } else if (isYtOrDash) {
+            const hasSabr = streams.some(s => s.url && (s.url.includes("sabr=1") || s.url.includes("sabr=2")));
+            label.textContent = "Buffering stream...";
+            switchYouTubeQuality("hd1080");
+            try {
+              const vElem = document.querySelector("video");
+              if (vElem && vElem.paused) vElem.play().catch(() => {});
+            } catch(e) {}
+            setTimeout(() => {
+              extApi.runtime.sendMessage({
+                action: "get_tab_media",
+                videoId: getYouTubeVideoId()
+              }, (retryResp) => {
+                if (retryResp && retryResp.ytData) cachedBgYtData = retryResp.ytData;
+                const retryStreams = (retryResp && retryResp.streams) || [];
+                const paired = findPairedStreams(retryStreams);
+                if (paired.videoStreams.length > 0) {
+                  const bestV = cleanMediaStreamUrl(paired.videoStreams[0].url);
+                  downloadMedia(bestV, mediaTitle + ".mp4");
+                  label.textContent = "Sent to IDM!";
+                } else {
+                  label.textContent = hasSabr ? "Please reload page" : "Please play video first";
+                }
+                setTimeout(() => { label.textContent = origText; }, 1500);
+              });
+            }, 800);
+            return;
           } else if (streams.length > 0) {
             downloadMedia(cleanMediaStreamUrl(streams[0].url), mediaTitle + ".mp4");
             label.textContent = "Sent to IDM!";
@@ -1060,7 +1185,12 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
     if (!extApi) return;
 
-    extApi.runtime.sendMessage({ action: "get_tab_media" }, (resp) => {
+    extApi.runtime.sendMessage({
+      action: "get_tab_media",
+      videoId: getYouTubeVideoId(),
+      visitorData: getYouTubeVisitorData()
+    }, (resp) => {
+      if (resp && resp.ytData) cachedBgYtData = resp.ytData;
       menu.innerHTML = "";
       const streams = (resp && resp.streams) || [];
       const directSrc = (activeTarget && (activeTarget.currentSrc || activeTarget.src)) || "";
@@ -1069,13 +1199,19 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       const items = [];
 
       if (isYtOrDash) {
-        let ytData = null;
-        try {
-          ytData = getYouTubeFormatsFromDOM();
-        } catch (e) {}
+        let ytData = (resp && resp.ytData) || null;
+        if (!ytData) {
+          try {
+            ytData = getYouTubeFormatsFromDOM();
+          } catch (e) {}
+        }
 
-        const progFormats = (ytData && ytData.streamingData && ytData.streamingData.formats) || [];
-        const adapFormats = (ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || [];
+        const progFormats = ((ytData && ytData.streamingData && ytData.streamingData.formats) || []).filter(f => !isUnplayableFormat(f));
+        const adapFormats = ((ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || []).filter(f => !isUnplayableFormat(f));
+
+        const domAudioFmt = adapFormats.find(f => Number(f.itag) === 140) ||
+                            adapFormats.find(f => String(f.mimeType || "").includes("audio"));
+        const effectiveBestAudio = bestAudio || (domAudioFmt ? cleanMediaStreamUrl(String(domAudioFmt.url)) : "");
 
         // Build list of candidate format objects: progressive formats first, then adaptive
         const rawFmts = [];
@@ -1146,21 +1282,11 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
                 return it && parseInt(it[1], 10) === itag;
               });
 
-              if (isProg) {
-                if (f.url) {
-                  targetUrl = cleanMediaStreamUrl(String(f.url));
-                } else if (captured) {
-                  targetUrl = cleanMediaStreamUrl(captured.url);
-                }
-              } else if (!isAudio) {
-                if (captured) {
-                  const cleanV = cleanMediaStreamUrl(captured.url);
-                  targetUrl = bestAudio ? (`yta2toidm://${cleanV}##${bestAudio}`) : cleanV;
-                } else if (f.url) {
-                  const cleanV = cleanMediaStreamUrl(String(f.url));
-                  targetUrl = bestAudio ? (`yta2toidm://${cleanV}##${bestAudio}`) : cleanV;
-                }
-              } else {
+              if (f.url) {
+                targetUrl = cleanMediaStreamUrl(String(f.url));
+              } else if (!isAudio && captured) {
+                targetUrl = cleanMediaStreamUrl(captured.url);
+              } else if (isAudio) {
                 const capturedAudio = audioStreams.find(as => {
                   if (as.itag && as.itag === itag) return true;
                   const it = as.url && as.url.match(/[?&]itag=(\d+)/);
@@ -1168,22 +1294,25 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
                 });
                 if (capturedAudio) {
                   targetUrl = cleanMediaStreamUrl(capturedAudio.url);
-                } else if (f.url) {
-                  targetUrl = cleanMediaStreamUrl(String(f.url));
-                } else {
-                  targetUrl = bestAudio || "";
                 }
+              }
+
+              let finalDownloadUrl = targetUrl;
+              if (targetUrl && !isProg && !isAudio && effectiveBestAudio) {
+                finalDownloadUrl = `yta2toidm://${targetUrl}##${effectiveBestAudio}`;
               }
 
               const ext = isAudio ? (container === "WEBM" ? "opus" : "m4a") : (container === "WEBM" ? "webm" : "mp4");
               items.push({
-                url: targetUrl,
+                url: finalDownloadUrl,
+                rawVideoUrl: targetUrl,
                 qName: qName,
                 needsSwitch: !targetUrl,
                 filename: `${mediaTitle}.${ext}`,
                 container: container,
                 quality: quality,
-                isAudio: isAudio
+                isAudio: isAudio,
+                userAgent: f.userAgent || (ytData && ytData.userAgent) || ""
               });
             } catch (errItem) {}
           }
@@ -1205,7 +1334,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             seenQualities.add(quality);
 
             const cleanVideo = cleanMediaStreamUrl(u);
-            const finalUrl = bestAudio ? (`yta2toidm://${cleanVideo}##${bestAudio}`) : cleanVideo;
+            const finalUrl = cleanVideo;
             items.push({
               url: finalUrl,
               qName: qName,
@@ -1374,32 +1503,66 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
           ev.stopPropagation();
           menu.style.display = "none";
           if (item.url) {
-            downloadMedia(item.url, item.filename);
+            downloadMedia(item.url, item.filename, item.userAgent);
             label.textContent = "Sent to IDM!";
             setTimeout(() => { label.textContent = origText; }, 1500);
           } else if (item.qName) {
             label.textContent = "Switching quality...";
             switchYouTubeQuality(item.qName);
             setTimeout(() => {
-              extApi.runtime.sendMessage({ action: "get_tab_media" }, (newResp) => {
+              extApi.runtime.sendMessage({
+                action: "get_tab_media",
+                videoId: getYouTubeVideoId(),
+                visitorData: getYouTubeVisitorData()
+              }, (newResp) => {
+                if (newResp && newResp.ytData) cachedBgYtData = newResp.ytData;
                 const newStreams = (newResp && newResp.streams) || [];
                 const paired = findPairedStreams(newStreams);
-                if (paired.videoStreams.length > 0) {
+
+                // Re-check DOM player response in case document.js resolved direct URLs
+                const freshYt = getYouTubeFormatsFromDOM();
+                const freshAdap = (freshYt && freshYt.streamingData && freshYt.streamingData.adaptiveFormats) || [];
+                const matchedFmt = freshAdap.find(f => isPlayableStream(f) &&
+                  getYoutubeItagInfo(f.itag)?.qName === item.qName);
+                const matchedAud = freshAdap.find(f => isPlayableStream(f) &&
+                  f.mimeType && f.mimeType.includes("audio"));
+
+                if (matchedFmt && matchedFmt.url) {
+                  const cleanV = cleanMediaStreamUrl(matchedFmt.url);
+                  const cleanA = matchedAud ? cleanMediaStreamUrl(matchedAud.url) : paired.bestAudio;
+                  const fUrl = (cleanA && !item.isAudio) ? `yta2toidm://${cleanV}##${cleanA}` : cleanV;
+                  if (cleanV) {
+                    downloadMedia(fUrl, item.filename);
+                    label.textContent = "Sent to IDM!";
+                  } else {
+                    label.textContent = "Please reload page";
+                  }
+                } else if (paired.videoStreams.length > 0) {
                   const bestV = cleanMediaStreamUrl(paired.videoStreams[0].url);
                   const fUrl = paired.bestAudio ? (`yta2toidm://${bestV}##${paired.bestAudio}`) : bestV;
-                  downloadMedia(fUrl, item.filename);
-                  label.textContent = "Sent to IDM!";
+                  if (bestV) {
+                    downloadMedia(fUrl, item.filename);
+                    label.textContent = "Sent to IDM!";
+                  } else {
+                    label.textContent = "Please reload page";
+                  }
                 } else if (videoStreams.length > 0) {
                   const bestV = cleanMediaStreamUrl(videoStreams[0].url);
                   const fUrl = bestAudio ? (`yta2toidm://${bestV}##${bestAudio}`) : bestV;
-                  downloadMedia(fUrl, item.filename);
-                  label.textContent = "Sent to IDM!";
+                  if (bestV) {
+                    downloadMedia(fUrl, item.filename);
+                    label.textContent = "Sent to IDM!";
+                  } else {
+                    label.textContent = "Please reload page";
+                  }
                 } else {
-                  label.textContent = "Stream buffered, click again";
+                  const hasSabr = (newResp && newResp.hasSabr) ||
+                    newStreams.some(s => s.url && (s.url.includes("sabr=1") || s.url.includes("sabr=2")));
+                  label.textContent = hasSabr ? "Please reload page" : "Stream buffered, click again";
                 }
                 setTimeout(() => { label.textContent = origText; }, 2000);
               });
-            }, 600);
+            }, 1500);
           }
         });
         menu.appendChild(row);

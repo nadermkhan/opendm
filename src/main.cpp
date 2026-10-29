@@ -2,6 +2,7 @@
 #include "core/download_session.hpp"
 #include "core/batch_importer.hpp"
 #include "core/site_logon.hpp"
+#include "core/youtube_engine.hpp"
 #include "cli/cli_parser.hpp"
 #include "ipc/ipc_server.hpp"
 #include "ui/main_window.hpp"
@@ -107,11 +108,68 @@ int main(int argc, char* argv[]) {
         std::cout << "OpenDM running in CLI/background mode." << std::endl;
 
         if (!opts.url.empty()) {
+            std::string download_url = opts.url;
+            std::string audio_stream_url;
+            std::string user_agent;
+            std::string default_fname = "download.bin";
+
+            if (opendm::YouTubeEngine::is_youtube_url(opts.url)) {
+                std::cout << "Detected YouTube video URL. Analyzing streams via OpenDM Native Engine..." << std::endl;
+                opendm::YouTubeVideoInfo yt_info;
+                std::string yt_err;
+                bool ok = opendm::YouTubeEngine::extract_video_info(opts.url, yt_info, &yt_err);
+                if (!ok || !yt_info.has_playable_formats()) {
+                    std::cerr << "OpenDM YouTube Engine extraction failed: " << (yt_err.empty() ? "No playable formats found" : yt_err) << std::endl;
+                    curl_global_cleanup();
+                    return 1;
+                }
+
+                std::cout << "  Title: " << yt_info.title << std::endl;
+                std::cout << "  Author: " << yt_info.author << std::endl;
+                std::cout << "  Duration: " << opendm::YouTubeEngine::format_duration(yt_info.duration_seconds) << std::endl;
+                std::cout << "  Engine Client: " << yt_info.client_used << std::endl;
+
+                if (!yt_info.video_formats.empty() && !yt_info.audio_formats.empty()) {
+                    const auto& best_v = yt_info.best_video;
+                    const auto& best_a = yt_info.best_audio;
+                    download_url = best_v.url;
+                    audio_stream_url = best_a.url;
+                    user_agent = best_v.user_agent.empty() ? best_a.user_agent : best_v.user_agent;
+                    default_fname = yt_info.title + "." + (best_v.container == "MP4" ? "mp4" : "mkv");
+                    std::cout << "  Selected: " << best_v.quality_label << " (" << best_v.container << ") + Audio (" << opendm::YouTubeEngine::format_bitrate(best_a.bitrate) << ") [Auto-Muxing]" << std::endl;
+                } else if (!yt_info.progressive_formats.empty()) {
+                    const auto& prog = yt_info.progressive_formats.front();
+                    download_url = prog.url;
+                    user_agent = prog.user_agent;
+                    default_fname = yt_info.title + ".mp4";
+                    std::cout << "  Selected: " << prog.quality_label << " (" << prog.container << " - Progressive)" << std::endl;
+                }
+
+                // Sanitize filename
+                std::string clean_fname;
+                for (char c : default_fname) {
+                    if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' ||
+                        c == '"' || c == '<' || c == '>' || c == '|' || (unsigned char)c < 32) {
+                        clean_fname += '_';
+                    } else {
+                        clean_fname += c;
+                    }
+                }
+                default_fname = clean_fname;
+            }
+
             std::string dest_dir = opts.path.empty() ? "." : opts.path;
-            std::string dest_file = opts.filename.empty() ? (dest_dir + "/download.bin") : (dest_dir + "/" + opts.filename);
+            std::string dest_file = opts.filename.empty() ? (dest_dir + "/" + default_fname) : (dest_dir + "/" + opts.filename);
             
-            auto session = std::make_shared<opendm::DownloadSession>("cli_task", opts.url, dest_file);
-            opendm::SiteLogonManager::instance().apply_to_session(*session, opts.url);
+            auto session = std::make_shared<opendm::DownloadSession>("cli_task", download_url, dest_file);
+            if (!audio_stream_url.empty()) {
+                session->set_audio_stream_url(audio_stream_url);
+            }
+            if (!user_agent.empty()) {
+                session->set_header("User-Agent", user_agent);
+            }
+            session->set_header("Referer", "https://www.youtube.com/");
+            opendm::SiteLogonManager::instance().apply_to_session(*session, download_url);
             session->set_max_connections(opts.connections);
             if (opts.speed_limit_kb > 0) {
                 session->set_speed_limit(opts.speed_limit_kb * 1024);

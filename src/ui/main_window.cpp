@@ -975,9 +975,39 @@ void MainWindow::on_add_url_clicked() {
         AddUrlDialog::show(GTK_WINDOW(self->window_), initial_url, [self](const AddUrlResult& res) {
             if (!res.accepted || res.url.empty()) return;
 
+            std::string default_dir = (fs::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string();
+
+            if (res.bypass_prompt) {
+                std::string dest_dir = res.path.empty() ? default_dir : res.path;
+                std::string dest_file = (fs::path(dest_dir) / (res.filename.empty() ? "video.mp4" : res.filename)).string();
+
+                std::error_code ec;
+                fs::create_directories(fs::path(dest_file).parent_path(), ec);
+
+                static uint64_t counter = 1;
+                std::string id = "yt_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+
+                auto session = std::make_shared<DownloadSession>(id, res.url, dest_file);
+                if (!res.audio_stream_url.empty()) {
+                    session->set_audio_stream_url(res.audio_stream_url);
+                }
+                if (!res.user_agent.empty()) session->set_header("User-Agent", res.user_agent);
+                session->set_header("Referer", "https://www.youtube.com/");
+
+                QueueManager::instance().get_main_queue().add_session(session, res.start_immediately);
+                self->refresh_downloads_list();
+                if (res.start_immediately) {
+                    self->on_row_activated(id);
+                }
+                return;
+            }
+
             DownloadPromptInfo info;
             info.url = res.url;
-            std::string default_dir = (fs::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string();
+            info.audio_stream_url = res.audio_stream_url;
+            info.user_agent = res.user_agent;
+            info.is_streaming_media = res.is_streaming_media;
+            info.file_size = res.file_size;
             if (res.path != default_dir && !res.path.empty()) {
                 info.destination_dir = res.path;
             }

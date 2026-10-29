@@ -128,14 +128,19 @@ let currentMockStreams = [
   { url: "https://video.twimg.com/ext_tw_video/test_720.mp4", mime: "video/mp4", size: 8200000 }
 ];
 
+let mockYtData = null;
+
 const mockBrowser = {
   runtime: {
     getURL: (p) => "chrome-extension://idm-test/" + p,
     sendMessage: (msg, cb) => {
       sentMessages.push(msg);
       if (msg.action === "get_tab_media") {
+        const hasSabr = currentMockStreams.some(s => s.url && (s.url.includes("sabr=1") || s.url.includes("sabr=2")));
         cb && cb({
-          streams: currentMockStreams
+          streams: currentMockStreams,
+          hasSabr: hasSabr,
+          ytData: mockYtData
         });
       } else if (msg.action === "download_media") {
         cb && cb({ status: "ok" });
@@ -350,13 +355,13 @@ setTimeout(() => {
       });
 
       setTimeout(() => {
-        const ytDl = sentMessages.find(m => m.action === "download_media" && m.url.startsWith("yta2toidm://"));
-        assert(ytDl, "YouTube request must use yta2toidm:// scheme with dual streams");
-        assert(ytDl.url.includes("##"), "YouTube request must contain ## dual stream delimiter");
-        assert(!ytDl.url.includes("range=0-1048576"), "range parameter must be stripped from both video and audio streams");
+        const ytDl = sentMessages.find(m => m.action === "download_media" && m.url.includes("googlevideo.com"));
+        assert(ytDl, "YouTube direct stream URL must be sent for download");
+        assert(!ytDl.url.startsWith("yta2toidm://"), "Scheme must be clean direct HTTP/HTTPS");
+        assert(!ytDl.url.includes("##"), "URL must not contain dual stream delimiter ##");
+        assert(!ytDl.url.includes("range="), "range parameter must be stripped from stream");
         assert(ytDl.url.includes("itag=137"), "Video stream with itag=137 must be present");
-        assert(ytDl.url.includes("itag=140"), "Audio stream with itag=140 must be present");
-        console.log("[PASS] Case 8: YouTube dual-stream pairing and query parameter range stripping verified 100%");
+        console.log("[PASS] Case 8: YouTube direct stream selection and query parameter range stripping verified 100%");
 
         // Test Case 9: YouTube Dropdown resolution options
         dropdownBtn.dispatch("click", {
@@ -411,8 +416,9 @@ setTimeout(() => {
           setTimeout(() => {
             const rejectedDl = sentMessages.find(m => m.action === "download_media" && (m.url.includes("sabr=1") || m.url.includes("failure.mp3")));
             assert(!rejectedDl, "SABR and failure.mp3 must be strictly rejected and never sent to download");
-            const validDl = sentMessages.find(m => m.action === "download_media" && m.url.includes("itag=136") && m.url.includes("itag=140"));
-            assert(validDl, "Valid stream with itag 136 and 140 must be selected");
+            const validDl = sentMessages.find(m => m.action === "download_media" && m.url.includes("itag=136"));
+            assert(validDl, "Valid stream with itag 136 must be selected");
+            assert(!validDl.url.includes("##"), "URL must not contain dual stream delimiter ##");
             console.log("[PASS] Case 10: SABR control URL and failure.mp3 rejection verified");
 
             // Test Case 11: YouTube DOM metadata resolution list extraction & IDM exact format parity
@@ -482,10 +488,11 @@ setTimeout(() => {
               });
 
               setTimeout(() => {
-                const alrDl = sentMessages.find(m => m.action === "download_media" && m.url.startsWith("yta2toidm://"));
+                const alrDl = sentMessages.find(m => m.action === "download_media" && m.url.includes("googlevideo.com"));
                 assert(alrDl, "YouTube requests with alr=yes must NOT be discarded");
+                assert(!alrDl.url.startsWith("yta2toidm://"), "Scheme must be clean direct HTTP/HTTPS");
+                assert(!alrDl.url.includes("##"), "URL must not contain dual stream delimiter ##");
                 assert(alrDl.url.includes("itag=137"), "Video with itag=137 must be present in alr request");
-                assert(alrDl.url.includes("itag=140"), "Audio with itag=140 must be present in alr request");
                 console.log("[PASS] Case 12: YouTube streams containing alr=yes captured and accepted 100%");
 
                 // Test Case 13: "Download all" action dispatches downloads for all formats
@@ -501,17 +508,24 @@ setTimeout(() => {
                   assert(sentMessages.length > 0, "Download all must dispatch download requests");
                   console.log("[PASS] Case 13: Download all action functionality verified 100%");
 
-                  // Test Case 14: SABR stream without itag in query string matched via itag property
+                  // Test Case 14: Direct streams without itag in query string matched via itag property, and sabr=1 strictly rejected
                   currentMockStreams = [
                     {
                       url: "https://rr2---sn-wngz.googlevideo.com/videoplayback?expire=789&sabr=1&alr=yes&cpn=abc",
+                      itag: 137,
+                      type: "video",
+                      mime: "application/vnd.yt-ump",
+                      size: 45000000
+                    },
+                    {
+                      url: "https://rr2---sn-wngz.googlevideo.com/videoplayback?expire=789&alr=yes&cpn=abc",
                       itag: 137,
                       type: "video",
                       mime: "video/mp4",
                       size: 45000000
                     },
                     {
-                      url: "https://rr2---sn-wngz.googlevideo.com/videoplayback?expire=789&sabr=1&alr=yes&cpn=abc&itag=140",
+                      url: "https://rr2---sn-wngz.googlevideo.com/videoplayback?expire=789&alr=yes&cpn=abc&itag=140",
                       itag: 140,
                       type: "audio",
                       mime: "audio/mp4",
@@ -526,10 +540,13 @@ setTimeout(() => {
                   });
 
                   setTimeout(() => {
-                    const sabrDl = sentMessages.find(m => m.action === "download_media" && m.url.startsWith("yta2toidm://"));
-                    assert(sabrDl, "SABR stream with itag property must be matched and downloaded");
-                    assert(sabrDl.url.includes("rr2---sn-wngz.googlevideo.com"), "SABR video stream URL must be preserved");
-                    console.log("[PASS] Case 14: SABR stream matching and fallback resolution verified 100%");
+                    const dl = sentMessages.find(m => m.action === "download_media" && m.url.includes("googlevideo.com"));
+                    assert(dl, "Direct stream with itag property must be matched and downloaded");
+                    assert(!dl.url.includes("sabr=1"), "SABR stream URL must be strictly rejected");
+                    assert(!dl.url.startsWith("yta2toidm://"), "Scheme must be clean direct HTTP/HTTPS");
+                    assert(!dl.url.includes("##"), "URL must not contain dual stream delimiter ##");
+                    assert(dl.url.includes("rr2---sn-wngz.googlevideo.com"), "Direct video stream URL must be preserved");
+                    console.log("[PASS] Case 14: Direct stream matching and SABR rejection verified 100%");
 
                     // Test Case 15: Dropdown click fallback to active video stream
                     sentMessages.length = 0;
@@ -543,8 +560,106 @@ setTimeout(() => {
                     setTimeout(() => {
                       assert(sentMessages.length > 0, "Clicking dropdown item must dispatch download without getting stuck");
                       console.log("[PASS] Case 15: Dropdown resolution selection with active stream verified 100%");
-                      console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
-                    }, 700);
+
+                      // Test Case 16: Background InnerTube direct format fallback and ranking verification
+                      currentMockStreams = [
+                        {
+                          url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&sabr=1&sparams=sabr",
+                          type: "video",
+                          mime: "application/vnd.yt-ump",
+                          size: 0
+                        }
+                      ];
+                      mockYtData = {
+                        clientUsed: "ANDROID_VR",
+                        userAgent: "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+                        videoDetails: { videoId: "mockVid123", title: "VR Video" },
+                        streamingData: {
+                          formats: [],
+                          adaptiveFormats: [
+                            {
+                              itag: 137,
+                              mimeType: "video/mp4; codecs=\"avc1.640028\"",
+                              qualityLabel: "1080p HD",
+                              height: 1080,
+                              bitrate: 4500000,
+                              url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=137&c=ANDROID_VR",
+                              userAgent: "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+                            },
+                            {
+                              itag: 136,
+                              mimeType: "video/mp4; codecs=\"avc1.4d401f\"",
+                              qualityLabel: "720p HD",
+                              height: 720,
+                              bitrate: 2500000,
+                              url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=136&c=ANDROID_VR",
+                              userAgent: "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+                            },
+                            {
+                              itag: 140,
+                              mimeType: "audio/mp4; codecs=\"mp4a.40.2\"",
+                              qualityLabel: "128 kbps",
+                              bitrate: 128000,
+                              url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=140&c=ANDROID_VR",
+                              userAgent: "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
+                            }
+                          ]
+                        }
+                      };
+
+                      sentMessages.length = 0;
+                      bar.dispatch("click", {
+                        target: bar,
+                        stopPropagation: () => {},
+                        preventDefault: () => {}
+                      });
+
+                      setTimeout(() => {
+                        const bgDl = sentMessages.find(m => m.action === "download_media" && m.url.includes("googlevideo.com"));
+                        assert(bgDl, "Background ytData format must be selected when network streams are SABR");
+                        assert(bgDl.url.includes("itag=137"), "Highest quality ranked video format (1080p itag 137) must be prioritized");
+                        assert(bgDl.url.includes("c=ANDROID_VR"), "Mobile client URL parameter must be preserved");
+                        console.log("[PASS] Case 16: Background InnerTube direct format fallback and ranking verified 100%");
+
+                        // Case 17: Verify rejection of c=WEB with n=... challenge and svpuc=1
+                        currentMockStreams = [
+                          {
+                            url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=18&c=WEB&n=CwQoQruJ8cUxbsUDox2",
+                            type: "video",
+                            size: 34000000
+                          }
+                        ];
+                        mockYtData = {
+                          streamingData: {
+                            formats: [
+                              {
+                                itag: 18,
+                                mimeType: "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"",
+                                url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=18&c=WEB&n=CwQoQruJ8cUxbsUDox2"
+                              },
+                              {
+                                itag: 134,
+                                mimeType: "video/mp4; codecs=\"avc1.4D4015\"",
+                                url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=134&svpuc=1"
+                              }
+                            ]
+                          }
+                        };
+                        sentMessages.length = 0;
+                        bar.dispatch("click", {
+                          target: bar,
+                          stopPropagation: () => {},
+                          preventDefault: () => {}
+                        });
+
+                        setTimeout(() => {
+                          const badDl = sentMessages.find(m => m.action === "download_media");
+                          assert(!badDl, "c=WEB with n=... challenge or svpuc=1 must NEVER be dispatched to download_media");
+                          console.log("[PASS] Case 17: Rejection of c=WEB with n=... cipher and svpuc=1 verified 100%");
+                          console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+                        }, 50);
+                      }, 50);
+                    }, 1700);
                   }, 50);
                 }, 300);
               }, 50);

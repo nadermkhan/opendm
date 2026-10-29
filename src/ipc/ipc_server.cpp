@@ -271,6 +271,32 @@ std::string clean_stream_query_parameters(const std::string& url) {
         return url;
     }
 
+    std::unordered_set<std::string> signed_params;
+    size_t sp_pos = query.find("sparams=");
+    if (sp_pos != std::string::npos) {
+        size_t sp_end = query.find('&', sp_pos);
+        std::string sp_val = (sp_end == std::string::npos) ? query.substr(sp_pos + 8) : query.substr(sp_pos + 8, sp_end - (sp_pos + 8));
+        std::string decoded_sp;
+        for (size_t i = 0; i < sp_val.length(); ++i) {
+            if (sp_val[i] == '%' && i + 2 < sp_val.length()) {
+                std::string hex = sp_val.substr(i + 1, 2);
+                try {
+                    decoded_sp += static_cast<char>(std::stoul(hex, nullptr, 16));
+                    i += 2;
+                    continue;
+                } catch (...) {}
+            }
+            decoded_sp += sp_val[i];
+        }
+        std::istringstream sp_ss(decoded_sp);
+        std::string p;
+        while (std::getline(sp_ss, p, ',')) {
+            while (!p.empty() && (p.front() == ' ' || p.front() == '\t')) p.erase(0, 1);
+            while (!p.empty() && (p.back() == ' ' || p.back() == '\t')) p.pop_back();
+            if (!p.empty()) signed_params.insert(p);
+        }
+    }
+
     std::vector<std::string> kept_params;
     std::istringstream iss(query);
     std::string token;
@@ -280,9 +306,15 @@ std::string clean_stream_query_parameters(const std::string& url) {
         std::string key = (eq == std::string::npos) ? token : token.substr(0, eq);
         while (!key.empty() && (key.front() == ' ' || key.front() == '\t')) key.erase(0, 1);
 
+        // Never strip any parameter that is cryptographically signed inside sparams
+        if (signed_params.count(key) > 0) {
+            kept_params.push_back(token);
+            continue;
+        }
+
         if (is_googlevideo) {
             if (key == "range" || key == "begin" || key == "len" || key == "ump" ||
-                key == "sq" || key == "otf") {
+                key == "sq" || key == "otf" || key == "rn" || key == "rbuf" || key == "bytes") {
                 continue;
             }
         }
@@ -461,17 +493,35 @@ std::string IpcServer::handle_request(const std::string& request) {
             if (!audio_url.empty()) {
                 audio_url = clean_stream_query_parameters(audio_url);
             }
+            if ((video_url.find("googlevideo.com") != std::string::npos || video_url.find("videoplayback") != std::string::npos) &&
+                (video_url.find("sabr=1") != std::string::npos || video_url.find("sabr=2") != std::string::npos)) {
+                std::cout << "OpenDM IPC: Ignored YouTube SABR video stream: " << video_url << std::endl;
+                return "{\"status\": \"ignored\", \"reason\": \"youtube_sabr_stream_not_downloadable\"}";
+            }
+            if (!audio_url.empty() && (audio_url.find("googlevideo.com") != std::string::npos || audio_url.find("videoplayback") != std::string::npos) &&
+                (audio_url.find("sabr=1") != std::string::npos || audio_url.find("sabr=2") != std::string::npos)) {
+                std::cout << "OpenDM IPC: Ignored YouTube SABR audio stream: " << audio_url << std::endl;
+                return "{\"status\": \"ignored\", \"reason\": \"youtube_sabr_stream_not_downloadable\"}";
+            }
             std::string url = video_url;
             std::string filename = extract_tonec_field(req, 100);
             if (filename.empty()) {
                 filename = extract_tonec_field(req, 4);
             }
             std::string referer = extract_tonec_field(req, 50);
-            std::string page_title = extract_tonec_field(req, 7);
-            if (referer.empty() && page_title.rfind("http", 0) == 0) {
-                referer = page_title;
-                page_title.clear();
+            std::string page_url = extract_tonec_field(req, 7);
+            std::string media_title = extract_tonec_field(req, 102);
+
+            bool is_mobile_yt = (url.find("c=ANDROID_VR") != std::string::npos ||
+                                 url.find("c=ANDROID_TESTSUITE") != std::string::npos ||
+                                 url.find("c=IOS") != std::string::npos ||
+                                 url.find("c=ANDROID") != std::string::npos);
+            if (is_mobile_yt) {
+                referer.clear();
+            } else if (referer.empty() && page_url.rfind("http", 0) == 0) {
+                referer = page_url;
             }
+            std::string page_title = media_title.empty() ? page_url : media_title;
             std::string cookies = extract_tonec_field(req, 51);
             std::string user_agent = extract_tonec_field(req, 54);
 
@@ -730,6 +780,16 @@ std::string IpcServer::handle_request(const std::string& request) {
             audio_url = clean_stream_query_parameters(normalize_stream_scheme(req_audio));
         } else if (!audio_url.empty()) {
             audio_url = clean_stream_query_parameters(audio_url);
+        }
+        if ((video_url.find("googlevideo.com") != std::string::npos || video_url.find("videoplayback") != std::string::npos) &&
+            (video_url.find("sabr=1") != std::string::npos || video_url.find("sabr=2") != std::string::npos)) {
+            std::cout << "OpenDM IPC: Ignored YouTube SABR video stream: " << video_url << std::endl;
+            return "{\"status\": \"ignored\", \"reason\": \"youtube_sabr_stream_not_downloadable\"}";
+        }
+        if (!audio_url.empty() && (audio_url.find("googlevideo.com") != std::string::npos || audio_url.find("videoplayback") != std::string::npos) &&
+            (audio_url.find("sabr=1") != std::string::npos || audio_url.find("sabr=2") != std::string::npos)) {
+            std::cout << "OpenDM IPC: Ignored YouTube SABR audio stream: " << audio_url << std::endl;
+            return "{\"status\": \"ignored\", \"reason\": \"youtube_sabr_stream_not_downloadable\"}";
         }
         std::string url = video_url;
 

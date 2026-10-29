@@ -15,6 +15,11 @@ struct AddUrlResult {
     bool use_auth{false};
     std::string username;
     std::string password;
+    std::string audio_stream_url;
+    std::string user_agent;
+    bool is_streaming_media{false};
+    uint64_t file_size{0};
+    bool bypass_prompt{false};
 };
 
 class AddUrlDialog {

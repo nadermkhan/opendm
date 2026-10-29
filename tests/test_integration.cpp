@@ -344,7 +344,7 @@ int main() {
         assert(cleaned_yt.find("ump=") == std::string::npos);
         assert(cleaned_yt.find("expire=123") != std::string::npos);
         assert(cleaned_yt.find("itag=137") != std::string::npos);
-        assert(cleaned_yt.find("rn=1") != std::string::npos);
+        assert(cleaned_yt.find("rn=") == std::string::npos);
 
         // Test Parameter Stripping on mycdn.me
         std::string raw_mycdn = "https://mycdn.me/video.mp4?bytes=0-500&sig=abc";
@@ -375,8 +375,8 @@ int main() {
         assert(resp.find("\"status\": \"prompting\"") != std::string::npos);
         assert(prompt_received);
         assert(captured_prompt.is_streaming_media);
-        assert(captured_prompt.url == "https://rr1.googlevideo.com/videoplayback?itag=137&mime=video%2Fmp4&rn=1");
-        assert(captured_prompt.audio_stream_url == "https://rr1.googlevideo.com/videoplayback?itag=140&mime=audio%2Fmp4&rn=1");
+        assert(captured_prompt.url == "https://rr1.googlevideo.com/videoplayback?itag=137&mime=video%2Fmp4");
+        assert(captured_prompt.audio_stream_url == "https://rr1.googlevideo.com/videoplayback?itag=140&mime=audio%2Fmp4");
         assert(captured_prompt.url.find("range=") == std::string::npos);
         assert(captured_prompt.audio_stream_url.find("range=") == std::string::npos);
         assert(captured_prompt.filename == "Rick Astley - Never Gonna Give You Up.mp4");

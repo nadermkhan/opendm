@@ -25,6 +25,8 @@ Makefile
 
 # Original Windows binary installer & extracted Win32/x64 binaries
 *.exe
+*.deb
+4kdlr
 extracted/
 data/extracted_bitmaps/
 data/extracted_icons/

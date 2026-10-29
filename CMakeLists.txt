@@ -30,6 +30,7 @@ add_library(opendm_core STATIC
     src/core/batch_importer.cpp
     src/core/media_muxer.cpp
     src/core/dash_parser.cpp
+    src/core/youtube_engine.cpp
     src/core/post_download.cpp
     src/cli/cli_parser.cpp
     src/ipc/ipc_server.cpp
@@ -52,6 +53,7 @@ add_executable(opendm
     src/ui/download_complete_dialog.cpp
     src/ui/properties_dialog.cpp
     src/ui/zip_preview_dialog.cpp
+    src/ui/youtube_format_dialog.cpp
     src/ui/grabber_dialog.cpp
     src/ui/main_window.cpp
     src/main.cpp
@@ -121,6 +123,14 @@ target_link_libraries(test_session_pause PRIVATE
     opendm_core
 )
 add_test(NAME SessionPauseTest COMMAND test_session_pause)
+
+add_executable(test_youtube_engine
+    tests/test_youtube_engine.cpp
+)
+target_link_libraries(test_youtube_engine PRIVATE
+    opendm_core
+)
+add_test(NAME YouTubeEngineTest COMMAND test_youtube_engine)
 
 # Installation targets
 install(TARGETS opendm opendm-native-host

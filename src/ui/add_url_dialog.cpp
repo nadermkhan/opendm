@@ -1,6 +1,9 @@
 #include "add_url_dialog.hpp"
 #include "ui_assets.hpp"
+#include "youtube_format_dialog.hpp"
+#include "../core/youtube_engine.hpp"
 #include <filesystem>
+#include <thread>
 
 namespace fs = std::filesystem;
 
@@ -146,82 +149,123 @@ void AddUrlDialog::on_ok_clicked() {
     }
 
     std::string u = res.url;
-    bool is_yt = (u.find("youtube.com/watch") != std::string::npos ||
-                  u.find("youtu.be/") != std::string::npos ||
-                  u.find("youtube.com/shorts/") != std::string::npos ||
-                  u.find("youtube.com/live/") != std::string::npos);
-    if (is_yt) {
-        GtkWidget* alert = gtk_window_new();
-        gtk_window_set_title(GTK_WINDOW(alert), "OpenDM - Web Video Download");
-        gtk_window_set_modal(GTK_WINDOW(alert), TRUE);
-        gtk_window_set_transient_for(GTK_WINDOW(alert), GTK_WINDOW(dialog_));
-        gtk_window_set_default_size(GTK_WINDOW(alert), 420, 200);
-        gtk_window_set_resizable(GTK_WINDOW(alert), FALSE);
+    if (YouTubeEngine::is_youtube_url(u)) {
+        // Show lightweight loading dialog
+        GtkWidget* loading_dlg = gtk_window_new();
+        gtk_window_set_title(GTK_WINDOW(loading_dlg), "OpenDM - Analyzing Video");
+        gtk_window_set_modal(GTK_WINDOW(loading_dlg), TRUE);
+        gtk_window_set_transient_for(GTK_WINDOW(loading_dlg), GTK_WINDOW(dialog_));
+        gtk_window_set_default_size(GTK_WINDOW(loading_dlg), 380, 140);
+        gtk_window_set_resizable(GTK_WINDOW(loading_dlg), FALSE);
 
-        GtkWidget* vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-        gtk_widget_set_margin_start(vbox, 16);
-        gtk_widget_set_margin_end(vbox, 16);
-        gtk_widget_set_margin_top(vbox, 16);
-        gtk_widget_set_margin_bottom(vbox, 16);
-        gtk_window_set_child(GTK_WINDOW(alert), vbox);
+        GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+        gtk_widget_set_margin_start(box, 20);
+        gtk_widget_set_margin_end(box, 20);
+        gtk_widget_set_margin_top(box, 20);
+        gtk_widget_set_margin_bottom(box, 20);
+        gtk_window_set_child(GTK_WINDOW(loading_dlg), box);
 
-        GtkWidget* msg_lbl = gtk_label_new(
-            "OpenDM captures video and audio streams dynamically using its browser extension.\n\n"
-            "To download this YouTube video with audio:\n"
-            "  1. Play the video in your web browser (Chrome, Firefox, Edge, etc.)\n"
-            "  2. Click the 'Download this video' panel located above the video player.\n\n"
-            "Would you like to open this video in your browser now?"
-        );
-        gtk_label_set_wrap(GTK_LABEL(msg_lbl), TRUE);
-        gtk_label_set_xalign(GTK_LABEL(msg_lbl), 0.0f);
-        gtk_box_append(GTK_BOX(vbox), msg_lbl);
+        GtkWidget* spinner = gtk_spinner_new();
+        gtk_spinner_start(GTK_SPINNER(spinner));
+        gtk_widget_set_size_request(spinner, 32, 32);
+        gtk_box_append(GTK_BOX(box), spinner);
 
-        GtkWidget* btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-        gtk_widget_set_halign(btn_box, GTK_ALIGN_END);
-        gtk_widget_set_margin_top(btn_box, 10);
+        GtkWidget* lbl = gtk_label_new("Resolving YouTube video streams via OpenDM Engine...");
+        gtk_label_set_xalign(GTK_LABEL(lbl), 0.5f);
+        gtk_box_append(GTK_BOX(box), lbl);
 
-        GtkWidget* btn_open = gtk_button_new_with_label("Open in Browser");
-        gtk_widget_add_css_class(btn_open, "suggested-action");
-        GtkWidget* btn_anyway = gtk_button_new_with_label("Download Webpage");
-        GtkWidget* btn_cancel = gtk_button_new_with_label("Cancel");
+        gtk_window_present(GTK_WINDOW(loading_dlg));
 
-        gtk_box_append(GTK_BOX(btn_box), btn_open);
-        gtk_box_append(GTK_BOX(btn_box), btn_anyway);
-        gtk_box_append(GTK_BOX(btn_box), btn_cancel);
-        gtk_box_append(GTK_BOX(vbox), btn_box);
-
-        struct AlertData {
+        struct WorkerData {
             AddUrlDialog* self;
-            GtkWidget* alert_win;
-            AddUrlResult res;
+            GtkWidget* loading_dlg;
+            std::string url;
+            std::string path;
+            YouTubeVideoInfo info;
+            std::string err;
+            bool success{false};
         };
-        auto* data = new AlertData{this, alert, res};
 
-        g_signal_connect_swapped(btn_open, "clicked", G_CALLBACK(+[](AlertData* d) {
-            std::string open_cmd = "xdg-open \"" + d->res.url + "\" >/dev/null 2>&1 &";
-            (void)system(open_cmd.c_str());
-            gtk_window_destroy(GTK_WINDOW(d->alert_win));
-            gtk_window_destroy(GTK_WINDOW(d->self->dialog_));
-            delete d->self;
-            delete d;
-        }), data);
+        auto* wd = new WorkerData{this, loading_dlg, res.url, res.path, {}, "", false};
+        std::thread([wd]() {
+            wd->success = YouTubeEngine::extract_video_info(wd->url, wd->info, &wd->err);
 
-        g_signal_connect_swapped(btn_anyway, "clicked", G_CALLBACK(+[](AlertData* d) {
-            if (d->self->callback_) {
-                d->self->callback_(d->res);
-            }
-            gtk_window_destroy(GTK_WINDOW(d->alert_win));
-            gtk_window_destroy(GTK_WINDOW(d->self->dialog_));
-            delete d->self;
-            delete d;
-        }), data);
+            g_idle_add(+[](gpointer p) -> gboolean {
+                auto* d = static_cast<WorkerData*>(p);
+                gtk_window_destroy(GTK_WINDOW(d->loading_dlg));
 
-        g_signal_connect_swapped(btn_cancel, "clicked", G_CALLBACK(+[](AlertData* d) {
-            gtk_window_destroy(GTK_WINDOW(d->alert_win));
-            delete d;
-        }), data);
+                if (d->success && d->info.has_playable_formats()) {
+                    GtkWindow* win_parent = d->self->parent_;
+                    auto cb = d->self->callback_;
+                    gtk_window_destroy(GTK_WINDOW(d->self->dialog_));
+                    delete d->self;
 
-        gtk_window_present(GTK_WINDOW(alert));
+                    YouTubeFormatDialog::show(win_parent, d->info, [cb](DownloadInfoAction action, const DownloadPromptInfo& prompt) {
+                        if (action == DownloadInfoAction::CANCEL) return;
+                        AddUrlResult r;
+                        r.accepted = true;
+                        r.url = prompt.url;
+                        r.audio_stream_url = prompt.audio_stream_url;
+                        r.user_agent = prompt.user_agent;
+                        r.path = prompt.destination_dir;
+                        r.filename = prompt.filename;
+                        r.start_immediately = (action == DownloadInfoAction::START_NOW);
+                        r.is_streaming_media = true;
+                        r.file_size = prompt.file_size;
+                        r.bypass_prompt = true;
+                        if (cb) cb(r);
+                    });
+                } else {
+                    // Show error dialog with option to open in browser
+                    GtkWidget* alert = gtk_window_new();
+                    gtk_window_set_title(GTK_WINDOW(alert), "OpenDM - Video Resolution Error");
+                    gtk_window_set_modal(GTK_WINDOW(alert), TRUE);
+                    gtk_window_set_transient_for(GTK_WINDOW(alert), GTK_WINDOW(d->self->dialog_));
+                    gtk_window_set_default_size(GTK_WINDOW(alert), 440, 180);
+                    gtk_window_set_resizable(GTK_WINDOW(alert), FALSE);
+
+                    GtkWidget* abox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+                    gtk_widget_set_margin_start(abox, 16);
+                    gtk_widget_set_margin_end(abox, 16);
+                    gtk_widget_set_margin_top(abox, 16);
+                    gtk_widget_set_margin_bottom(abox, 16);
+                    gtk_window_set_child(GTK_WINDOW(alert), abox);
+
+                    std::string err_msg = "Could not resolve stream URLs using OpenDM Native Processing Engine:\n" +
+                                          (d->err.empty() ? "No playable formats found" : d->err) + "\n\n" +
+                                          "Would you like to open this video in your web browser instead?";
+                    GtkWidget* l = gtk_label_new(err_msg.c_str());
+                    gtk_label_set_wrap(GTK_LABEL(l), TRUE);
+                    gtk_label_set_xalign(GTK_LABEL(l), 0.0f);
+                    gtk_box_append(GTK_BOX(abox), l);
+
+                    GtkWidget* bbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+                    gtk_widget_set_halign(bbox, GTK_ALIGN_END);
+                    GtkWidget* btn_open = gtk_button_new_with_label("Open in Browser");
+                    gtk_widget_add_css_class(btn_open, "suggested-action");
+                    GtkWidget* btn_close = gtk_button_new_with_label("Close");
+                    gtk_box_append(GTK_BOX(bbox), btn_open);
+                    gtk_box_append(GTK_BOX(bbox), btn_close);
+                    gtk_box_append(GTK_BOX(abox), bbox);
+
+                    struct AlertCtx { GtkWidget* alert; std::string url; };
+                    auto* actx = new AlertCtx{alert, d->url};
+                    g_signal_connect_swapped(btn_open, "clicked", G_CALLBACK(+[](AlertCtx* ac) {
+                        std::string open_cmd = "xdg-open \"" + ac->url + "\" >/dev/null 2>&1 &";
+                        (void)system(open_cmd.c_str());
+                        gtk_window_destroy(GTK_WINDOW(ac->alert));
+                        delete ac;
+                    }), actx);
+                    g_signal_connect_swapped(btn_close, "clicked", G_CALLBACK(+[](AlertCtx* ac) {
+                        gtk_window_destroy(GTK_WINDOW(ac->alert));
+                        delete ac;
+                    }), actx);
+                    gtk_window_present(GTK_WINDOW(alert));
+                }
+                delete d;
+                return G_SOURCE_REMOVE;
+            }, wd);
+        }).detach();
         return;
     }
 

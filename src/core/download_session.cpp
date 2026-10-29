@@ -329,6 +329,13 @@ bool DownloadSession::redownload() {
 }
 
 bool DownloadSession::probe_resource() {
+    if ((url_.find("googlevideo.com") != std::string::npos || url_.find("videoplayback") != std::string::npos) &&
+        (url_.find("sabr=1") != std::string::npos || url_.find("sabr=2") != std::string::npos)) {
+        std::lock_guard<std::mutex> lock(meta_mutex_);
+        last_error_ = "YouTube SABR stream URL rejected. Please reload video page to capture direct stream.";
+        return false;
+    }
+
     CURL* curl = curl_easy_init();
     if (!curl) {
         last_error_ = "Failed to initialize CURL probe";
@@ -361,9 +368,22 @@ bool DownloadSession::probe_resource() {
         curl_easy_setopt(curl, CURLOPT_USERPWD, auth_userpwd_.c_str());
     }
 
+    bool is_mobile_yt = (url_.find("c=ANDROID_VR") != std::string::npos ||
+                         url_.find("c=ANDROID_TESTSUITE") != std::string::npos ||
+                         url_.find("c=IOS") != std::string::npos ||
+                         url_.find("c=ANDROID") != std::string::npos);
+
     // Add custom headers if specified
     struct curl_slist* header_list = nullptr;
     for (const auto& [k, v] : custom_headers_) {
+        std::string lk = k;
+        std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
+        if (lk == "user-agent") {
+            continue;
+        }
+        if (lk == "referer" && is_mobile_yt) {
+            continue;
+        }
         std::string h = k + ": " + v;
         header_list = curl_slist_append(header_list, h.c_str());
     }
@@ -415,6 +435,18 @@ bool DownloadSession::probe_resource() {
         std::lock_guard<std::mutex> lock(meta_mutex_);
         last_error_ = "HTTP error code: " + std::to_string(http_code);
         return false;
+    }
+
+    // Check Content-Type for SABR control streams
+    auto ct_it = resp_headers.find("content-type");
+    if (ct_it != resp_headers.end()) {
+        std::string ct = ct_it->second;
+        std::transform(ct.begin(), ct.end(), ct.begin(), ::tolower);
+        if (ct.find("yt-ump") != std::string::npos) {
+            std::lock_guard<std::mutex> lock(meta_mutex_);
+            last_error_ = "YouTube SABR control stream intercepted. Please reload video page to capture direct stream.";
+            return false;
+        }
     }
 
     // Extract filename from Content-Disposition if present
@@ -626,8 +658,21 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
         curl_easy_setopt(curl, CURLOPT_USERPWD, auth_userpwd_.c_str());
     }
 
+    bool is_mobile_yt = (url_.find("c=ANDROID_VR") != std::string::npos ||
+                         url_.find("c=ANDROID_TESTSUITE") != std::string::npos ||
+                         url_.find("c=IOS") != std::string::npos ||
+                         url_.find("c=ANDROID") != std::string::npos);
+
     struct curl_slist* header_list = nullptr;
     for (const auto& [k, v] : custom_headers_) {
+        std::string lk = k;
+        std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
+        if (lk == "user-agent") {
+            continue;
+        }
+        if (lk == "referer" && is_mobile_yt) {
+            continue;
+        }
         std::string h = k + ": " + v;
         header_list = curl_slist_append(header_list, h.c_str());
     }
@@ -666,6 +711,8 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
         (res == CURLE_WRITE_ERROR && reached_boundary))) {
         chunk_manager_.mark_chunk_completed(chunk_id);
     } else {
+        std::cerr << "OpenDM Worker " << chunk_id << " failed: HTTP " << http_code 
+                  << ", curl_res: " << curl_easy_strerror(res) << std::endl;
         chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::FAILED);
     }
 }
@@ -687,8 +734,14 @@ void DownloadSession::dynamic_split_loop() {
             }
         }
 
+        // Limit concurrent connections on Google Video to prevent CDN dropping connections
+        size_t effective_max_conns = max_connections_;
+        if (url_.find("googlevideo.com") != std::string::npos || url_.find("videoplayback") != std::string::npos) {
+            effective_max_conns = std::min<size_t>(max_connections_, 2);
+        }
+
         // Check IDM condition: NeedNewConnection()
-        if (supports_ranges_.load() && chunk_manager_.need_new_connection(active_workers, max_connections_)) {
+        if (supports_ranges_.load() && chunk_manager_.need_new_connection(active_workers, effective_max_conns)) {
             int target_chunk = chunk_manager_.find_max_free_chunk();
             if (target_chunk != -1) {
                 int new_id = chunk_manager_.split_chunk(target_chunk, temp_dir_, id_);
@@ -755,6 +808,12 @@ void DownloadSession::assemble_file() {
             audio_url = audio_stream_url_;
         }
         if (!audio_url.empty()) {
+            if ((audio_url.find("googlevideo.com") != std::string::npos || audio_url.find("videoplayback") != std::string::npos) &&
+                (audio_url.find("sabr=1") != std::string::npos || audio_url.find("sabr=2") != std::string::npos)) {
+                audio_url.clear();
+            }
+        }
+        if (!audio_url.empty()) {
             std::string video_tmp = dest_path + ".video.tmp";
             std::string audio_tmp = dest_path + ".audio.tmp";
             fs::rename(dest_path, video_tmp, ec);
@@ -792,11 +851,13 @@ void DownloadSession::assemble_file() {
                         }
 
                         CURLcode ares = curl_easy_perform(acurl);
+                        long audio_http_code = 0;
+                        curl_easy_getinfo(acurl, CURLINFO_RESPONSE_CODE, &audio_http_code);
                         if (aheaders) {
                             curl_slist_free_all(aheaders);
                         }
                         fclose(afp);
-                        if (ares == CURLE_OK) {
+                        if (ares == CURLE_OK && audio_http_code >= 200 && audio_http_code < 300) {
                             std::string mux_err;
                             bool mux_ok = MediaMuxer::mux_streams(video_tmp, audio_tmp, dest_path, nullptr, &mux_err);
                             if (mux_ok) {
