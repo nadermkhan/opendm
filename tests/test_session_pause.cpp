@@ -40,17 +40,19 @@ public:
             return false;
         }
 
-        socklen_t len = sizeof(addr);
-        if (getsockname(server_fd_, (struct sockaddr*)&addr, &len) < 0) {
-            close(server_fd_);
-            return false;
-        }
-        port_ = ntohs(addr.sin_port);
-
         if (listen(server_fd_, 16) < 0) {
             close(server_fd_);
             return false;
         }
+
+        struct sockaddr_in bound{};
+        socklen_t len = sizeof(bound);
+        if (getsockname(server_fd_, (struct sockaddr*)&bound, &len) < 0) {
+            std::cerr << "getsockname failed: " << strerror(errno) << std::endl;
+            close(server_fd_);
+            return false;
+        }
+        port_ = ntohs(bound.sin_port);
 
         running_ = true;
         server_thread_ = std::thread(&TestHttpRangeServer::run, this);
@@ -183,7 +185,10 @@ int main() {
 
     // 2. Start mock Range-enabled HTTP server
     TestHttpRangeServer server(payload);
-    assert(server.start());
+    if (!server.start()) {
+        std::cerr << "FAIL: Could not start mock HTTP server!" << std::endl;
+        return 1;
+    }
     std::cout << "  ✓ Test HTTP Range Server listening on 127.0.0.1:" << server.get_port() << std::endl;
 
     std::string test_url = "http://127.0.0.1:" + std::to_string(server.get_port()) + "/testfile.bin";
@@ -198,7 +203,10 @@ int main() {
     session->set_max_connections(4);
 
     std::cout << "[Step 1] Starting download..." << std::endl;
-    assert(session->start());
+    if (!session->start()) {
+        std::cerr << "FAIL: Could not start download session!" << std::endl;
+        return 1;
+    }
 
     // 4. Wait for download to start progressing (downloaded_bytes > 100 KB)
     auto start_time = std::chrono::steady_clock::now();

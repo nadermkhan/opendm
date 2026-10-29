@@ -132,14 +132,55 @@ target_link_libraries(test_youtube_engine PRIVATE
 )
 add_test(NAME YouTubeEngineTest COMMAND test_youtube_engine)
 
+# Ensure assertions remain enabled in test suites across all build types
+foreach(test_tgt test_chunk_manager test_zip_previewer test_media_muxer test_integration test_dash_parser test_session_pause test_youtube_engine)
+    target_compile_options(${test_tgt} PRIVATE -UNDEBUG)
+endforeach()
+
 # Installation targets
+include(GNUInstallDirs)
 install(TARGETS opendm opendm-native-host
-    RUNTIME DESTINATION bin
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-install(DIRECTORY data/icons/ DESTINATION share/icons/hicolor/scalable/apps)
-install(FILES data/opendm.desktop DESTINATION share/applications)
-install(DIRECTORY data/ui_assets/ DESTINATION share/opendm/ui_assets)
-install(FILES src/ui/style.css DESTINATION share/opendm)
+install(DIRECTORY data/icons/hicolor/ DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor)
+install(FILES data/opendm.desktop DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
+install(FILES data/io.github.opendm.OpenDM.metainfo.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
+install(DIRECTORY data/ui_assets/ DESTINATION ${CMAKE_INSTALL_DATADIR}/opendm/ui_assets)
+install(FILES src/ui/style.css DESTINATION ${CMAKE_INSTALL_DATADIR}/opendm)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/opendm_extension.xpi")
+    install(FILES opendm_extension.xpi DESTINATION ${CMAKE_INSTALL_DATADIR}/opendm)
+endif()
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extension_extracted")
+    install(DIRECTORY extension_extracted/ DESTINATION ${CMAKE_INSTALL_DATADIR}/opendm/extension)
+endif()
+
+# Browser Native Messaging Manifests
+install(FILES data/native-messaging/com.tonec.idm.firefox.json
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/mozilla/native-messaging-hosts
+    RENAME com.tonec.idm.json
+)
+
+# CPack Debian Package Configuration
+set(CPACK_PACKAGE_NAME "opendm")
+set(CPACK_PACKAGE_VENDOR "OpenDM Development Team")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "High-speed dynamic multipart download manager (IDM Architecture)")
+set(CPACK_PACKAGE_VERSION_MAJOR 1)
+set(CPACK_PACKAGE_VERSION_MINOR 0)
+set(CPACK_PACKAGE_VERSION_PATCH 0)
+set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_PACKAGE_CONTACT "OpenDM Development Team <contact@opendm.org>")
+set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/nadermkhan/opendm")
+set(CPACK_GENERATOR "DEB")
+set(CPACK_DEBIAN_PACKAGE_NAME "opendm")
+set(CPACK_DEBIAN_PACKAGE_SECTION "net")
+set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
+set(CPACK_DEBIAN_PACKAGE_ARCHITECTURE "amd64")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "OpenDM Development Team <contact@opendm.org>")
+set(CPACK_DEBIAN_PACKAGE_HOMEPAGE "https://github.com/nadermkhan/opendm")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
+set(CPACK_DEBIAN_PACKAGE_SUGGESTS "ffmpeg")
+
+include(CPack)
 
 
 

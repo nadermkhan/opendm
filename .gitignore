@@ -27,6 +27,8 @@ Makefile
 *.exe
 *.deb
 4kdlr
+dist/
+_CPack_Packages/
 extracted/
 data/extracted_bitmaps/
 data/extracted_icons/

@@ -1,0 +1,10 @@
+{
+  "name": "com.tonec.idm",
+  "description": "OpenDM Native Messaging Host for Linux (IDM Compatible)",
+  "path": "/usr/bin/opendm-native-host",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://ngpampappnmepgilojfohadhhmbhlaek/",
+    "chrome-extension://bgdpgdfcmienfknnkgcfbgjjffmnokch/"
+  ]
+}

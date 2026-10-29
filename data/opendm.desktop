@@ -7,6 +7,7 @@ Icon=opendm
 Terminal=false
 Type=Application
 Categories=Network;FileTransfer;GTK;
+Keywords=download;manager;accelerator;idm;youtube;video;
 MimeType=x-scheme-handler/http;x-scheme-handler/https;application/x-all-downloads;application/x-idm-ef2;
 StartupNotify=true
 StartupWMClass=opendm

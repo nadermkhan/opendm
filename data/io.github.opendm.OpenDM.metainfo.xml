@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.opendm.OpenDM</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>OpenDM</name>
+  <summary>High-speed dynamic multipart download manager and media grabber</summary>
+  <description>
+    <p>
+      OpenDM is a high-speed, native Linux download accelerator engineered with the authentic
+      Internet Download Manager (IDM) segmentation algorithms, native multi-browser integration,
+      and high-definition video extraction.
+    </p>
+    <p>Key Features:</p>
+    <ul>
+      <li>Dynamic file segmentation dividing downloads into up to 32 concurrent parallel parts.</li>
+      <li>Universal browser integration via native messaging with Chrome, Firefox, Chromium, Brave, and Edge.</li>
+      <li>Universal Media Hover Panel intercepting media streams directly on streaming websites.</li>
+      <li>Native YouTube 4K/UHD stream extraction aggregating adaptive video and high-bitrate audio without external scripts.</li>
+      <li>Automatic media muxing for paired adaptive streams.</li>
+      <li>Bandwidth limiter, queue scheduling, pause/resume, and credential vault.</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">opendm.desktop</launchable>
+  <provides>
+    <binary>opendm</binary>
+    <binary>opendm-native-host</binary>
+    <id>opendm.desktop</id>
+  </provides>
+  <url type="homepage">https://github.com/nadermkhan/opendm</url>
+  <url type="bugtracker">https://github.com/nadermkhan/opendm/issues</url>
+  <developer id="io.github.opendm">
+    <name>OpenDM Development Team</name>
+  </developer>
+  <categories>
+    <category>Network</category>
+    <category>FileTransfer</category>
+  </categories>
+  <keywords>
+    <keyword>download</keyword>
+    <keyword>manager</keyword>
+    <keyword>accelerator</keyword>
+    <keyword>idm</keyword>
+    <keyword>video</keyword>
+    <keyword>youtube</keyword>
+  </keywords>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="1.0.0" date="2026-10-29">
+      <description>
+        <p>Initial release of OpenDM featuring dynamic multipart acceleration, 4K multi-client stream aggregation, and authentic IDM browser extension integration.</p>
+      </description>
+    </release>
+  </releases>
+</component>
