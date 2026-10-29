@@ -343,11 +343,17 @@ std::string DownloadSession::resolve_user_agent_for_url(const std::string& targe
     if (target_url.find("c=ANDROID_VR") != std::string::npos) {
         return "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
     }
+    if (target_url.find("c=ANDROID_TESTSUITE") != std::string::npos) {
+        return "com.google.android.youtube/1.9 (Linux; U; Android 11) gzip";
+    }
     if (target_url.find("c=IOS") != std::string::npos) {
         return "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)";
     }
     if (target_url.find("c=ANDROID") != std::string::npos) {
         return "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip";
+    }
+    if (target_url.find("c=TVHTML5_SIMPLY") != std::string::npos) {
+        return "Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15";
     }
     if (target_url.find("c=TVHTML5") != std::string::npos) {
         return "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)";

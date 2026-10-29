@@ -1,4 +1,5 @@
 #include "youtube_engine.hpp"
+#include "dash_parser.hpp"
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <regex>
@@ -72,24 +73,8 @@ std::string YouTubeEngine::extract_video_id(const std::string& url) {
 std::vector<YouTubeEngine::InnerTubeClient> YouTubeEngine::get_client_hierarchy() {
     std::vector<InnerTubeClient> clients;
 
-    // 1. VISIONOS: Client ID 101, Version 1.02 (Apple Vision Pro RealityDevice17,1).
-    // Primary high-definition client: delivers unthrottled 4K (2160p), 1440p, 1080p, 720p streams without PO token.
-    {
-        InnerTubeClient c;
-        c.name = "VISIONOS";
-        c.client_name = "VISIONOS";
-        c.client_version = "1.02";
-        c.client_id = "101";
-        c.device_make = "Apple";
-        c.device_model = "RealityDevice17,1";
-        c.os_name = "visionOS";
-        c.os_version = "26.5.23O471";
-        c.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
-        clients.push_back(c);
-    }
-
-    // 2. ANDROID_VR: Client ID 28, Version 1.65.10 (Oculus Quest 3, Android 12L SDK 32).
-    // Secondary high-definition client: provides unthrottled 4K, 1440p, 1080p, 720p streams with direct signed URLs.
+    // 1. ANDROID_VR: Primary 4K (2160p) VP9/AV1 + H.264 adaptive client.
+    // Native ExoPlayer client delivering direct signed range-seekable 4K/1440p/1080p URLs without PO token.
     {
         InnerTubeClient c;
         c.name = "ANDROID_VR";
@@ -101,27 +86,69 @@ std::vector<YouTubeEngine::InnerTubeClient> YouTubeEngine::get_client_hierarchy(
         c.android_sdk_version = 32;
         c.os_name = "Android";
         c.os_version = "12L";
+        c.platform = "MOBILE";
         c.user_agent = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
         clients.push_back(c);
     }
 
-    // 3. ANDROID: Client ID 3, Version 21.26.364 (Android 11, SDK 30).
-    // High-compatibility mobile client: delivers progressive itag 18 (360p) with ratebypass=yes.
+    // 2. VISIONOS: Secondary high-definition client (Apple Vision Pro RealityDevice17,1).
     {
         InnerTubeClient c;
-        c.name = "ANDROID";
-        c.client_name = "ANDROID";
-        c.client_version = "21.26.364";
-        c.client_id = "3";
-        c.android_sdk_version = 30;
-        c.os_name = "Android";
-        c.os_version = "11";
-        c.user_agent = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip";
+        c.name = "VISIONOS";
+        c.client_name = "VISIONOS";
+        c.client_version = "1.02";
+        c.client_id = "101";
+        c.device_make = "Apple";
+        c.device_model = "RealityDevice17,1";
+        c.os_name = "visionOS";
+        c.os_version = "26.5.23O471";
+        c.platform = "DESKTOP";
+        c.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
         clients.push_back(c);
     }
 
-    // 4. IOS: Client ID 5, Version 21.26.4 (iPhone16,2, iOS 18.3.2).
-    // Native Apple mobile client: fallback mobile endpoint.
+    // 3. ANDROID_TESTSUITE: High-res Android fallback client supported by DownloadSession.
+    {
+        InnerTubeClient c;
+        c.name = "ANDROID_TESTSUITE";
+        c.client_name = "ANDROID_TESTSUITE";
+        c.client_version = "1.9";
+        c.client_id = "30";
+        c.android_sdk_version = 30;
+        c.os_name = "Android";
+        c.os_version = "11";
+        c.platform = "MOBILE";
+        c.user_agent = "com.google.android.youtube/1.9 (Linux; U; Android 11) gzip";
+        clients.push_back(c);
+    }
+
+    // 4. TVHTML5 (Cobalt 25.lts): Returns clean direct streams for 4K VP9 TV playback.
+    {
+        InnerTubeClient c;
+        c.name = "TVHTML5";
+        c.client_name = "TVHTML5";
+        c.client_version = "7.20260707.07.00";
+        c.client_id = "7";
+        c.os_name = "ChromiumStylePlatform";
+        c.platform = "TV";
+        c.user_agent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)";
+        clients.push_back(c);
+    }
+
+    // 5. TVHTML5_SIMPLY_EMBEDDED_PLAYER: Bypasses age-gate and music/embed restrictions.
+    {
+        InnerTubeClient c;
+        c.name = "TVHTML5_SIMPLY";
+        c.client_name = "TVHTML5_SIMPLY_EMBEDDED_PLAYER";
+        c.client_version = "2.0";
+        c.client_id = "85";
+        c.platform = "TV";
+        c.user_agent = "Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15";
+        c.embed_url = "https://www.youtube.com/";
+        clients.push_back(c);
+    }
+
+    // 6. IOS: Native Apple mobile client.
     {
         InnerTubeClient c;
         c.name = "IOS";
@@ -132,60 +159,34 @@ std::vector<YouTubeEngine::InnerTubeClient> YouTubeEngine::get_client_hierarchy(
         c.device_model = "iPhone16,2";
         c.os_name = "iPhone";
         c.os_version = "18.3.2.22D82";
+        c.platform = "MOBILE";
         c.user_agent = "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)";
         clients.push_back(c);
     }
 
-    // 5. TVHTML5 (Cobalt 25.lts): Client ID 7, Version 7.20260707.07.00.
-    // Cobalt LTS TV client, returns clean direct streams without n-signature challenge.
+    // 7. ANDROID: Progressive 360p fallback client (kept after all HD/4K clients).
     {
         InnerTubeClient c;
-        c.name = "TVHTML5";
-        c.client_name = "TVHTML5";
-        c.client_version = "7.20260707.07.00";
-        c.client_id = "7";
-        c.os_name = "ChromiumStylePlatform";
-        c.user_agent = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)";
+        c.name = "ANDROID";
+        c.client_name = "ANDROID";
+        c.client_version = "21.26.364";
+        c.client_id = "3";
+        c.android_sdk_version = 30;
+        c.os_name = "Android";
+        c.os_version = "11";
+        c.platform = "MOBILE";
+        c.user_agent = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip";
         clients.push_back(c);
     }
 
-    // 6. TV_SAMSUNG: Client ID 7, Version 5.20260707 (Tizen 2.4.0 SmartTV).
-    // Samsung SmartTV client with direct playback URLs.
-    {
-        InnerTubeClient c;
-        c.name = "TV_SAMSUNG";
-        c.client_name = "TVHTML5";
-        c.client_version = "5.20260707";
-        c.client_id = "7";
-        c.device_make = "Samsung";
-        c.device_model = "SmartTV";
-        c.os_name = "Tizen";
-        c.os_version = "2.4.0";
-        c.user_agent = "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1";
-        clients.push_back(c);
-    }
-
-    // 7. TVHTML5_SIMPLY: Client ID 75, Version 1.0 (PlayStation/Embedded TV).
-    // Lightweight TV fallback client.
-    {
-        InnerTubeClient c;
-        c.name = "TVHTML5_SIMPLY";
-        c.client_name = "TVHTML5_SIMPLY";
-        c.client_version = "1.0";
-        c.client_id = "75";
-        c.user_agent = "Mozilla/5.0 (PlayStation; PlayStation 4/12.00) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.4 Safari/605.1.15";
-        c.embed_url = "https://www.youtube.com/";
-        clients.push_back(c);
-    }
-
-    // 8. WEB_EMBEDDED_PLAYER: Client ID 56, Version 2.20260708.00.00.
-    // Embedded desktop player context bypassing geo-restrictions.
+    // 8. WEB_EMBEDDED_PLAYER: Embedded desktop player fallback.
     {
         InnerTubeClient c;
         c.name = "WEB_EMBEDDED_PLAYER";
         c.client_name = "WEB_EMBEDDED_PLAYER";
         c.client_version = "2.20260708.00.00";
         c.client_id = "56";
+        c.platform = "DESKTOP";
         c.user_agent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15,gzip(gfe)";
         c.embed_url = "https://www.youtube.com";
         clients.push_back(c);
@@ -345,16 +346,16 @@ bool YouTubeEngine::query_innertube_client(
     const std::string& visitor_data,
     std::string& out_response_json,
     std::string* out_error) {
-
     CURL* curl = curl_easy_init();
     if (!curl) {
         if (out_error) *out_error = "Failed to initialize libcurl";
         return false;
     }
 
-    // Build JSON context
     json req;
     req["videoId"] = video_id;
+    req["racyCheckOk"] = true;
+    req["contentCheckOk"] = true; // FIX: Required for music/age-advisory 4K streams
 
     json client_obj;
     client_obj["clientName"] = client.client_name;
@@ -367,10 +368,10 @@ bool YouTubeEngine::query_innertube_client(
     if (!visitor_data.empty()) {
         client_obj["visitorData"] = visitor_data;
     }
-
     if (client.android_sdk_version > 0) client_obj["androidSdkVersion"] = client.android_sdk_version;
     if (!client.os_name.empty()) client_obj["osName"] = client.os_name;
     if (!client.os_version.empty()) client_obj["osVersion"] = client.os_version;
+    if (!client.platform.empty()) client_obj["platform"] = client.platform;
     if (!client.device_make.empty()) client_obj["deviceMake"] = client.device_make;
     if (!client.device_model.empty()) client_obj["deviceModel"] = client.device_model;
     if (!client.user_agent.empty()) client_obj["userAgent"] = client.user_agent;
@@ -379,16 +380,21 @@ bool YouTubeEngine::query_innertube_client(
     req["context"]["client"] = client_obj;
 
     if (!client.embed_url.empty()) {
-        req["context"]["thirdParty"] = { {"embedUrl", client.embed_url} };
+        req["context"]["thirdParty"] = {
+            {"embedUrl", "https://www.youtube.com/watch?v=" + video_id}
+        };
     }
 
-    req["contentPlaybackContext"] = { {"html5Preference", "HTML5_PREF_WANTS"} };
-    req["playbackContext"] = {
-        {"contentPlaybackContext", {
-            {"html5Preference", "HTML5_PREF_WANTS"}
-        }}
-    };
-    req["racyCheckOk"] = true;
+    // FIX: Only send html5Preference to HTML5/Web/TV clients, NEVER to native Android/iOS/VR apps
+    bool is_native_mobile = (client.client_name.find("ANDROID") != std::string::npos ||
+                             client.client_name == "IOS");
+    if (!is_native_mobile) {
+        req["playbackContext"] = {
+            {"contentPlaybackContext", {
+                {"html5Preference", "HTML5_PREF_WANTS"}
+            }}
+        };
+    }
 
     std::string req_body = req.dump();
     std::string response_data;
@@ -402,13 +408,23 @@ bool YouTubeEngine::query_innertube_client(
     std::string client_ver_hdr = "X-YouTube-Client-Version: " + client.client_version;
     headers = curl_slist_append(headers, client_ver_hdr.c_str());
 
+    // FIX: Attach X-Goog-Visitor-Id header so GVS edge tokens match visitorData
+    if (!visitor_data.empty()) {
+        std::string vd_hdr = "X-Goog-Visitor-Id: " + visitor_data;
+        headers = curl_slist_append(headers, vd_hdr.c_str());
+    }
+    if (!is_native_mobile) {
+        headers = curl_slist_append(headers, "Origin: https://www.youtube.com");
+        headers = curl_slist_append(headers, "Referer: https://www.youtube.com/");
+    }
+
     const char* api_url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
     curl_easy_setopt(curl, CURLOPT_URL, api_url);
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(req_body.length()));
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, ""); // Enable gzip/br compression for InnerTube JSON
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_string_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_data);
@@ -436,10 +452,8 @@ bool YouTubeEngine::probe_stream_range(
     const std::string& url,
     const std::string& user_agent,
     uint64_t content_length) {
-
     if (url.empty()) return false;
 
-    // Check near EOF or 2MB past 60-second cap
     uint64_t range_start = content_length > 65536 ? (content_length - 4096) : 2097152;
     uint64_t range_end = content_length > 65536 ? (content_length - 1) : 2098175;
 
@@ -457,6 +471,7 @@ bool YouTubeEngine::probe_stream_range(
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_RANGE, range_hdr.c_str());
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_discard_write);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 8L);
         curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 6L);
@@ -473,8 +488,8 @@ bool YouTubeEngine::probe_stream_range(
     };
 
     long code = do_probe(range_start, range_end);
-    if (content_length <= 65536 && code == 416) {
-        // Fallback to start for clips shorter than 2MB
+    // FIX: Always fallback to byte 0-1023 if EOF/2MB range returns 416 or 404 (e.g. OTF streams or short clips)
+    if (code == 416 || (content_length == 0 && code == 404)) {
         code = do_probe(0, 1023);
     }
 
@@ -487,7 +502,6 @@ bool YouTubeEngine::parse_player_response(
     const std::string& video_id,
     YouTubeVideoInfo& out_info,
     std::string* out_error) {
-
     json root;
     try {
         root = json::parse(json_str);
@@ -496,7 +510,6 @@ bool YouTubeEngine::parse_player_response(
         return false;
     }
 
-    // Verify playability status
     if (root.contains("playabilityStatus")) {
         std::string status = root["playabilityStatus"].value("status", "");
         if (status != "OK") {
@@ -514,7 +527,6 @@ bool YouTubeEngine::parse_player_response(
     out_info.video_id = video_id;
     out_info.client_used = client.name;
 
-    // Parse videoDetails
     if (root.contains("videoDetails")) {
         const auto& vd = root["videoDetails"];
         out_info.title = vd.value("title", "");
@@ -552,42 +564,36 @@ bool YouTubeEngine::parse_player_response(
         }
 
         parse_codecs_from_mime(f.mime_type, f.container, f.vcodec, f.acodec);
+
         if (f.quality_label.empty() && f.height > 0) {
             f.quality_label = std::to_string(f.height) + "p";
         }
         return f;
     };
 
-    int probe_attempts = 0;
-    bool probe_ok = false;
+    // FIX: Decouple progressive probe state from adaptive probe state!
+    // Never allow a passing 360p progressive stream to mark adaptive streams as valid,
+    // and sort adaptive streams highest-resolution first before probing.
+    int prog_probe_attempts = 0;
+    bool prog_probe_ok = false;
 
-    auto check_stream = [&](const YouTubeFormat& fmt) -> bool {
-        if (probe_ok) return true;
-        if (probe_attempts < 2) {
-            probe_attempts++;
-            if (probe_stream_range(fmt.url, fmt.user_agent, fmt.content_length)) {
-                probe_ok = true;
-                return true;
-            }
-        }
-        return false;
-    };
-
-    // 1. Progressive Formats
     if (sd.contains("formats") && sd["formats"].is_array()) {
         for (const auto& item : sd["formats"]) {
             std::string u = item.value("url", "");
             if (!is_valid_stream_url(u)) continue;
 
             YouTubeFormat fmt = parse_fmt(item, true, false);
-            // Verify stream with range probe
-            if (check_stream(fmt)) {
+            if (prog_probe_ok || (prog_probe_attempts++ < 2 && probe_stream_range(fmt.url, fmt.user_agent, fmt.content_length))) {
+                prog_probe_ok = true;
                 out_info.progressive_formats.push_back(fmt);
             }
         }
     }
 
-    // 2. Adaptive Formats
+    // Collect candidate adaptive formats first, sort highest resolution first, then verify
+    std::vector<YouTubeFormat> candidate_videos;
+    std::vector<YouTubeFormat> candidate_audios;
+
     if (sd.contains("adaptiveFormats") && sd["adaptiveFormats"].is_array()) {
         for (const auto& item : sd["adaptiveFormats"]) {
             std::string u = item.value("url", "");
@@ -595,15 +601,71 @@ bool YouTubeEngine::parse_player_response(
 
             std::string mime = item.value("mimeType", "");
             bool is_aud = (mime.find("audio") != std::string::npos);
-
             YouTubeFormat fmt = parse_fmt(item, false, is_aud);
-            // Verify stream with range probe
-            if (check_stream(fmt)) {
-                if (is_aud) {
-                    out_info.audio_formats.push_back(fmt);
-                } else {
-                    out_info.video_formats.push_back(fmt);
-                }
+            if (is_aud) {
+                candidate_audios.push_back(fmt);
+            } else {
+                candidate_videos.push_back(fmt);
+            }
+        }
+    }
+
+    // Sort candidate video formats by height descending so 4K/1440p/1080p are probed FIRST
+    std::sort(candidate_videos.begin(), candidate_videos.end(),
+        [](const YouTubeFormat& a, const YouTubeFormat& b) {
+            if (a.height != b.height) return a.height > b.height;
+            if (a.fps != b.fps) return a.fps > b.fps;
+            return a.bitrate > b.bitrate;
+        });
+
+    int video_probe_attempts = 0;
+    bool video_probe_ok = false;
+    for (const auto& fmt : candidate_videos) {
+        if (video_probe_ok || (video_probe_attempts < 4 && (++video_probe_attempts, probe_stream_range(fmt.url, fmt.user_agent, fmt.content_length)))) {
+            video_probe_ok = true;
+            out_info.video_formats.push_back(fmt);
+        }
+    }
+
+    int audio_probe_attempts = 0;
+    bool audio_probe_ok = false;
+    for (const auto& fmt : candidate_audios) {
+        if (audio_probe_ok || (audio_probe_attempts < 3 && (++audio_probe_attempts, probe_stream_range(fmt.url, fmt.user_agent, fmt.content_length)))) {
+            audio_probe_ok = true;
+            out_info.audio_formats.push_back(fmt);
+        }
+    }
+
+    // FIX: Fallback to dashManifestUrl via DashParser if adaptiveFormats yielded no HD video
+    if (out_info.video_formats.empty() && sd.contains("dashManifestUrl")) {
+        std::string mpd_url = sd.value("dashManifestUrl", "");
+        DashManifest manifest;
+        if (!mpd_url.empty() && DashParser::fetch_and_parse(mpd_url, manifest)) {
+            for (const auto& v : manifest.video_streams) {
+                if (!is_valid_stream_url(v.base_url)) continue;
+                YouTubeFormat fmt;
+                try { fmt.itag = std::stoi(v.id); } catch (...) { fmt.itag = 0; }
+                fmt.width = static_cast<int>(v.width);
+                fmt.height = static_cast<int>(v.height);
+                fmt.quality_label = fmt.height > 0 ? (std::to_string(fmt.height) + "p") : "";
+                fmt.bitrate = v.bandwidth;
+                fmt.mime_type = v.mime_type + "; codecs=\"" + v.codecs + "\"";
+                fmt.url = v.base_url;
+                fmt.user_agent = client.user_agent;
+                parse_codecs_from_mime(fmt.mime_type, fmt.container, fmt.vcodec, fmt.acodec);
+                out_info.video_formats.push_back(fmt);
+            }
+            for (const auto& a : manifest.audio_streams) {
+                if (!is_valid_stream_url(a.base_url)) continue;
+                YouTubeFormat fmt;
+                try { fmt.itag = std::stoi(a.id); } catch (...) { fmt.itag = 0; }
+                fmt.bitrate = a.bandwidth;
+                fmt.mime_type = a.mime_type + "; codecs=\"" + a.codecs + "\"";
+                fmt.url = a.base_url;
+                fmt.user_agent = client.user_agent;
+                fmt.is_audio = true;
+                parse_codecs_from_mime(fmt.mime_type, fmt.container, fmt.vcodec, fmt.acodec);
+                out_info.audio_formats.push_back(fmt);
             }
         }
     }
@@ -613,14 +675,12 @@ bool YouTubeEngine::parse_player_response(
         return false;
     }
 
-    // Sort progressive formats by height descending
     std::sort(out_info.progressive_formats.begin(), out_info.progressive_formats.end(),
         [](const YouTubeFormat& a, const YouTubeFormat& b) {
             if (a.height != b.height) return a.height > b.height;
             return a.bitrate > b.bitrate;
         });
 
-    // Sort video formats by height descending, then fps, then bitrate
     std::sort(out_info.video_formats.begin(), out_info.video_formats.end(),
         [](const YouTubeFormat& a, const YouTubeFormat& b) {
             if (a.height != b.height) return a.height > b.height;
@@ -628,7 +688,6 @@ bool YouTubeEngine::parse_player_response(
             return a.bitrate > b.bitrate;
         });
 
-    // Sort audio formats: prioritize AAC (itag 140) or highest bitrate
     std::sort(out_info.audio_formats.begin(), out_info.audio_formats.end(),
         [](const YouTubeFormat& a, const YouTubeFormat& b) {
             int a_score = (a.itag == 140 || a.container == "M4A") ? 10 : 0;
@@ -654,7 +713,6 @@ bool YouTubeEngine::extract_video_info(
     const std::string& url_or_id,
     YouTubeVideoInfo& out_info,
     std::string* out_error) {
-
     std::string vid = extract_video_id(url_or_id);
     if (vid.empty()) {
         if (out_error) *out_error = "Could not parse YouTube video ID from URL: " + url_or_id;
@@ -665,17 +723,22 @@ bool YouTubeEngine::extract_video_info(
     std::string primary_error;
     std::string last_error;
 
-    std::string visitor_data;
-    {
-        std::lock_guard<std::mutex> lock(s_visitor_mutex);
-        visitor_data = s_cached_visitor_data;
-    }
+    // FIX 1: Always ensure visitorData is populated BEFORE the first extraction pass!
+    std::string visitor_data = get_or_fetch_visitor_data(vid);
 
     YouTubeVideoInfo merged_info;
     std::unordered_set<int> seen_prog_itags;
     std::unordered_set<int> seen_video_itags;
     std::unordered_set<int> seen_audio_itags;
     std::vector<std::string> clients_used;
+
+    auto has_adaptive_hd = [](const YouTubeVideoInfo& info) -> bool {
+        if (info.audio_formats.empty()) return false;
+        for (const auto& vf : info.video_formats) {
+            if (vf.height >= 720) return true;
+        }
+        return false;
+    };
 
     auto run_extraction_pass = [&](const std::string& v_data) -> bool {
         merged_info = YouTubeVideoInfo();
@@ -708,7 +771,6 @@ bool YouTubeEngine::extract_video_info(
 
             bool added_any = false;
 
-            // Merge progressive formats
             for (const auto& fmt : client_info.progressive_formats) {
                 if (seen_prog_itags.find(fmt.itag) == seen_prog_itags.end()) {
                     seen_prog_itags.insert(fmt.itag);
@@ -717,7 +779,6 @@ bool YouTubeEngine::extract_video_info(
                 }
             }
 
-            // Merge adaptive video formats
             for (const auto& fmt : client_info.video_formats) {
                 if (seen_video_itags.find(fmt.itag) == seen_video_itags.end()) {
                     seen_video_itags.insert(fmt.itag);
@@ -726,7 +787,6 @@ bool YouTubeEngine::extract_video_info(
                 }
             }
 
-            // Merge audio formats
             for (const auto& fmt : client_info.audio_formats) {
                 if (seen_audio_itags.find(fmt.itag) == seen_audio_itags.end()) {
                     seen_audio_itags.insert(fmt.itag);
@@ -739,29 +799,36 @@ bool YouTubeEngine::extract_video_info(
                 clients_used.push_back(client.name);
             }
 
-            // Break immediately once HD adaptive video (>= 720p) and audio formats are retrieved
-            bool has_hd = false;
+            // FIX 2: Only break early once 4K (2160p) is obtained, OR after trying
+            // the primary 4K-capable clients (ANDROID_VR + VISIONOS + ANDROID_TESTSUITE)
+            bool has_4k = false;
             for (const auto& vf : merged_info.video_formats) {
-                if (vf.height >= 720) {
-                    has_hd = true;
+                if (vf.height >= 2160) {
+                    has_4k = true;
                     break;
                 }
             }
-
-            if (has_hd && !merged_info.audio_formats.empty()) {
+            if (has_4k && !merged_info.audio_formats.empty()) {
                 break;
             }
         }
-        return merged_info.has_playable_formats();
+
+        // FIX 3: Treat a 360p-only result (no adaptive HD formats) as needing a fresh visitorData retry
+        return has_adaptive_hd(merged_info);
     };
 
     bool pass_ok = run_extraction_pass(visitor_data);
     if (!pass_ok) {
-        // If initial pass failed, invalidate cached visitor data and re-fetch freshly
+        // If no adaptive HD (>= 720p) streams were found (e.g. only 360p itag 18 or stale token),
+        // invalidate cached visitor data and re-fetch freshly from the watch page
+        YouTubeVideoInfo fallback_360p = merged_info;
         invalidate_visitor_data();
         std::string fresh_vd = get_or_fetch_visitor_data(vid);
         if (!fresh_vd.empty() && fresh_vd != visitor_data) {
-            pass_ok = run_extraction_pass(fresh_vd);
+            run_extraction_pass(fresh_vd);
+        }
+        if (!merged_info.has_playable_formats() && fallback_360p.has_playable_formats()) {
+            merged_info = std::move(fallback_360p);
         }
     }
 
@@ -776,7 +843,6 @@ bool YouTubeEngine::extract_video_info(
         return false;
     }
 
-    // Set client_used summary
     std::string client_summary;
     for (size_t i = 0; i < clients_used.size(); ++i) {
         if (i > 0) client_summary += "+";
@@ -784,14 +850,12 @@ bool YouTubeEngine::extract_video_info(
     }
     merged_info.client_used = client_summary;
 
-    // Sort progressive formats by height descending
     std::sort(merged_info.progressive_formats.begin(), merged_info.progressive_formats.end(),
         [](const YouTubeFormat& a, const YouTubeFormat& b) {
             if (a.height != b.height) return a.height > b.height;
             return a.bitrate > b.bitrate;
         });
 
-    // Sort video formats by height descending, then fps, then bitrate
     std::sort(merged_info.video_formats.begin(), merged_info.video_formats.end(),
         [](const YouTubeFormat& a, const YouTubeFormat& b) {
             if (a.height != b.height) return a.height > b.height;
@@ -799,7 +863,6 @@ bool YouTubeEngine::extract_video_info(
             return a.bitrate > b.bitrate;
         });
 
-    // Sort audio formats: prioritize AAC (itag 140) or highest bitrate
     std::sort(merged_info.audio_formats.begin(), merged_info.audio_formats.end(),
         [](const YouTubeFormat& a, const YouTubeFormat& b) {
             int a_score = (a.itag == 140 || a.container == "M4A") ? 10 : 0;
