@@ -69,8 +69,7 @@ int probe_xferinfo_callback(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
 
 size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
     auto* data = static_cast<WorkerData*>(userdata);
-    size_t bytes = size * nmemb;
-
+    size_t incoming_bytes = size * nmemb;
     if (!data || !data->session) return 0;
 
     if (data->session->is_stop_requested() || data->session->is_pause_requested() ||
@@ -79,46 +78,39 @@ size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
         return 0; // Abort transfer cleanly with CURLE_WRITE_ERROR
     }
 
-    // Dynamic chunk boundary enforcement (OnChangeBounds in IDM)
-    int64_t start_off = 0, end_off = -1;
-    if (data->session->get_chunk_bounds(data->chunk_id, start_off, end_off) && end_off >= start_off) {
-        int64_t max_bytes = end_off - start_off + 1;
-        if (data->bytes_received >= max_bytes) {
-            return 0; // Boundary reached, terminate chunk connection cleanly
-        }
-        if (data->bytes_received + static_cast<int64_t>(bytes) > max_bytes) {
-            bytes = static_cast<size_t>(max_bytes - data->bytes_received);
-        }
+    if (incoming_bytes == 0) return 0;
+
+    // Calculate speed every 250ms
+    data->bytes_since_last_speed += static_cast<int64_t>(incoming_bytes);
+    auto now = std::chrono::steady_clock::now();
+    auto diff_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - data->last_speed_time).count();
+    if (diff_ms >= 250) {
+        data->current_speed = (data->bytes_since_last_speed * 1000) / diff_ms;
+        data->bytes_since_last_speed = 0;
+        data->last_speed_time = now;
+    } else if (data->current_speed == 0 && diff_ms > 0 && data->bytes_since_last_speed > 0) {
+        data->current_speed = (data->bytes_since_last_speed * 1000) / diff_ms;
     }
 
-    if (data->file.is_open() && bytes > 0) {
-        data->file.write(ptr, bytes);
-        data->bytes_received += bytes;
-        data->bytes_since_last_speed += bytes;
+    // Atomically clamp incoming write to dynamic split boundary and update chunk progress
+    bool reached_boundary = false;
+    size_t bytes_to_write = data->session->clamp_and_update_chunk(
+        data->chunk_id, data->bytes_received, incoming_bytes, data->current_speed, reached_boundary);
 
-        // Calculate speed every 250ms
-        auto now = std::chrono::steady_clock::now();
-        auto diff_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - data->last_speed_time).count();
-        if (diff_ms >= 250) {
-            data->current_speed = (data->bytes_since_last_speed * 1000) / diff_ms;
-            data->bytes_since_last_speed = 0;
-            data->last_speed_time = now;
-        } else if (data->current_speed == 0 && diff_ms > 0 && data->bytes_since_last_speed > 0) {
-            data->current_speed = (data->bytes_since_last_speed * 1000) / diff_ms;
+    if (data->file.is_open() && bytes_to_write > 0) {
+        data->file.write(ptr, static_cast<std::streamsize>(bytes_to_write));
+        if (data->file.fail()) {
+            return 0; // Disk error: abort transfer immediately
         }
-
-        data->session->set_chunk_progress(data->chunk_id, data->bytes_received, data->current_speed);
-        data->session->apply_throttle(bytes);
+        data->bytes_received += static_cast<int64_t>(bytes_to_write);
+        data->session->apply_throttle(bytes_to_write);
     }
 
-    if (end_off >= start_off) {
-        int64_t max_bytes = end_off - start_off + 1;
-        if (data->bytes_received >= max_bytes) {
-            return 0; // Chunk fully downloaded up to split boundary
-        }
+    if (reached_boundary) {
+        return 0; // Terminate connection cleanly at exact split boundary
     }
 
-    return bytes;
+    return incoming_bytes;
 }
 
 } // namespace
@@ -139,6 +131,13 @@ void DownloadSession::set_chunk_progress(int chunk_id, int64_t bytes, uint64_t s
 
 void DownloadSession::apply_throttle(size_t bytes) {
     speed_limiter_.throttle(bytes);
+}
+
+size_t DownloadSession::clamp_and_update_chunk(
+    int chunk_id, int64_t current_bytes_received, size_t incoming_bytes,
+    uint64_t speed, bool& out_reached_boundary) {
+    return chunk_manager_.clamp_and_update_chunk(
+        chunk_id, current_bytes_received, incoming_bytes, speed, out_reached_boundary);
 }
 
 void DownloadSession::set_header(const std::string& name, const std::string& value) {
@@ -610,16 +609,36 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
     data.chunk_id = chunk_id;
     data.last_speed_time = std::chrono::steady_clock::now();
 
-    // Open file in append or binary mode
+    // Synchronize downloaded_bytes with actual physical file size on disk to prevent resume corruption
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    int64_t disk_bytes = 0;
+    if (fs::exists(chunk.temp_filepath, ec)) {
+        uint64_t fsz = fs::file_size(chunk.temp_filepath, ec);
+        if (!ec) disk_bytes = static_cast<int64_t>(fsz);
+    }
+
+    if (!supports_ranges_.load()) {
+        disk_bytes = 0;
+    } else if (chunk.end_offset >= chunk.start_offset) {
+        int64_t max_chunk_sz = chunk.end_offset - chunk.start_offset + 1;
+        if (disk_bytes > max_chunk_sz) {
+            fs::resize_file(chunk.temp_filepath, static_cast<uintmax_t>(max_chunk_sz), ec);
+            disk_bytes = max_chunk_sz;
+        }
+    }
+
+    chunk_manager_.update_chunk_progress(chunk_id, disk_bytes, 0);
+    data.bytes_received = disk_bytes;
+
     std::ios_base::openmode mode = std::ios::binary | std::ios::out;
-    if (chunk.downloaded_bytes > 0) {
+    if (disk_bytes > 0) {
         mode |= std::ios::app;
-        data.bytes_received = chunk.downloaded_bytes;
     } else {
         mode |= std::ios::trunc;
     }
-    data.file.open(chunk.temp_filepath, mode);
 
+    data.file.open(chunk.temp_filepath, mode);
     if (!data.file.is_open()) {
         chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::FAILED);
         curl_easy_cleanup(curl);
@@ -627,6 +646,14 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
     }
 
     chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::DOWNLOADING);
+
+    int64_t start_pos = chunk.start_offset + disk_bytes;
+    if (supports_ranges_.load() && chunk.end_offset >= chunk.start_offset && start_pos > chunk.end_offset) {
+        data.file.close();
+        curl_easy_cleanup(curl);
+        chunk_manager_.mark_chunk_completed(chunk_id);
+        return;
+    }
 
     curl_easy_setopt(curl, CURLOPT_URL, url_.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -647,9 +674,7 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
     }
     curl_easy_setopt(curl, CURLOPT_USERAGENT, ua.c_str());
 
-    // Configure range header if supported
-    if (supports_ranges_ && chunk.end_offset >= 0) {
-        int64_t start_pos = chunk.start_offset + chunk.downloaded_bytes;
+    if (supports_ranges_.load() && chunk.end_offset >= 0) {
         std::string range_header = std::to_string(start_pos) + "-" + std::to_string(chunk.end_offset);
         curl_easy_setopt(curl, CURLOPT_RANGE, range_header.c_str());
     }
@@ -669,12 +694,8 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
     for (const auto& [k, v] : custom_headers_) {
         std::string lk = k;
         std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
-        if (lk == "user-agent") {
-            continue;
-        }
-        if (lk == "referer" && is_mobile_yt) {
-            continue;
-        }
+        if (lk == "user-agent") continue;
+        if (lk == "referer" && is_mobile_yt) continue;
         std::string h = k + ": " + v;
         header_list = curl_slist_append(header_list, h.c_str());
     }
@@ -690,7 +711,9 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
         curl_slist_free_all(header_list);
     }
     curl_easy_cleanup(curl);
+
     data.file.flush();
+    bool file_ok = !data.file.fail();
     data.file.close();
 
     if (stop_requested_ || pause_requested_) {
@@ -705,15 +728,16 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
     bool reached_boundary = has_c && (latest_chunk.end_offset >= latest_chunk.start_offset) &&
                             (latest_chunk.downloaded_bytes >= (latest_chunk.end_offset - latest_chunk.start_offset + 1));
 
-    // Reset chunk speed on finish/failure so speed doesn't get stuck
     chunk_manager_.update_chunk_progress(chunk_id, has_c ? latest_chunk.downloaded_bytes : 0, 0);
 
-    bool http_ok = (http_code >= 200 && http_code < 300);
-    if (http_ok && (res == CURLE_OK || (res == CURLE_PARTIAL_FILE && http_code == 206) ||
-        (res == CURLE_WRITE_ERROR && reached_boundary))) {
+    // Reject HTTP 200 if we requested a non-zero offset (prevents appending full file from byte 0)
+    bool range_honored = (start_pos == 0) ? (http_code == 200 || http_code == 206) : (http_code == 206);
+    if (file_ok && range_honored &&
+        (res == CURLE_OK || (res == CURLE_PARTIAL_FILE && http_code == 206) ||
+         (res == CURLE_WRITE_ERROR && reached_boundary))) {
         chunk_manager_.mark_chunk_completed(chunk_id);
     } else {
-        std::cerr << "OpenDM Worker " << chunk_id << " failed: HTTP " << http_code 
+        std::cerr << "OpenDM Worker " << chunk_id << " failed: HTTP " << http_code
                   << ", curl_res: " << curl_easy_strerror(res) << std::endl;
         chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::FAILED);
     }
@@ -768,176 +792,252 @@ void DownloadSession::assemble_file() {
 
     std::string dest_path;
     std::string fn;
+    std::string audio_url;
     int64_t sz = total_size_.load();
     {
         std::lock_guard<std::mutex> lock(meta_mutex_);
         dest_path = destination_path_;
         fn = filename_;
+        audio_url = audio_stream_url_;
     }
 
-    bool ok = chunk_manager_.join_file(dest_path, [this](double p) {
+    if (!audio_url.empty() &&
+        (audio_url.find("googlevideo.com") != std::string::npos || audio_url.find("videoplayback") != std::string::npos) &&
+        (audio_url.find("sabr=1") != std::string::npos || audio_url.find("sabr=2") != std::string::npos)) {
+        audio_url.clear();
+    }
+
+    double join_weight = audio_url.empty() ? 1.0 : 0.40;
+    bool ok = chunk_manager_.join_file(dest_path, [this, join_weight](double p) {
         std::lock_guard<std::mutex> lock(callback_mutex_);
         if (progress_callback_) {
             DownloadProgress prog = get_progress();
             prog.status = SessionStatus::ASSEMBLING;
-            prog.progress_fraction = p;
+            prog.progress_fraction = p * join_weight;
             progress_callback_(prog);
         }
     });
 
-    if (ok) {
-        namespace fs = std::filesystem;
-        std::error_code ec;
-        if (fs::exists(dest_path) && fs::file_size(dest_path) <= 64) {
-            std::ifstream chk(dest_path, std::ios::binary);
-            std::string body((std::istreambuf_iterator<char>(chk)), std::istreambuf_iterator<char>());
-            if (body.find("sabr.malformed_config") != std::string::npos) {
-                fs::remove(dest_path, ec);
-                status_ = SessionStatus::ERROR;
-                {
-                    std::lock_guard<std::mutex> lock(meta_mutex_);
-                    last_error_ = "YouTube SABR control response intercepted instead of media stream";
-                }
-                return;
-            }
-        }
-
-        // If an audio stream URL is present (adaptive streaming / separate tracks),
-        // download the audio stream and multiplex into the final destination_path.
-        std::string audio_url;
-        {
-            std::lock_guard<std::mutex> lock(meta_mutex_);
-            audio_url = audio_stream_url_;
-        }
-        if (!audio_url.empty()) {
-            if ((audio_url.find("googlevideo.com") != std::string::npos || audio_url.find("videoplayback") != std::string::npos) &&
-                (audio_url.find("sabr=1") != std::string::npos || audio_url.find("sabr=2") != std::string::npos)) {
-                audio_url.clear();
-            }
-        }
-        if (!audio_url.empty()) {
-            std::string video_tmp = dest_path + ".video.tmp";
-            std::string audio_tmp = dest_path + ".audio.tmp";
-            fs::rename(dest_path, video_tmp, ec);
-            if (!ec) {
-                CURL* acurl = curl_easy_init();
-                if (acurl) {
-                    FILE* afp = fopen(audio_tmp.c_str(), "wb");
-                    if (afp) {
-                        curl_easy_setopt(acurl, CURLOPT_URL, audio_url.c_str());
-                        curl_easy_setopt(acurl, CURLOPT_FOLLOWLOCATION, 1L);
-                        curl_easy_setopt(acurl, CURLOPT_MAXREDIRS, 10L);
-                        curl_easy_setopt(acurl, CURLOPT_WRITEDATA, afp);
-                        const std::string default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
-                        std::string ua = default_ua;
-                        bool is_audio_mobile_yt = (audio_url.find("c=ANDROID_VR") != std::string::npos ||
-                                                   audio_url.find("c=VISIONOS") != std::string::npos ||
-                                                   audio_url.find("c=ANDROID_TESTSUITE") != std::string::npos ||
-                                                   audio_url.find("c=IOS") != std::string::npos ||
-                                                   audio_url.find("c=ANDROID") != std::string::npos);
-                        auto ua_it = custom_headers_.find("User-Agent");
-                        if (ua_it != custom_headers_.end()) {
-                            ua = ua_it->second;
-                        } else if (is_audio_mobile_yt) {
-                            if (audio_url.find("c=VISIONOS") != std::string::npos) {
-                                ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
-                            } else if (audio_url.find("c=ANDROID_VR") != std::string::npos) {
-                                ua = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
-                            } else if (audio_url.find("c=IOS") != std::string::npos) {
-                                ua = "com.google.ios.youtube/20.11.6 (iPhone10,4; U; CPU iOS 16_7_7 like Mac OS X)";
-                            } else if (audio_url.find("c=ANDROID") != std::string::npos) {
-                                ua = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip";
-                            }
-                        }
-                        curl_easy_setopt(acurl, CURLOPT_USERAGENT, ua.c_str());
-                        curl_easy_setopt(acurl, CURLOPT_CONNECTTIMEOUT, 15L);
-
-                        if (!auth_userpwd_.empty()) {
-                            curl_easy_setopt(acurl, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
-                            curl_easy_setopt(acurl, CURLOPT_USERPWD, auth_userpwd_.c_str());
-                        }
-
-                        struct curl_slist* aheaders = nullptr;
-                        for (const auto& [k, v] : custom_headers_) {
-                            std::string lk = k;
-                            std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
-                            if (lk == "user-agent") continue;
-                            if (lk == "referer" && is_audio_mobile_yt) continue;
-                            aheaders = curl_slist_append(aheaders, (k + ": " + v).c_str());
-                        }
-                        if (aheaders) {
-                            curl_easy_setopt(acurl, CURLOPT_HTTPHEADER, aheaders);
-                        }
-
-                        CURLcode ares = curl_easy_perform(acurl);
-                        long audio_http_code = 0;
-                        curl_easy_getinfo(acurl, CURLINFO_RESPONSE_CODE, &audio_http_code);
-                        if (aheaders) {
-                            curl_slist_free_all(aheaders);
-                        }
-                        fclose(afp);
-                        if (ares == CURLE_OK && audio_http_code >= 200 && audio_http_code < 300) {
-                            std::string mux_err;
-                            bool mux_ok = MediaMuxer::mux_streams(video_tmp, audio_tmp, dest_path, nullptr, &mux_err);
-                            uint64_t v_sz = fs::exists(video_tmp) ? fs::file_size(video_tmp, ec) : 0;
-                            uint64_t out_sz = fs::exists(dest_path) ? fs::file_size(dest_path, ec) : 0;
-
-                            // Strict size integrity guard:
-                            // Only consider muxing successful if output file exists and is at least 90% of video stream size.
-                            // This guarantees that any failed or truncated mux never destroys the user's downloaded video.
-                            if (mux_ok && out_sz >= static_cast<uint64_t>(v_sz * 0.90)) {
-                                fs::remove(video_tmp, ec);
-                                fs::remove(audio_tmp, ec);
-                            } else {
-                                // Muxing failed or produced truncated output: safely restore original video
-                                fs::remove(dest_path, ec);
-                                fs::rename(video_tmp, dest_path, ec);
-                                fs::remove(audio_tmp, ec);
-                            }
-                        } else {
-                            fs::rename(video_tmp, dest_path, ec);
-                        }
-                    } else {
-                        fs::rename(video_tmp, dest_path, ec);
-                    }
-                    curl_easy_cleanup(acurl);
-                } else {
-                    fs::rename(video_tmp, dest_path, ec);
-                }
-            }
-        }
-
-        status_ = SessionStatus::COMPLETED;
-
-        // Preserve remote server modification timestamp if captured
-        std::string lm_str;
-        {
-            std::lock_guard<std::mutex> lock(meta_mutex_);
-            lm_str = last_modified_;
-        }
-        if (!lm_str.empty()) {
-            std::tm tm{};
-            if (strptime(lm_str.c_str(), "%a, %d %b %Y %H:%M:%S GMT", &tm) != nullptr) {
-                time_t t = timegm(&tm);
-                if (t != -1) {
-                    std::error_code ec;
-                    auto ftime = std::chrono::file_clock::from_sys(std::chrono::system_clock::from_time_t(t));
-                    std::filesystem::last_write_time(dest_path, ftime, ec);
-                }
-            }
-        }
-
-        PostDownloadManager::instance().notify_completion(fn, sz, true);
-        PostDownloadManager::instance().scan_file(dest_path);
-    } else {
+    if (!ok) {
         status_ = SessionStatus::ERROR;
         {
             std::lock_guard<std::mutex> lock(meta_mutex_);
             last_error_ = "Failed to assemble file parts.";
         }
         PostDownloadManager::instance().notify_completion(fn, sz, false, "Failed to assemble file parts.");
+        update_speed_and_eta();
+        return;
     }
 
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (fs::exists(dest_path, ec) && fs::file_size(dest_path, ec) <= 64) {
+        std::ifstream chk(dest_path, std::ios::binary);
+        std::string body((std::istreambuf_iterator<char>(chk)), std::istreambuf_iterator<char>());
+        if (body.find("sabr.malformed_config") != std::string::npos) {
+            fs::remove(dest_path, ec);
+            status_ = SessionStatus::ERROR;
+            {
+                std::lock_guard<std::mutex> lock(meta_mutex_);
+                last_error_ = "YouTube SABR control response intercepted instead of media stream";
+            }
+            update_speed_and_eta();
+            return;
+        }
+    }
+
+    // Download & mux separate adaptive audio track with pause/cancel support and ranged requests
+    if (!audio_url.empty()) {
+        std::string video_tmp = dest_path + ".video.tmp";
+        std::string audio_tmp = dest_path + ".audio.tmp";
+        fs::rename(dest_path, video_tmp, ec);
+        if (!ec) {
+            const std::string default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+            std::string ua = default_ua;
+            bool is_audio_mobile_yt = (audio_url.find("c=ANDROID_VR") != std::string::npos ||
+                                       audio_url.find("c=VISIONOS") != std::string::npos ||
+                                       audio_url.find("c=ANDROID_TESTSUITE") != std::string::npos ||
+                                       audio_url.find("c=IOS") != std::string::npos ||
+                                       audio_url.find("c=ANDROID") != std::string::npos);
+
+            auto ua_it = custom_headers_.find("User-Agent");
+            if (ua_it != custom_headers_.end()) {
+                ua = ua_it->second;
+            } else if (is_audio_mobile_yt) {
+                if (audio_url.find("c=VISIONOS") != std::string::npos) {
+                    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+                } else if (audio_url.find("c=ANDROID_VR") != std::string::npos) {
+                    ua = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
+                } else if (audio_url.find("c=IOS") != std::string::npos) {
+                    ua = "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)";
+                } else if (audio_url.find("c=ANDROID") != std::string::npos) {
+                    ua = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip";
+                }
+            }
+
+            // Download audio in 8 MB ranged segments to bypass YouTube CDN throttling and support instant abort
+            std::ofstream afp(audio_tmp, std::ios::binary | std::ios::trunc);
+            bool audio_dl_ok = false;
+
+            if (afp.is_open()) {
+                constexpr int64_t SEG_SIZE = 8 * 1024 * 1024;
+                int64_t cur_off = 0;
+                int64_t total_audio_sz = -1;
+                audio_dl_ok = true;
+
+                while (!stop_requested_ && !pause_requested_) {
+                    CURL* acurl = curl_easy_init();
+                    if (!acurl) {
+                        audio_dl_ok = false;
+                        break;
+                    }
+
+                    std::map<std::string, std::string> a_resp_headers;
+                    int64_t end_off = (total_audio_sz > 0)
+                        ? std::min<int64_t>(cur_off + SEG_SIZE - 1, total_audio_sz - 1)
+                        : (cur_off + SEG_SIZE - 1);
+                    std::string rng = std::to_string(cur_off) + "-" + std::to_string(end_off);
+
+                    curl_easy_setopt(acurl, CURLOPT_URL, audio_url.c_str());
+                    curl_easy_setopt(acurl, CURLOPT_FOLLOWLOCATION, 1L);
+                    curl_easy_setopt(acurl, CURLOPT_MAXREDIRS, 10L);
+                    curl_easy_setopt(acurl, CURLOPT_RANGE, rng.c_str());
+                    curl_easy_setopt(acurl, CURLOPT_USERAGENT, ua.c_str());
+                    curl_easy_setopt(acurl, CURLOPT_CONNECTTIMEOUT, 15L);
+                    curl_easy_setopt(acurl, CURLOPT_NOPROGRESS, 0L);
+                    curl_easy_setopt(acurl, CURLOPT_XFERINFOFUNCTION, probe_xferinfo_callback);
+                    curl_easy_setopt(acurl, CURLOPT_XFERINFODATA, this);
+                    curl_easy_setopt(acurl, CURLOPT_HEADERFUNCTION, header_callback);
+                    curl_easy_setopt(acurl, CURLOPT_HEADERDATA, &a_resp_headers);
+
+                    if (!auth_userpwd_.empty()) {
+                        curl_easy_setopt(acurl, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
+                        curl_easy_setopt(acurl, CURLOPT_USERPWD, auth_userpwd_.c_str());
+                    }
+
+                    struct curl_slist* aheaders = nullptr;
+                    for (const auto& [k, v] : custom_headers_) {
+                        std::string lk = k;
+                        std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
+                        if (lk == "user-agent") continue;
+                        if (lk == "referer" && is_audio_mobile_yt) continue;
+                        aheaders = curl_slist_append(aheaders, (k + ": " + v).c_str());
+                    }
+                    if (aheaders) {
+                        curl_easy_setopt(acurl, CURLOPT_HTTPHEADER, aheaders);
+                    }
+
+                    curl_easy_setopt(acurl, CURLOPT_WRITEFUNCTION,
+                        +[](char* ptr, size_t s, size_t n, void* ud) -> size_t {
+                            auto* out = static_cast<std::ofstream*>(ud);
+                            size_t total = s * n;
+                            out->write(ptr, static_cast<std::streamsize>(total));
+                            return out->fail() ? 0 : total;
+                        });
+                    curl_easy_setopt(acurl, CURLOPT_WRITEDATA, &afp);
+
+                    CURLcode ares = curl_easy_perform(acurl);
+                    long http_code = 0;
+                    curl_easy_getinfo(acurl, CURLINFO_RESPONSE_CODE, &http_code);
+                    if (aheaders) {
+                        curl_slist_free_all(aheaders);
+                    }
+                    curl_easy_cleanup(acurl);
+
+                    if (ares != CURLE_OK || (http_code != 200 && http_code != 206)) {
+                        audio_dl_ok = false;
+                        break;
+                    }
+
+                    if (total_audio_sz < 0) {
+                        auto cr_it = a_resp_headers.find("content-range");
+                        if (cr_it != a_resp_headers.end()) {
+                            size_t sl = cr_it->second.find('/');
+                            if (sl != std::string::npos) {
+                                try { total_audio_sz = std::stoll(cr_it->second.substr(sl + 1)); } catch (...) {}
+                            }
+                        }
+                    }
+
+                    cur_off = static_cast<int64_t>(afp.tellp());
+                    if (http_code == 200 || (total_audio_sz > 0 && cur_off >= total_audio_sz)) {
+                        break; // Finished full audio stream
+                    }
+
+                    if (total_audio_sz > 0) {
+                        std::lock_guard<std::mutex> lock(callback_mutex_);
+                        if (progress_callback_) {
+                            DownloadProgress prog = get_progress();
+                            prog.status = SessionStatus::ASSEMBLING;
+                            prog.progress_fraction = 0.40 + 0.35 * (static_cast<double>(cur_off) / total_audio_sz);
+                            progress_callback_(prog);
+                        }
+                    }
+                }
+                afp.flush();
+                afp.close();
+            }
+
+            if (stop_requested_ || pause_requested_) {
+                fs::remove(audio_tmp, ec);
+                fs::rename(video_tmp, dest_path, ec);
+                return;
+            }
+
+            if (audio_dl_ok) {
+                std::string mux_err;
+                bool mux_ok = MediaMuxer::mux_streams(
+                    video_tmp, audio_tmp, dest_path,
+                    [this](double pct) {
+                        std::lock_guard<std::mutex> lock(callback_mutex_);
+                        if (progress_callback_) {
+                            DownloadProgress prog = get_progress();
+                            prog.status = SessionStatus::ASSEMBLING;
+                            prog.progress_fraction = 0.75 + 0.25 * (pct / 100.0);
+                            progress_callback_(prog);
+                        }
+                    },
+                    &mux_err);
+
+                uint64_t v_sz = fs::exists(video_tmp, ec) ? fs::file_size(video_tmp, ec) : 0;
+                uint64_t out_sz = fs::exists(dest_path, ec) ? fs::file_size(dest_path, ec) : 0;
+
+                if (mux_ok && out_sz >= static_cast<uint64_t>(v_sz * 0.90)) {
+                    fs::remove(video_tmp, ec);
+                    fs::remove(audio_tmp, ec);
+                } else {
+                    fs::remove(dest_path, ec);
+                    fs::rename(video_tmp, dest_path, ec);
+                    fs::remove(audio_tmp, ec);
+                    std::cerr << "[OpenDM] MediaMuxer warning: " << mux_err << std::endl;
+                }
+            } else {
+                fs::remove(audio_tmp, ec);
+                fs::rename(video_tmp, dest_path, ec);
+            }
+        }
+    }
+
+    status_ = SessionStatus::COMPLETED;
+
+    std::string lm_str;
+    {
+        std::lock_guard<std::mutex> lock(meta_mutex_);
+        lm_str = last_modified_;
+    }
+    if (!lm_str.empty()) {
+        std::tm tm{};
+        if (strptime(lm_str.c_str(), "%a, %d %b %Y %H:%M:%S GMT", &tm) != nullptr) {
+            time_t t = timegm(&tm);
+            if (t != -1) {
+                auto ftime = std::chrono::file_clock::from_sys(std::chrono::system_clock::from_time_t(t));
+                std::filesystem::last_write_time(dest_path, ftime, ec);
+            }
+        }
+    }
+
+    PostDownloadManager::instance().notify_completion(fn, sz, true);
+    PostDownloadManager::instance().scan_file(dest_path);
     update_speed_and_eta();
 }
 

@@ -99,6 +99,9 @@ public:
     void set_chunk_progress(int chunk_id, int64_t bytes, uint64_t speed);
     void apply_throttle(size_t bytes);
     bool get_chunk_bounds(int chunk_id, int64_t& start_offset, int64_t& end_offset) const;
+    size_t clamp_and_update_chunk(
+        int chunk_id, int64_t current_bytes_received, size_t incoming_bytes,
+        uint64_t speed, bool& out_reached_boundary);
 
 private:
     void run_session();

@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <sstream>
 #include <iostream>
+#include <chrono>
+#include <limits>
 
 namespace opendm {
 
@@ -211,6 +213,43 @@ void ChunkManager::update_chunk_progress(int chunk_id, int64_t bytes_received, u
     }
 }
 
+size_t ChunkManager::clamp_and_update_chunk(
+    int chunk_id,
+    int64_t current_bytes_received,
+    size_t incoming_bytes,
+    uint64_t speed_bytes_per_sec,
+    bool& out_reached_boundary) {
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    out_reached_boundary = false;
+
+    for (auto& c : chunks_) {
+        if (c->id == static_cast<uint32_t>(chunk_id)) {
+            size_t allowed = incoming_bytes;
+            if (!is_streaming_ && c->end_offset >= c->start_offset) {
+                int64_t max_bytes = c->end_offset - c->start_offset + 1;
+                if (current_bytes_received >= max_bytes) {
+                    c->downloaded_bytes = max_bytes;
+                    c->current_speed = 0;
+                    out_reached_boundary = true;
+                    return 0;
+                }
+                if (current_bytes_received + static_cast<int64_t>(incoming_bytes) >= max_bytes) {
+                    allowed = static_cast<size_t>(max_bytes - current_bytes_received);
+                    out_reached_boundary = true;
+                }
+            }
+            c->downloaded_bytes = current_bytes_received + static_cast<int64_t>(allowed);
+            c->current_speed = speed_bytes_per_sec;
+            if (c->status == ChunkStatus::PENDING) {
+                c->status = ChunkStatus::DOWNLOADING;
+            }
+            return allowed;
+        }
+    }
+    return 0;
+}
+
 void ChunkManager::set_chunk_status(int chunk_id, ChunkStatus status) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& c : chunks_) {
@@ -281,6 +320,7 @@ bool ChunkManager::get_chunk(int chunk_id, Chunk& out_chunk) const {
 bool ChunkManager::join_file(const std::string& destination_filepath, std::function<void(double)> progress_cb) {
     std::vector<Chunk> sorted_chunks;
     int64_t total_size = 0;
+    bool streaming = false;
     std::string temp_dir_to_clean;
 
     {
@@ -288,7 +328,6 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
         if (chunks_.empty()) {
             return false;
         }
-
         for (const auto& c : chunks_) {
             sorted_chunks.push_back(*c);
             if (temp_dir_to_clean.empty() && !c->temp_filepath.empty()) {
@@ -297,6 +336,7 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
             }
         }
         total_size = total_file_size_;
+        streaming = is_streaming_;
     }
 
     // Sort chunks by start_offset
@@ -305,64 +345,163 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
             return a.start_offset < b.start_offset;
         });
 
-    // Ensure parent directory exists
-    std::filesystem::path dest_p(destination_filepath);
-    if (dest_p.has_parent_path()) {
-        std::error_code ec;
-        std::filesystem::create_directories(dest_p.parent_path(), ec);
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    // Verify all chunk files exist and have sufficient bytes before touching destination
+    int64_t expected_total = 0;
+    for (size_t i = 0; i < sorted_chunks.size(); ++i) {
+        const auto& chunk = sorted_chunks[i];
+        if (!fs::exists(chunk.temp_filepath, ec)) {
+            return false;
+        }
+        uint64_t disk_sz = fs::file_size(chunk.temp_filepath, ec);
+        if (ec) return false;
+
+        if (!streaming && chunk.end_offset >= chunk.start_offset) {
+            int64_t expected_chunk_sz = chunk.end_offset - chunk.start_offset + 1;
+            if (static_cast<int64_t>(disk_sz) < expected_chunk_sz) {
+                return false; // Incomplete or truncated part file
+            }
+            expected_total += expected_chunk_sz;
+        } else {
+            expected_total += static_cast<int64_t>(disk_sz);
+        }
     }
 
-    std::ofstream dest_file(destination_filepath, std::ios::binary | std::ios::trunc);
+    if (total_size <= 0) {
+        total_size = expected_total;
+    }
+
+    // Ensure parent directory exists
+    fs::path dest_p(destination_filepath);
+    if (dest_p.has_parent_path()) {
+        fs::create_directories(dest_p.parent_path(), ec);
+    }
+
+    // Fast-path: if there is only 1 chunk, clamp its size in-place and rename O(1) if on same mount
+    if (sorted_chunks.size() == 1) {
+        const auto& single = sorted_chunks[0];
+        if (!streaming && single.end_offset >= single.start_offset) {
+            uint64_t exact_sz = static_cast<uint64_t>(single.end_offset - single.start_offset + 1);
+            if (fs::file_size(single.temp_filepath, ec) != exact_sz) {
+                fs::resize_file(single.temp_filepath, exact_sz, ec);
+            }
+        }
+        fs::remove(destination_filepath, ec);
+        fs::rename(single.temp_filepath, destination_filepath, ec);
+        if (!ec) {
+            if (!temp_dir_to_clean.empty()) {
+                fs::remove(temp_dir_to_clean, ec);
+            }
+            if (progress_cb) progress_cb(1.0);
+            return true;
+        }
+    }
+
+    // Assemble into a staging file first so failed assembly never destroys destination or parts
+    std::string staging_path = destination_filepath + ".assembling.tmp";
+    std::ofstream dest_file(staging_path, std::ios::binary | std::ios::trunc);
     if (!dest_file.is_open()) {
         return false;
     }
 
+    // Use a 4 MB stream buffer for high-throughput sequential I/O
+    constexpr size_t BUFFER_SIZE = 4 * 1024 * 1024;
+    std::vector<char> io_buf(BUFFER_SIZE);
+    std::vector<char> out_stream_buf(BUFFER_SIZE);
+    dest_file.rdbuf()->pubsetbuf(out_stream_buf.data(), out_stream_buf.size());
+
     int64_t total_written = 0;
-    constexpr size_t BUFFER_SIZE = 64 * 1024; // 64 KB buffer as in IDM AppendFile
-    std::vector<char> buffer(BUFFER_SIZE);
+    auto last_cb_time = std::chrono::steady_clock::now();
+    double last_reported_progress = -1.0;
 
     for (size_t i = 0; i < sorted_chunks.size(); ++i) {
         const auto& chunk = sorted_chunks[i];
         std::ifstream part_file(chunk.temp_filepath, std::ios::binary);
         if (!part_file.is_open()) {
             dest_file.close();
+            fs::remove(staging_path, ec);
             return false;
         }
 
-        while (part_file.good()) {
-            part_file.read(buffer.data(), buffer.size());
+        int64_t bytes_remaining_for_chunk = (!streaming && chunk.end_offset >= chunk.start_offset)
+            ? (chunk.end_offset - chunk.start_offset + 1)
+            : std::numeric_limits<int64_t>::max();
+
+        while (bytes_remaining_for_chunk > 0 && part_file.good()) {
+            size_t to_read = static_cast<size_t>(
+                std::min<int64_t>(static_cast<int64_t>(io_buf.size()), bytes_remaining_for_chunk));
+            part_file.read(io_buf.data(), to_read);
             std::streamsize bytes_read = part_file.gcount();
-            if (bytes_read > 0) {
-                dest_file.write(buffer.data(), bytes_read);
-                total_written += bytes_read;
-                if (progress_cb && total_size > 0) {
-                    double progress = static_cast<double>(total_written) / total_size;
-                    progress_cb(std::min(1.0, progress));
+            if (bytes_read <= 0) {
+                break;
+            }
+
+            dest_file.write(io_buf.data(), bytes_read);
+            if (dest_file.fail()) {
+                part_file.close();
+                dest_file.close();
+                fs::remove(staging_path, ec);
+                return false;
+            }
+
+            bytes_remaining_for_chunk -= bytes_read;
+            total_written += bytes_read;
+
+            if (progress_cb && total_size > 0) {
+                auto now = std::chrono::steady_clock::now();
+                auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_cb_time).count();
+                double progress = std::min(1.0, static_cast<double>(total_written) / total_size);
+                if (elapsed_ms >= 50 || (progress - last_reported_progress) >= 0.01) {
+                    progress_cb(progress);
+                    last_cb_time = now;
+                    last_reported_progress = progress;
                 }
             }
         }
+
         part_file.close();
 
-        // Delete temporary part file after stitching
-        std::error_code ec;
-        std::filesystem::remove(chunk.temp_filepath, ec);
+        // Ensure non-streaming chunk yielded all expected bytes
+        if (!streaming && chunk.end_offset >= chunk.start_offset && bytes_remaining_for_chunk != 0) {
+            dest_file.close();
+            fs::remove(staging_path, ec);
+            return false;
+        }
     }
 
     dest_file.flush();
+    bool write_ok = dest_file.good();
     dest_file.close();
 
-    // Clean up empty temporary directory
+    if (!write_ok) {
+        fs::remove(staging_path, ec);
+        return false;
+    }
+
+    // Atomically move staging file to final destination
+    fs::remove(destination_filepath, ec);
+    fs::rename(staging_path, destination_filepath, ec);
+    if (ec) {
+        fs::remove(staging_path, ec);
+        return false;
+    }
+
+    // Only delete temporary .part files AFTER assembly is completely verified
+    for (const auto& chunk : sorted_chunks) {
+        fs::remove(chunk.temp_filepath, ec);
+    }
     if (!temp_dir_to_clean.empty()) {
-        std::error_code ec;
-        std::filesystem::remove(temp_dir_to_clean, ec);
+        fs::remove(temp_dir_to_clean, ec);
     }
 
     if (progress_cb) {
         progress_cb(1.0);
     }
-
     return true;
 }
+
 
 void ChunkManager::cleanup_temp_files() {
     std::lock_guard<std::mutex> lock(mutex_);

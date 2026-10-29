@@ -67,6 +67,11 @@ public:
     // Update chunk progress
     void update_chunk_progress(int chunk_id, int64_t bytes_received, uint64_t speed_bytes_per_sec);
 
+    // Atomically clamps incoming write size to current chunk end_offset and updates progress
+    size_t clamp_and_update_chunk(int chunk_id, int64_t current_bytes_received,
+                                  size_t incoming_bytes, uint64_t speed_bytes_per_sec,
+                                  bool& out_reached_boundary);
+
     // Set chunk status
     void set_chunk_status(int chunk_id, ChunkStatus status);
 
