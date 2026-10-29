@@ -369,6 +369,7 @@ bool DownloadSession::probe_resource() {
     }
 
     bool is_mobile_yt = (url_.find("c=ANDROID_VR") != std::string::npos ||
+                         url_.find("c=VISIONOS") != std::string::npos ||
                          url_.find("c=ANDROID_TESTSUITE") != std::string::npos ||
                          url_.find("c=IOS") != std::string::npos ||
                          url_.find("c=ANDROID") != std::string::npos);
@@ -659,6 +660,7 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
     }
 
     bool is_mobile_yt = (url_.find("c=ANDROID_VR") != std::string::npos ||
+                         url_.find("c=VISIONOS") != std::string::npos ||
                          url_.find("c=ANDROID_TESTSUITE") != std::string::npos ||
                          url_.find("c=IOS") != std::string::npos ||
                          url_.find("c=ANDROID") != std::string::npos);
@@ -828,9 +830,24 @@ void DownloadSession::assemble_file() {
                         curl_easy_setopt(acurl, CURLOPT_WRITEDATA, afp);
                         const std::string default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
                         std::string ua = default_ua;
+                        bool is_audio_mobile_yt = (audio_url.find("c=ANDROID_VR") != std::string::npos ||
+                                                   audio_url.find("c=VISIONOS") != std::string::npos ||
+                                                   audio_url.find("c=ANDROID_TESTSUITE") != std::string::npos ||
+                                                   audio_url.find("c=IOS") != std::string::npos ||
+                                                   audio_url.find("c=ANDROID") != std::string::npos);
                         auto ua_it = custom_headers_.find("User-Agent");
                         if (ua_it != custom_headers_.end()) {
                             ua = ua_it->second;
+                        } else if (is_audio_mobile_yt) {
+                            if (audio_url.find("c=VISIONOS") != std::string::npos) {
+                                ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+                            } else if (audio_url.find("c=ANDROID_VR") != std::string::npos) {
+                                ua = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
+                            } else if (audio_url.find("c=IOS") != std::string::npos) {
+                                ua = "com.google.ios.youtube/20.11.6 (iPhone10,4; U; CPU iOS 16_7_7 like Mac OS X)";
+                            } else if (audio_url.find("c=ANDROID") != std::string::npos) {
+                                ua = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip";
+                            }
                         }
                         curl_easy_setopt(acurl, CURLOPT_USERAGENT, ua.c_str());
                         curl_easy_setopt(acurl, CURLOPT_CONNECTTIMEOUT, 15L);
@@ -842,9 +859,11 @@ void DownloadSession::assemble_file() {
 
                         struct curl_slist* aheaders = nullptr;
                         for (const auto& [k, v] : custom_headers_) {
-                            if (k != "User-Agent") {
-                                aheaders = curl_slist_append(aheaders, (k + ": " + v).c_str());
-                            }
+                            std::string lk = k;
+                            std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
+                            if (lk == "user-agent") continue;
+                            if (lk == "referer" && is_audio_mobile_yt) continue;
+                            aheaders = curl_slist_append(aheaders, (k + ": " + v).c_str());
                         }
                         if (aheaders) {
                             curl_easy_setopt(acurl, CURLOPT_HTTPHEADER, aheaders);

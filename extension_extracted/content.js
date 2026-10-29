@@ -996,12 +996,11 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     if (!extApi || !streamUrl) return;
     if (streamUrl.includes("sabr=1") || streamUrl.includes("sabr=2") || streamUrl.includes("svpuc=1")) return;
     if (/[?&]c=WEB\b/i.test(streamUrl) && /[?&]n=[^&]+/.test(streamUrl)) return;
-    const cleanUrl = streamUrl.replace(/^(?:yta\d*toidm|mpda?toidm|hls2toidm|idmhlstomp4v2):\/\/+/i, "").split("##")[0];
     const title = getMediaTitle();
     const referer = window.location.href;
     extApi.runtime.sendMessage({
       action: "download_media",
-      url: cleanUrl,
+      url: streamUrl,
       referer: referer,
       title: title,
       filename: filename || "",
@@ -1334,7 +1333,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             seenQualities.add(quality);
 
             const cleanVideo = cleanMediaStreamUrl(u);
-            const finalUrl = cleanVideo;
+            const finalUrl = (cleanVideo && effectiveBestAudio) ? `yta2toidm://${cleanVideo}##${effectiveBestAudio}` : cleanVideo;
             items.push({
               url: finalUrl,
               qName: qName,

@@ -313,8 +313,10 @@ function bc(a,b){let c=b.i;if(c)return c;if(b.g){var d=a.g[P(b.g[6],b.g[7])];d?c
 async function cc(a,b){var c=b.tabId;let d=b.da;if(d>0&&!b.i){var e=await browser.webNavigation.getFrame({frameId:d,tabId:c});e&&(e=e.parentFrameId,e>=0&&(b.i=P(c,e)))}if(d!=null&&b.m){if(e=a.D[P(c,d)]){b.j=e.i;b.o|=e.l;b.refresh|=e.refresh;b.A=e.g;let f=e.ea;f&&b.G!=f&&(b.ea=f);b.i||(b.i=e.h);(e=a.i[b.j])&&!e.port&&(e.port=b)}a.g[P(c,d)]=b;e=a.B?null:b.X;c=[11,a.P,b.id,c,d,e,b.refresh,b.o,a.j[22],a.j[23],ob[a.Va?1:null]];e&&b.o&&(a=a.aa[e],c.push(a.ac,ob[a.ob]),ka(c,a.mb.map(pa(a)).map(ta)));b.postMessage(c)}}
 n.pa = async function(a, b, c, d, e, f, customUa) {
   if (!a) return;
+  var isDualStream = /^(?:yta\d*toidm|mpda?toidm|hls2toidm|idmhlstomp4v2):\/\//i.test(a) || a.includes("##");
   var cleanUrl = a.replace(/^(?:yta\d*toidm|mpda?toidm|hls2toidm|idmhlstomp4v2):\/\/+/i, "").split("##")[0];
-  var g = T(cleanUrl);
+  var g = isDualStream ? T(a) : T(cleanUrl);
+  if (!g && isDualStream) g = 1;
   if (g) {
     var k = (g & 32) > 0, h = (g &= 7) == 1, m;
     var isMobileYtClient = !!customUa || /[?&]c=(?:VISIONOS|ANDROID_VR|ANDROID_TESTSUITE|TVHTML5_SIMPLY_EMBEDDED_PLAYER|IOS|ANDROID)\b/i.test(cleanUrl);
@@ -336,8 +338,9 @@ n.pa = async function(a, b, c, d, e, f, customUa) {
       m = await U(cleanUrl);
     }
     g = [g];
+    var sendUrl = isDualStream ? a : cleanUrl;
     var payload = {
-      [6]: dc(cleanUrl, h && this.v),
+      [6]: dc(sendUrl, h && this.v),
       [50]: isMobileYtClient ? null : b,
       [7]: isMobileYtClient ? null : c,
       [8]: d,

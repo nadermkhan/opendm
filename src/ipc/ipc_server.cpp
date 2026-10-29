@@ -513,6 +513,7 @@ std::string IpcServer::handle_request(const std::string& request) {
             std::string media_title = extract_tonec_field(req, 102);
 
             bool is_mobile_yt = (url.find("c=ANDROID_VR") != std::string::npos ||
+                                 url.find("c=VISIONOS") != std::string::npos ||
                                  url.find("c=ANDROID_TESTSUITE") != std::string::npos ||
                                  url.find("c=IOS") != std::string::npos ||
                                  url.find("c=ANDROID") != std::string::npos);
