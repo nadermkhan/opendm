@@ -43,6 +43,9 @@ public:
         MuxProgressCallback progress_cb = nullptr,
         std::string* out_error = nullptr);
 
+    // Resolves available ffmpeg executable from system paths and user directories
+    static std::string find_ffmpeg();
+
 private:
     struct BoxInfo {
         std::string type;

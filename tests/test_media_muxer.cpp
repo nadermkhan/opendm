@@ -194,6 +194,35 @@ int main() {
     assert(fs::file_size(ts_out) == 376);
     std::cout << "  ✓ TS segments concatenated successfully (376 bytes)." << std::endl;
 
+    // Test 3: Fragmented MP4 rejection guard
+    std::cout << "[Test 3] Verifying fragmented MP4 guard..." << std::endl;
+    std::string fmp4_test = "/tmp/test_fmp4.mp4";
+    {
+        std::ofstream f(fmp4_test, std::ios::binary);
+        // ftyp
+        uint8_t ftyp_hdr[8] = {0x00, 0x00, 0x00, 0x14, 'f', 't', 'y', 'p'};
+        f.write(reinterpret_cast<char*>(ftyp_hdr), 8);
+        f.write("isom\0\0\x02\0isom", 12);
+        // moov
+        uint8_t moov_hdr[8] = {0x00, 0x00, 0x00, 0x10, 'm', 'o', 'o', 'v'};
+        f.write(reinterpret_cast<char*>(moov_hdr), 8);
+        f.write("\0\0\0\x08mvhd", 8);
+        // moof
+        uint8_t moof_hdr[8] = {0x00, 0x00, 0x00, 0x10, 'm', 'o', 'o', 'f'};
+        f.write(reinterpret_cast<char*>(moof_hdr), 8);
+        f.write("\0\0\0\x08mfhd", 8);
+        // mdat
+        uint8_t mdat_hdr[8] = {0x00, 0x00, 0x00, 0x10, 'm', 'd', 'a', 't'};
+        f.write(reinterpret_cast<char*>(mdat_hdr), 8);
+        f.write("12345678", 8);
+    }
+
+    std::string fmp4_err;
+    bool fmp4_ok = opendm::MediaMuxer::mux_mp4_and_mp4(fmp4_test, audio_test, muxed_test, nullptr, &fmp4_err);
+    assert(!fmp4_ok);
+    assert(fmp4_err.find("Fragmented MP4") != std::string::npos);
+    std::cout << "  ✓ Fragmented MP4 correctly rejected without truncation." << std::endl;
+
     // Clean up temporary test files
     fs::remove(video_test);
     fs::remove(audio_test);
@@ -201,6 +230,7 @@ int main() {
     fs::remove(ts1);
     fs::remove(ts2);
     fs::remove(ts_out);
+    fs::remove(fmp4_test);
 
     std::cout << "All Media Muxer tests passed!" << std::endl;
     return 0;

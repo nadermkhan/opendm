@@ -5,6 +5,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cstdlib>
+#include <filesystem>
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -35,7 +36,40 @@ inline void write_be64(uint8_t* p, uint64_t v) {
     write_be32(p + 4, static_cast<uint32_t>(v & 0xFFFFFFFF));
 }
 
+static std::string escape_shell_arg(const std::string& arg) {
+    std::string escaped = "'";
+    for (char c : arg) {
+        if (c == '\'') {
+            escaped += "'\\''";
+        } else {
+            escaped += c;
+        }
+    }
+    escaped += "'";
+    return escaped;
+}
+
 } // namespace
+
+std::string MediaMuxer::find_ffmpeg() {
+    const char* home = getenv("HOME");
+    std::vector<std::string> search_paths = {
+        home ? std::string(home) + "/.local/bin/ffmpeg" : "",
+        "/usr/local/bin/ffmpeg",
+        "/usr/bin/ffmpeg",
+        "/bin/ffmpeg",
+        "/snap/bin/ffmpeg"
+    };
+    for (const auto& p : search_paths) {
+        if (!p.empty() && access(p.c_str(), X_OK) == 0) {
+            return p;
+        }
+    }
+    if (system("which ffmpeg >/dev/null 2>&1") == 0) {
+        return "ffmpeg";
+    }
+    return "";
+}
 
 std::vector<MediaMuxer::BoxInfo> MediaMuxer::scan_mp4_boxes(const std::string& file_path) {
     std::vector<BoxInfo> boxes;
@@ -154,11 +188,15 @@ bool MediaMuxer::try_external_ffmpeg(
     const std::string& audio_file,
     const std::string& output_file,
     MuxProgressCallback progress_cb) {
-    if (system("which ffmpeg >/dev/null 2>&1") != 0) {
+    std::string ffmpeg_bin = find_ffmpeg();
+    if (ffmpeg_bin.empty()) {
         return false;
     }
 
-    std::string cmd = "ffmpeg -y -i \"" + video_file + "\" -i \"" + audio_file + "\" -c copy \"" + output_file + "\" >/dev/null 2>&1";
+    std::string cmd = ffmpeg_bin + " -y -i " + escape_shell_arg(video_file) +
+                      " -i " + escape_shell_arg(audio_file) +
+                      " -c copy -movflags +faststart " +
+                      escape_shell_arg(output_file) + " >/dev/null 2>&1";
     int ret = system(cmd.c_str());
     if (ret == 0) {
         if (progress_cb) progress_cb(100.0);
@@ -188,6 +226,22 @@ bool MediaMuxer::mux_mp4_and_mp4(
         return false;
     }
 
+    // Guard against fragmented MP4 (fMP4/DASH) streams:
+    // Fragmented MP4 stores media data across multiple moof+mdat fragments,
+    // which cannot be multiplexed as a single monolithic mdat without ffmpeg.
+    for (const auto& b : v_boxes) {
+        if (b.type == "moof") {
+            if (out_error) *out_error = "Fragmented MP4 (DASH) multiplexing requires external ffmpeg";
+            return false;
+        }
+    }
+    for (const auto& b : a_boxes) {
+        if (b.type == "moof") {
+            if (out_error) *out_error = "Fragmented MP4 (DASH) multiplexing requires external ffmpeg";
+            return false;
+        }
+    }
+
     const BoxInfo* v_ftyp = nullptr;
     const BoxInfo* v_moov = nullptr;
     const BoxInfo* v_mdat = nullptr;
@@ -206,6 +260,15 @@ bool MediaMuxer::mux_mp4_and_mp4(
 
     if (!v_ftyp || !v_moov || !v_mdat || !a_moov || !a_mdat) {
         if (out_error) *out_error = "Missing essential MP4 atoms (ftyp/moov/mdat)";
+        return false;
+    }
+
+    // Verify that the video mdat actually contains the media payload,
+    // rather than just an initial fragment.
+    std::error_code ec;
+    uint64_t v_file_size = std::filesystem::file_size(video_file, ec);
+    if (!ec && v_file_size > 1024 * 1024 && v_mdat->payload_size < v_file_size / 2) {
+        if (out_error) *out_error = "Single mdat does not contain main video payload (fragmented or corrupted stream)";
         return false;
     }
 
@@ -415,8 +478,11 @@ bool MediaMuxer::convert_ts_to_mp4(
     std::string* out_error) {
 
     // First try ffmpeg if installed
-    if (system("which ffmpeg >/dev/null 2>&1") == 0) {
-        std::string cmd = "ffmpeg -y -i \"" + ts_file + "\" -c copy \"" + output_file + "\" >/dev/null 2>&1";
+    std::string ffmpeg_bin = find_ffmpeg();
+    if (!ffmpeg_bin.empty()) {
+        std::string cmd = ffmpeg_bin + " -y -i " + escape_shell_arg(ts_file) +
+                          " -c copy -movflags +faststart " +
+                          escape_shell_arg(output_file) + " >/dev/null 2>&1";
         if (system(cmd.c_str()) == 0) {
             if (progress_cb) progress_cb(100.0);
             return true;
@@ -425,7 +491,9 @@ bool MediaMuxer::convert_ts_to_mp4(
 
     // Try VLC if installed
     if (system("which vlc >/dev/null 2>&1") == 0) {
-        std::string cmd = "vlc -I dummy \"" + ts_file + "\" --sout \"#std{access=file,mux=mp4,dst='" + output_file + "'}\" vlc://quit >/dev/null 2>&1";
+        std::string cmd = "vlc -I dummy " + escape_shell_arg(ts_file) +
+                          " --sout \"#std{access=file,mux=mp4,dst=" +
+                          escape_shell_arg(output_file) + "}\" vlc://quit >/dev/null 2>&1";
         if (system(cmd.c_str()) == 0) {
             if (progress_cb) progress_cb(100.0);
             return true;
@@ -443,34 +511,7 @@ bool MediaMuxer::mux_streams(
     MuxProgressCallback progress_cb,
     std::string* out_error) {
 
-    // First attempt fast stream-copy via ffmpeg if installed
-    std::string ffmpeg_bin;
-    const char* home = getenv("HOME");
-    std::vector<std::string> search_paths = {
-        home ? std::string(home) + "/.local/bin/ffmpeg" : "",
-        "/usr/local/bin/ffmpeg",
-        "/usr/bin/ffmpeg",
-        "/bin/ffmpeg"
-    };
-    for (const auto& p : search_paths) {
-        if (!p.empty() && access(p.c_str(), X_OK) == 0) {
-            ffmpeg_bin = p;
-            break;
-        }
-    }
-    if (ffmpeg_bin.empty() && system("which ffmpeg >/dev/null 2>&1") == 0) {
-        ffmpeg_bin = "ffmpeg";
-    }
-
-    if (!ffmpeg_bin.empty()) {
-        std::string cmd = ffmpeg_bin + " -y -i \"" + video_file + "\" -i \"" + audio_file + "\" -c copy \"" + output_file + "\" >/dev/null 2>&1";
-        if (system(cmd.c_str()) == 0) {
-            if (progress_cb) progress_cb(100.0);
-            return true;
-        }
-    }
-
-    // Fall back to pure C++ native MP4 container multiplexer
+    // If both files are MP4/M4V/M4A, mux_mp4_and_mp4 tries ffmpeg first and falls back to ISOBMFF
     return mux_mp4_and_mp4(video_file, audio_file, output_file, progress_cb, out_error);
 }
 

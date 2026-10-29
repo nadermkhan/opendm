@@ -879,11 +879,20 @@ void DownloadSession::assemble_file() {
                         if (ares == CURLE_OK && audio_http_code >= 200 && audio_http_code < 300) {
                             std::string mux_err;
                             bool mux_ok = MediaMuxer::mux_streams(video_tmp, audio_tmp, dest_path, nullptr, &mux_err);
-                            if (mux_ok) {
+                            uint64_t v_sz = fs::exists(video_tmp) ? fs::file_size(video_tmp, ec) : 0;
+                            uint64_t out_sz = fs::exists(dest_path) ? fs::file_size(dest_path, ec) : 0;
+
+                            // Strict size integrity guard:
+                            // Only consider muxing successful if output file exists and is at least 90% of video stream size.
+                            // This guarantees that any failed or truncated mux never destroys the user's downloaded video.
+                            if (mux_ok && out_sz >= static_cast<uint64_t>(v_sz * 0.90)) {
                                 fs::remove(video_tmp, ec);
                                 fs::remove(audio_tmp, ec);
                             } else {
+                                // Muxing failed or produced truncated output: safely restore original video
+                                fs::remove(dest_path, ec);
                                 fs::rename(video_tmp, dest_path, ec);
+                                fs::remove(audio_tmp, ec);
                             }
                         } else {
                             fs::rename(video_tmp, dest_path, ec);
