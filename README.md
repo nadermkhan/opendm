@@ -21,7 +21,8 @@
 
 ## Notice
 
-If you missing out anything or having bugs , please fix it yourself or modify it as you want , I am not obliged to develop it further on individual's request.
+It currently works only for Linux (Debian) and tested working in Firefox. Not tested in Chrome and contributions are welcomed. Fork it and improve it. ☺️
+
 
 ---
 
