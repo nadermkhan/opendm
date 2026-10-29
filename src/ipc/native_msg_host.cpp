@@ -93,6 +93,13 @@ void ensure_opendm_running() {
             opendm_bin = local_bin;
         }
     }
+    if (opendm_bin == "opendm") {
+        if (access("/usr/bin/opendm", X_OK) == 0) {
+            opendm_bin = "/usr/bin/opendm";
+        } else if (access("/usr/local/bin/opendm", X_OK) == 0) {
+            opendm_bin = "/usr/local/bin/opendm";
+        }
+    }
 
     pid_t pid = fork();
     if (pid == 0) {
@@ -111,7 +118,14 @@ void ensure_opendm_running() {
         }
         _exit(1);
     } else if (pid > 0) {
-        usleep(400000); // 400ms
+        // Poll for OpenDM IPC socket to become ready (up to 3 seconds)
+        for (int i = 0; i < 30; ++i) {
+            usleep(100000); // 100ms
+            std::string check = IpcServer::send_command("{\"action\": \"ping\"}");
+            if (check.find("Could not connect") == std::string::npos) {
+                break; // Socket is up and responding
+            }
+        }
     }
 }
 

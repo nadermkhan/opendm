@@ -282,8 +282,6 @@ n.tb = function(a, b, c) {
     c && c({ streams: list, hasSabr: sabrSeen, ytData: null });
     return true;
   }
-    return true;
-  }
   switch (a[0]) {
     case 38: a[1] && this.la && browser.storage.local.set({ silent: !0 }); browser.tabs.remove(b.tab.id); break;
     case 44: a = new URL(a[1]); a.search.startsWith("?d=") && this.pa("idmreg:" + a.href.substr(a.protocol.length)); break;
@@ -350,7 +348,20 @@ n.pa = async function(a, b, c, d, e, f, customUa) {
       [54]: ua,
       [121]: x ? this.Z : this.J
     };
-    S(this, 14, 1, 0, g, payload);
+    var sent = S(this, 14, 1, 0, g, payload);
+    if (!sent) {
+      try {
+        var fallbackMsg = new qb(1, 14, 1, 0, g, payload, true, true);
+        fallbackMsg.m || (fallbackMsg.o.push(";"), fallbackMsg.m = !0);
+        var rawStr = fallbackMsg.o.join("");
+        var p = browser.runtime.sendNativeMessage("com.tonec.idm", rawStr, () => {});
+        if (p && typeof p.catch === "function") {
+          p.catch(() => {});
+        }
+      } catch (err) {}
+      this.ta = La.length;
+      this.Ba();
+    }
   }
 };
 async function ec(a,b,c){if(b&&b.length){var d=b.map(h=>U(h[0]));if(c){var e=c.i;var f=c.S;var g=c.u;e&&!f&&d.push(U(e))}d.length&&(d=await Promise.all(d),b.forEach(h=>h[5]=V(d.shift())),d.length&&(f=V(d.shift())));c=0;var k=[0,0,0];e={[8]:4,[54]:navigator.userAgent,[7]:e,[110]:g,[111]:f,[121]:x?a.Z:a.J};b.length>1&&(k[1]=S(a,15,1,0,[b.length],e),c=16,e={});for(let h of b)k[2]++,e[6]=h[0],e[100]=h[2],e[102]=h[3],e[50]=h[4],e[51]=h[5],S(a,14,2,c,k,e)}}

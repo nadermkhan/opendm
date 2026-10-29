@@ -57,6 +57,7 @@ done
 # Firefox paths
 FIREFOX_TARGETS=(
     "${HOME}/.mozilla/native-messaging-hosts"
+    "${HOME}/.config/mozilla/native-messaging-hosts"
 )
 
 for dir in "${FIREFOX_TARGETS[@]}"; do

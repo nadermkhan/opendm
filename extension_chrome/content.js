@@ -805,7 +805,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   function isPlayableStream(f) {
     if (!f || !f.url) return false;
     const u = f.url;
-    if (u.includes("sabr=1") || u.includes("sabr=2") || u.includes("svpuc=1")) return false;
+    if (u.includes("sabr=1") || u.includes("sabr=2")) return false;
     if (/[?&]c=WEB\b/i.test(u) && /[?&]n=[^&]+/.test(u)) return false;
     return true;
   }
@@ -813,7 +813,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   function isUnplayableFormat(f) {
     if (!f || !f.url) return false;
     const u = f.url;
-    if (u.includes("sabr=1") || u.includes("sabr=2") || u.includes("svpuc=1")) return true;
+    if (u.includes("sabr=1") || u.includes("sabr=2")) return true;
     if (/[?&]c=WEB\b/i.test(u) && /[?&]n=[^&]+/.test(u)) return true;
     return false;
   }
@@ -950,7 +950,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
     for (const s of streams) {
       const u = s.url || "";
-      if (u.includes("sabr=1") || u.includes("sabr=2") || u.includes("svpuc=1") || (/[?&]c=WEB\b/i.test(u) && /[?&]n=[^&]+/.test(u)) || (s.mime && s.mime.includes("yt-ump"))) {
+      if (u.includes("sabr=1") || u.includes("sabr=2") || (/[?&]c=WEB\b/i.test(u) && /[?&]n=[^&]+/.test(u)) || (s.mime && s.mime.includes("yt-ump"))) {
         continue;
       }
       if (u.includes("failure.mp3") || u.includes("/s/search/audio/")) {
@@ -994,7 +994,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
   function downloadMedia(streamUrl, filename, userAgent) {
     if (!extApi || !streamUrl) return;
-    if (streamUrl.includes("sabr=1") || streamUrl.includes("sabr=2") || streamUrl.includes("svpuc=1")) return;
+    if (streamUrl.includes("sabr=1") || streamUrl.includes("sabr=2")) return;
     if (/[?&]c=WEB\b/i.test(streamUrl) && /[?&]n=[^&]+/.test(streamUrl)) return;
     const title = getMediaTitle();
     const referer = window.location.href;

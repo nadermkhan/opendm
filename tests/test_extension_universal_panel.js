@@ -621,7 +621,7 @@ setTimeout(() => {
                         assert(bgDl.url.includes("c=ANDROID_VR"), "Mobile client URL parameter must be preserved");
                         console.log("[PASS] Case 16: Background InnerTube direct format fallback and ranking verified 100%");
 
-                        // Case 17: Verify rejection of c=WEB with n=... challenge and svpuc=1
+                        // Case 17: Verify rejection of c=WEB with n=... challenge and acceptance of svpuc=1 signed streams
                         currentMockStreams = [
                           {
                             url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=18&c=WEB&n=CwQoQruJ8cUxbsUDox2",
@@ -638,9 +638,9 @@ setTimeout(() => {
                                 url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=18&c=WEB&n=CwQoQruJ8cUxbsUDox2"
                               },
                               {
-                                itag: 134,
-                                mimeType: "video/mp4; codecs=\"avc1.4D4015\"",
-                                url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=134&svpuc=1"
+                                itag: 18,
+                                mimeType: "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"",
+                                url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=18&c=ANDROID_VR&svpuc=1"
                               }
                             ]
                           }
@@ -653,9 +653,11 @@ setTimeout(() => {
                         });
 
                         setTimeout(() => {
-                          const badDl = sentMessages.find(m => m.action === "download_media");
-                          assert(!badDl, "c=WEB with n=... challenge or svpuc=1 must NEVER be dispatched to download_media");
-                          console.log("[PASS] Case 17: Rejection of c=WEB with n=... cipher and svpuc=1 verified 100%");
+                          const dl = sentMessages.find(m => m.action === "download_media");
+                          assert(dl, "Valid stream with svpuc=1 must be dispatched to download_media");
+                          assert(!dl.url.includes("n="), "c=WEB with n=... challenge must NEVER be dispatched to download_media");
+                          assert(dl.url.includes("svpuc=1"), "Stream with svpuc=1 must be dispatched to download_media");
+                          console.log("[PASS] Case 17: Rejection of c=WEB with n=... cipher and acceptance of svpuc=1 signed streams verified 100%");
                           console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
                         }, 50);
                       }, 50);
