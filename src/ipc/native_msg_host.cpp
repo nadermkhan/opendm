@@ -1,4 +1,5 @@
 #include "ipc_server.hpp"
+#include "../core/youtube_engine.hpp"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -227,6 +228,35 @@ int main(int argc, char* argv[]) {
         // Standard JSON messaging
         opendm::ensure_opendm_running();
         std::string response = opendm::IpcServer::send_command(incoming);
+        if (response.find("Could not connect") != std::string::npos && incoming.find("\"extract_youtube\"") != std::string::npos) {
+            // Standalone engine fallback if OpenDM GUI socket is not ready yet
+            std::string url;
+            size_t u_pos = incoming.find("\"url\"");
+            if (u_pos != std::string::npos) {
+                size_t q1 = incoming.find('"', incoming.find(':', u_pos));
+                if (q1 != std::string::npos) {
+                    size_t q2 = incoming.find('"', q1 + 1);
+                    if (q2 != std::string::npos) url = incoming.substr(q1 + 1, q2 - q1 - 1);
+                }
+            }
+            if (url.empty()) {
+                size_t v_pos = incoming.find("\"videoId\"");
+                if (v_pos != std::string::npos) {
+                    size_t q1 = incoming.find('"', incoming.find(':', v_pos));
+                    if (q1 != std::string::npos) {
+                        size_t q2 = incoming.find('"', q1 + 1);
+                        if (q2 != std::string::npos) url = "https://www.youtube.com/watch?v=" + incoming.substr(q1 + 1, q2 - q1 - 1);
+                    }
+                }
+            }
+            if (!url.empty()) {
+                opendm::YouTubeVideoInfo info;
+                std::string err;
+                if (opendm::YouTubeEngine::extract_video_info(url, info, &err) && info.has_playable_formats()) {
+                    response = opendm::build_youtube_extract_json(info);
+                }
+            }
+        }
         opendm::write_native_raw_json(response);
     }
 

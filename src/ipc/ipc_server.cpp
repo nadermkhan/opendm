@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <unordered_set>
 #include <cctype>
+#include <iomanip>
 
 namespace opendm {
 
@@ -473,6 +474,149 @@ void IpcServer::set_download_prompt_callback(DownloadPromptCallback cb) {
     }
 }
 
+static std::string format_file_size(uint64_t bytes) {
+    if (bytes == 0) return "";
+    constexpr double KB = 1024.0;
+    constexpr double MB = 1024.0 * KB;
+    constexpr double GB = 1024.0 * MB;
+
+    std::ostringstream ss;
+    ss << std::fixed << std::setprecision(2);
+    if (bytes >= GB) {
+        ss << (bytes / GB) << " GB";
+    } else if (bytes >= MB) {
+        ss << (bytes / MB) << " MB";
+    } else if (bytes >= KB) {
+        ss << (bytes / KB) << " KB";
+    } else {
+        ss << bytes << " Bytes";
+    }
+    return ss.str();
+}
+
+static std::string json_escape_str(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 16);
+    for (char c : s) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else out += c;
+    }
+    return out;
+}
+
+std::string build_youtube_extract_json(const YouTubeVideoInfo& info) {
+    std::ostringstream ss;
+    ss << "{\"status\": \"ok\", ";
+    ss << "\"video_id\": \"" << json_escape_str(info.video_id) << "\", ";
+    ss << "\"title\": \"" << json_escape_str(info.title) << "\", ";
+    ss << "\"author\": \"" << json_escape_str(info.author) << "\", ";
+    ss << "\"duration\": " << info.duration_seconds << ", ";
+    ss << "\"duration_str\": \"" << YouTubeEngine::format_duration(info.duration_seconds) << "\", ";
+    ss << "\"client_used\": \"" << json_escape_str(info.client_used) << "\", ";
+    ss << "\"options\": [";
+
+    bool first = true;
+
+    // 1. Adaptive formats paired with best audio
+    if (!info.video_formats.empty() && !info.audio_formats.empty()) {
+        const auto& best_audio = info.best_audio;
+        for (const auto& vf : info.video_formats) {
+            if (!first) ss << ", ";
+            first = false;
+
+            uint64_t total = vf.content_length + (best_audio.content_length > 0 ? best_audio.content_length : 0);
+            std::string size_str = format_file_size(total);
+
+            std::string label = vf.quality_label;
+            if (vf.fps > 30) {
+                label += " (" + std::to_string(vf.fps) + "fps, " + vf.container + ")";
+            } else {
+                label += " (" + vf.container + ")";
+            }
+            label += " [Video + " + YouTubeEngine::format_bitrate(best_audio.bitrate) + " Audio]";
+            if (!size_str.empty()) {
+                label += " - " + size_str;
+            }
+
+            std::string dual_url = "yta2toidm://" + vf.url + "##" + best_audio.url;
+            std::string ua = vf.user_agent.empty() ? best_audio.user_agent : vf.user_agent;
+
+            ss << "{"
+               << "\"label\": \"" << json_escape_str(label) << "\", "
+               << "\"quality\": \"" << json_escape_str(vf.quality_label) << "\", "
+               << "\"fps\": " << vf.fps << ", "
+               << "\"container\": \"" << vf.container << "\", "
+               << "\"itag\": " << vf.itag << ", "
+               << "\"size\": " << total << ", "
+               << "\"size_str\": \"" << size_str << "\", "
+               << "\"url\": \"" << json_escape_str(dual_url) << "\", "
+               << "\"user_agent\": \"" << json_escape_str(ua) << "\", "
+               << "\"is_audio\": false, "
+               << "\"is_muxed\": true"
+               << "}";
+        }
+    }
+
+    // 2. Progressive formats
+    for (const auto& pf : info.progressive_formats) {
+        if (!first) ss << ", ";
+        first = false;
+
+        std::string size_str = format_file_size(pf.content_length);
+        std::string label = pf.quality_label + " (" + pf.container + " - Progressive)";
+        if (!size_str.empty()) {
+            label += " - " + size_str;
+        }
+
+        ss << "{"
+           << "\"label\": \"" << json_escape_str(label) << "\", "
+           << "\"quality\": \"" << json_escape_str(pf.quality_label) << "\", "
+           << "\"fps\": " << pf.fps << ", "
+           << "\"container\": \"" << pf.container << "\", "
+           << "\"itag\": " << pf.itag << ", "
+           << "\"size\": " << pf.content_length << ", "
+           << "\"size_str\": \"" << size_str << "\", "
+           << "\"url\": \"" << json_escape_str(pf.url) << "\", "
+           << "\"user_agent\": \"" << json_escape_str(pf.user_agent) << "\", "
+           << "\"is_audio\": false, "
+           << "\"is_muxed\": false"
+           << "}";
+    }
+
+    // 3. Audio only formats
+    for (const auto& af : info.audio_formats) {
+        if (!first) ss << ", ";
+        first = false;
+
+        std::string size_str = format_file_size(af.content_length);
+        std::string label = "Audio Only - " + af.container + " (" + YouTubeEngine::format_bitrate(af.bitrate) + ")";
+        if (!size_str.empty()) {
+            label += " - " + size_str;
+        }
+
+        ss << "{"
+           << "\"label\": \"" << json_escape_str(label) << "\", "
+           << "\"quality\": \"" << YouTubeEngine::format_bitrate(af.bitrate) << "\", "
+           << "\"fps\": 0, "
+           << "\"container\": \"" << af.container << "\", "
+           << "\"itag\": " << af.itag << ", "
+           << "\"size\": " << af.content_length << ", "
+           << "\"size_str\": \"" << size_str << "\", "
+           << "\"url\": \"" << json_escape_str(af.url) << "\", "
+           << "\"user_agent\": \"" << json_escape_str(af.user_agent) << "\", "
+           << "\"is_audio\": true, "
+           << "\"is_muxed\": false"
+           << "}";
+    }
+
+    ss << "]}";
+    return ss.str();
+}
+
 std::string IpcServer::handle_request(const std::string& request) {
     std::string req = request;
     while (!req.empty() && (req.front() == '\"' || req.front() == ' ' || req.front() == '\t' || req.front() == '\r' || req.front() == '\n')) {
@@ -771,6 +915,7 @@ std::string IpcServer::handle_request(const std::string& request) {
         std::string add_only_str = extract_json_field(request, "add_only");
         std::string no_prompt_str = extract_json_field(request, "no_prompt");
         std::string req_audio = extract_json_field(request, "audio_url");
+        std::string user_agent = extract_json_field(request, "user_agent");
 
         if (raw_url.empty()) {
             return "{\"status\": \"error\", \"message\": \"Missing URL\"}";
@@ -814,6 +959,7 @@ std::string IpcServer::handle_request(const std::string& request) {
             prompt_info.filename = filename;
             prompt_info.destination_dir = path;
             prompt_info.category = QueueManager::detect_category(filename);
+            prompt_info.user_agent = user_agent;
 
             std::lock_guard<std::mutex> lock(prompt_mutex_);
             if (prompt_callback_) {
@@ -835,6 +981,9 @@ std::string IpcServer::handle_request(const std::string& request) {
         auto session = std::make_shared<DownloadSession>(id, url, dest_file);
         if (!audio_url.empty()) {
             session->set_audio_stream_url(audio_url);
+        }
+        if (!user_agent.empty()) {
+            session->set_header("User-Agent", user_agent);
         }
         SiteLogonManager::instance().apply_to_session(*session, url);
 
@@ -916,6 +1065,25 @@ std::string IpcServer::handle_request(const std::string& request) {
         }
         ss << "]}";
         return ss.str();
+    } else if (action == "extract_youtube") {
+        std::string url = extract_json_field(request, "url");
+        if (url.empty()) {
+            std::string video_id = extract_json_field(request, "videoId");
+            if (!video_id.empty()) {
+                url = "https://www.youtube.com/watch?v=" + video_id;
+            }
+        }
+        if (url.empty()) {
+            return "{\"status\": \"error\", \"message\": \"Missing url parameter\"}";
+        }
+
+        YouTubeVideoInfo info;
+        std::string err;
+        bool ok = YouTubeEngine::extract_video_info(url, info, &err);
+        if (!ok || !info.has_playable_formats()) {
+            return "{\"status\": \"error\", \"message\": \"" + (err.empty() ? "No playable formats found" : err) + "\"}";
+        }
+        return build_youtube_extract_json(info);
     }
 
     return "{\"status\": \"error\", \"message\": \"Unknown action\"}";

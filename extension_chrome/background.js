@@ -260,6 +260,51 @@ function Ab(a,b){b&&browser.storage.local.set({consent:a.Ja});a.u=null;a.Aa(5);a
   }
 }
 
+async function extractYouTubeViaNativeHost(urlOrId) {
+  if (!urlOrId) return null;
+  const vid = urlOrId.includes("watch?v=") ? urlOrId.split("v=")[1].split("&")[0] : (urlOrId.startsWith("http") ? urlOrId : urlOrId);
+  const cacheKey = "engine_" + vid;
+  J.__idm_yt_cache || (J.__idm_yt_cache = {});
+  if (J.__idm_yt_cache[cacheKey]) return J.__idm_yt_cache[cacheKey];
+  J.__idm_yt_pending || (J.__idm_yt_pending = {});
+  if (J.__idm_yt_pending[cacheKey]) return J.__idm_yt_pending[cacheKey];
+
+  const fullUrl = urlOrId.startsWith("http") ? urlOrId : ("https://www.youtube.com/watch?v=" + urlOrId);
+  const promise = new Promise((resolve) => {
+    try {
+      const api = (typeof browser !== "undefined" && browser.runtime && browser.runtime.sendNativeMessage)
+        ? browser.runtime
+        : ((typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendNativeMessage) ? chrome.runtime : null);
+      if (api) {
+        api.sendNativeMessage("com.tonec.idm", {
+          action: "extract_youtube",
+          url: fullUrl
+        }, (resp) => {
+          if (api.lastError || !resp) {
+            resolve(null);
+          } else if (resp.status === "ok" && resp.options && resp.options.length > 0) {
+            J.__idm_yt_cache[cacheKey] = resp;
+            resolve(resp);
+          } else {
+            resolve(null);
+          }
+        });
+      } else {
+        resolve(null);
+      }
+    } catch (e) {
+      resolve(null);
+    }
+  });
+
+  J.__idm_yt_pending[cacheKey] = promise;
+  try {
+    return await promise;
+  } finally {
+    delete J.__idm_yt_pending[cacheKey];
+  }
+}
+
 n.tb = function(a, b, c) {
   if (a && a.action === "download_media") {
     const pageUrl = a.referer || b?.tab?.url;
@@ -272,14 +317,26 @@ n.tb = function(a, b, c) {
     var list = (J.__idm_tab_media_streams && J.__idm_tab_media_streams[tid]) || [];
     var sabrSeen = !!(J.__idm_tab_sabr && J.__idm_tab_sabr[tid]);
     if (a.videoId) {
-      fetchYouTubeDirectFormats(a.videoId, a.visitorData).then(function(ytData) {
-        c && c({ streams: list, hasSabr: sabrSeen, ytData: ytData });
+      extractYouTubeViaNativeHost(a.videoId).then(function(engineData) {
+        if (engineData && engineData.options && engineData.options.length > 0) {
+          c && c({ streams: list, hasSabr: sabrSeen, ytData: null, engineData: engineData });
+          return;
+        }
+        fetchYouTubeDirectFormats(a.videoId, a.visitorData).then(function(ytData) {
+          c && c({ streams: list, hasSabr: sabrSeen, ytData: ytData, engineData: null });
+        }).catch(function() {
+          c && c({ streams: list, hasSabr: sabrSeen, ytData: null, engineData: null });
+        });
       }).catch(function() {
-        c && c({ streams: list, hasSabr: sabrSeen, ytData: null });
+        fetchYouTubeDirectFormats(a.videoId, a.visitorData).then(function(ytData) {
+          c && c({ streams: list, hasSabr: sabrSeen, ytData: ytData, engineData: null });
+        }).catch(function() {
+          c && c({ streams: list, hasSabr: sabrSeen, ytData: null, engineData: null });
+        });
       });
       return true;
     }
-    c && c({ streams: list, hasSabr: sabrSeen, ytData: null });
+    c && c({ streams: list, hasSabr: sabrSeen, ytData: null, engineData: null });
     return true;
   }
   switch (a[0]) {

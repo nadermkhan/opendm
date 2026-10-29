@@ -915,15 +915,18 @@ void MainWindow::prompt_download(const DownloadPromptInfo& info) {
             GtkWindow* parent = GTK_WINDOW(data->main_win->window_);
             gtk_window_present(parent);
 
-            // Check if URL or referer is a YouTube video URL
+            // Check if URL is an explicit YouTube video watch page URL
             std::string yt_url = data->info.url;
-            if (!YouTubeEngine::is_youtube_url(yt_url)) {
+            bool is_direct_stream = data->info.is_streaming_media ||
+                                    yt_url.find("googlevideo.com") != std::string::npos ||
+                                    yt_url.find("videoplayback") != std::string::npos;
+            if (!is_direct_stream && !YouTubeEngine::is_youtube_url(yt_url)) {
                 if (YouTubeEngine::is_youtube_url(data->info.referer)) {
                     yt_url = data->info.referer;
                 }
             }
 
-            if (YouTubeEngine::is_youtube_url(yt_url)) {
+            if (!is_direct_stream && YouTubeEngine::is_youtube_url(yt_url)) {
                 // Show analyzing dialog with spinner while OpenDM engine resolves formats
                 GtkWidget* loading_dlg = gtk_window_new();
                 gtk_window_set_title(GTK_WINDOW(loading_dlg), "OpenDM - Analyzing Video");

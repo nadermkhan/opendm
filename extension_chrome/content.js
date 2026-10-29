@@ -781,6 +781,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
   }
 
   let cachedBgYtData = null;
+  let cachedEngineData = null;
 
   function getYouTubeVideoId() {
     try {
@@ -801,6 +802,44 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     } catch (e) {}
     return "";
   }
+
+  function triggerImmediateYouTubePreparse() {
+    if (!extApi) return;
+    const vid = getYouTubeVideoId();
+    if (!vid) return;
+    if (cachedEngineData && (cachedEngineData.video_id === vid || cachedEngineData.videoId === vid)) return;
+    try {
+      extApi.runtime.sendMessage({
+        action: "get_tab_media",
+        videoId: vid,
+        visitorData: getYouTubeVisitorData(),
+        immediate: true
+      }, (resp) => {
+        if (resp && resp.engineData) {
+          cachedEngineData = resp.engineData;
+        }
+        if (resp && resp.ytData) {
+          cachedBgYtData = resp.ytData;
+        }
+      });
+    } catch (e) {}
+  }
+
+  try {
+    triggerImmediateYouTubePreparse();
+    if (typeof window !== "undefined") {
+      window.addEventListener("yt-navigate-finish", () => {
+        cachedEngineData = null;
+        cachedBgYtData = null;
+        triggerImmediateYouTubePreparse();
+      });
+      window.addEventListener("spfdone", () => {
+        cachedEngineData = null;
+        cachedBgYtData = null;
+        triggerImmediateYouTubePreparse();
+      });
+    }
+  } catch (e) {}
 
   function isPlayableStream(f) {
     if (!f || !f.url) return false;
@@ -1208,15 +1247,40 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       const items = [];
 
       if (isYtOrDash) {
-        let ytData = (resp && resp.ytData) || null;
-        if (!ytData) {
-          try {
-            ytData = getYouTubeFormatsFromDOM();
-          } catch (e) {}
+        let engineData = (resp && resp.engineData) || cachedEngineData || null;
+        if (engineData && engineData.options && engineData.options.length > 0) {
+          cachedEngineData = engineData;
+          const engOpts = engineData.options;
+          const engTitle = engineData.title || mediaTitle;
+          for (let i = 0; i < engOpts.length; i++) {
+            const opt = engOpts[i];
+            const ext = opt.is_audio ? (opt.container === "WEBM" ? "opus" : "m4a") : (opt.container === "WEBM" ? "webm" : "mp4");
+            items.push({
+              url: opt.url,
+              rawVideoUrl: opt.url,
+              qName: opt.quality || "hd1080",
+              needsSwitch: false,
+              filename: `${engTitle}.${ext}`,
+              container: opt.container,
+              quality: opt.quality,
+              label: opt.label,
+              size_str: opt.size_str,
+              isAudio: opt.is_audio,
+              userAgent: opt.user_agent || ""
+            });
+          }
         }
 
-        const progFormats = ((ytData && ytData.streamingData && ytData.streamingData.formats) || []).filter(f => !isUnplayableFormat(f));
-        const adapFormats = ((ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || []).filter(f => !isUnplayableFormat(f));
+        if (items.length === 0) {
+          let ytData = (resp && resp.ytData) || null;
+          if (!ytData) {
+            try {
+              ytData = getYouTubeFormatsFromDOM();
+            } catch (e) {}
+          }
+
+          const progFormats = ((ytData && ytData.streamingData && ytData.streamingData.formats) || []).filter(f => !isUnplayableFormat(f));
+          const adapFormats = ((ytData && ytData.streamingData && ytData.streamingData.adaptiveFormats) || []).filter(f => !isUnplayableFormat(f));
 
         const domAudioFmt = adapFormats.find(f => Number(f.itag) === 140) ||
                             adapFormats.find(f => String(f.mimeType || "").includes("audio"));
@@ -1417,6 +1481,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             isAudio: true
           });
         }
+        }
       } else {
         // Non-YouTube media
         if (directSrc && directSrc.startsWith("http") && !directSrc.startsWith("blob:")) {
@@ -1506,7 +1571,9 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
         const item = items[idx];
         const itemNumber = idx + 1;
         let lineText = "";
-        if (item.quality) {
+        if (item.label) {
+          lineText = `${itemNumber}. ${mediaTitle}, ${item.container} file, quality ${item.label}`;
+        } else if (item.quality) {
           lineText = `${itemNumber}. ${mediaTitle}, ${item.container} file, quality ${item.quality}`;
         } else {
           lineText = `${itemNumber}. ${mediaTitle}, ${item.container} file`;
@@ -1519,8 +1586,14 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
         row.addEventListener("click", (ev) => {
           ev.stopPropagation();
           menu.style.display = "none";
+          if (item.url) {
+            downloadMedia(item.url, item.filename, item.userAgent);
+            label.textContent = "Sent to IDM!";
+            setTimeout(() => { label.textContent = origText; }, 1500);
+            return;
+          }
           const ytVid = getYouTubeVideoId();
-          if (ytVid) {
+          if (ytVid && !item.qName) {
             const ytVideoUrl = "https://www.youtube.com/watch?v=" + ytVid;
             downloadMedia(ytVideoUrl, item.filename, item.userAgent);
             label.textContent = "Sent to IDM!";

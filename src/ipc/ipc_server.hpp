@@ -91,5 +91,8 @@ std::pair<std::string, std::string> split_dual_stream_url(const std::string& raw
 std::string clean_stream_query_parameters(const std::string& url);
 std::string sanitize_media_filename(const std::string& title, const std::string& default_ext = "mp4");
 
+struct YouTubeVideoInfo;
+std::string build_youtube_extract_json(const YouTubeVideoInfo& info);
+
 } // namespace opendm
 

@@ -129,6 +129,7 @@ let currentMockStreams = [
 ];
 
 let mockYtData = null;
+let mockEngineData = null;
 
 const mockBrowser = {
   runtime: {
@@ -140,7 +141,8 @@ const mockBrowser = {
         cb && cb({
           streams: currentMockStreams,
           hasSabr: hasSabr,
-          ytData: mockYtData
+          ytData: mockYtData,
+          engineData: mockEngineData
         });
       } else if (msg.action === "download_media") {
         cb && cb({ status: "ok" });
@@ -676,7 +678,82 @@ setTimeout(() => {
                             assert(ytDl, "YouTube video URL must be dispatched to download_media");
                             assert.strictEqual(ytDl.url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "Exact canonical YouTube video URL must be sent to OpenDM");
                             console.log("[PASS] Case 18: YouTube video URL direct delegation to OpenDM engine verified 100%");
-                            console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+
+                            // Case 19: OpenDM engine parsed options dynamically populated in dropdown menu
+                            mockEngineData = {
+                              status: "ok",
+                              title: "Rick Astley - Never Gonna Give You Up",
+                              options: [
+                                {
+                                  label: "1080p60 (60fps, MP4) [Video + 130 kbps Audio] - 51.16 MB",
+                                  quality: "1080p60 (60fps)",
+                                  container: "MP4",
+                                  size: 53645800,
+                                  size_str: "51.16 MB",
+                                  url: "yta2toidm://https://rr1.googlevideo.com/videoplayback?itag=299##https://rr1.googlevideo.com/videoplayback?itag=140",
+                                  user_agent: "Mozilla/5.0 (VisionOS)",
+                                  is_audio: false
+                                },
+                                {
+                                  label: "720p60 (60fps, MP4) [Video + 130 kbps Audio] - 31.84 MB",
+                                  quality: "720p60 (60fps)",
+                                  container: "MP4",
+                                  size: 33385800,
+                                  size_str: "31.84 MB",
+                                  url: "yta2toidm://https://rr1.googlevideo.com/videoplayback?itag=298##https://rr1.googlevideo.com/videoplayback?itag=140",
+                                  user_agent: "Mozilla/5.0 (VisionOS)",
+                                  is_audio: false
+                                },
+                                {
+                                  label: "Audio Only - M4A (130 kbps) - 3.52 MB",
+                                  quality: "130 kbps",
+                                  container: "M4A",
+                                  size: 3690987,
+                                  size_str: "3.52 MB",
+                                  url: "https://rr1.googlevideo.com/videoplayback?itag=140",
+                                  user_agent: "Mozilla/5.0 (VisionOS)",
+                                  is_audio: true
+                                }
+                              ]
+                            };
+
+                            menu.style.display = "none";
+                            dropdownBtn.dispatch("click", {
+                              target: dropdownBtn,
+                              stopPropagation: () => {},
+                              preventDefault: () => {}
+                            });
+
+                            setTimeout(() => {
+                              assert.strictEqual(menu.style.display, "flex", "Menu must open on dropdown click");
+                              const fullText = menu.children.map(c => c.textContent || "").join(" | ");
+                              assert(fullText.includes("Download all"), "Menu must contain Download all");
+                              assert(fullText.includes("1080p60 (60fps, MP4) [Video + 130 kbps Audio] - 51.16 MB"), "Menu must render OpenDM engine 1080p60 option");
+                              assert(fullText.includes("720p60 (60fps, MP4) [Video + 130 kbps Audio] - 31.84 MB"), "Menu must render OpenDM engine 720p60 option");
+                              assert(fullText.includes("Audio Only - M4A (130 kbps) - 3.52 MB"), "Menu must render OpenDM engine Audio Only option");
+                              console.log("[PASS] Case 19: OpenDM engine parsed options dynamically populated in dropdown menu verified 100%");
+
+                              // Case 20: Direct format selection from dropdown dispatches yta2toidm stream to downloadMedia
+                              sentMessages.length = 0;
+                              const row1080 = menu.children.find(c => c.textContent && c.textContent.includes("1080p60"));
+                              assert(row1080, "1080p60 row element must exist in dropdown menu");
+                              row1080.dispatch("click", {
+                                target: row1080,
+                                stopPropagation: () => {},
+                                preventDefault: () => {}
+                              });
+
+                              setTimeout(() => {
+                                const selDl = sentMessages.find(m => m.action === "download_media");
+                                assert(selDl, "Selected format must dispatch download_media");
+                                assert(selDl.url.startsWith("yta2toidm://"), "Selected format must preserve dual stream yta2toidm:// scheme");
+                                assert(selDl.url.includes("itag=299"), "Selected format must contain 1080p60 itag 299");
+                                assert(selDl.url.includes("##"), "Selected format must contain audio pairing delimiter ##");
+                                assert.strictEqual(selDl.userAgent, "Mozilla/5.0 (VisionOS)", "InnerTube client userAgent must be passed with stream");
+                                console.log("[PASS] Case 20: Direct format selection from dropdown dispatches yta2toidm stream to OpenDM verified 100%");
+                                console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+                              }, 50);
+                            }, 50);
                           }, 50);
                         }, 50);
                       }, 50);
