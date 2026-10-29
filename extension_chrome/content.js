@@ -1021,6 +1021,16 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     const origText = label.textContent;
     label.textContent = "Requesting IDM...";
 
+    const ytVid = getYouTubeVideoId();
+    if (ytVid) {
+      const ytVideoUrl = "https://www.youtube.com/watch?v=" + ytVid;
+      const mediaTitle = getMediaTitle();
+      downloadMedia(ytVideoUrl, mediaTitle ? (mediaTitle + ".mp4") : "");
+      label.textContent = "Sent to IDM!";
+      setTimeout(() => { label.textContent = origText; }, 1500);
+      return;
+    }
+
     let directSrc = activeTarget.currentSrc || activeTarget.src || "";
     if (!directSrc) {
       const srcEl = activeTarget.querySelector("source[src]");
@@ -1458,6 +1468,14 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
       allItem.addEventListener("click", (ev) => {
         ev.stopPropagation();
         menu.style.display = "none";
+        const ytVid = getYouTubeVideoId();
+        if (ytVid) {
+          const ytVideoUrl = "https://www.youtube.com/watch?v=" + ytVid;
+          downloadMedia(ytVideoUrl, mediaTitle + ".mp4");
+          label.textContent = "Sent to IDM!";
+          setTimeout(() => { label.textContent = origText; }, 1500);
+          return;
+        }
         const downloadable = items.filter(it => it.url);
         if (downloadable.length > 0) {
           label.textContent = "Downloading all (" + downloadable.length + ")...";
@@ -1501,6 +1519,14 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
         row.addEventListener("click", (ev) => {
           ev.stopPropagation();
           menu.style.display = "none";
+          const ytVid = getYouTubeVideoId();
+          if (ytVid) {
+            const ytVideoUrl = "https://www.youtube.com/watch?v=" + ytVid;
+            downloadMedia(ytVideoUrl, item.filename, item.userAgent);
+            label.textContent = "Sent to IDM!";
+            setTimeout(() => { label.textContent = origText; }, 1500);
+            return;
+          }
           if (item.url) {
             downloadMedia(item.url, item.filename, item.userAgent);
             label.textContent = "Sent to IDM!";

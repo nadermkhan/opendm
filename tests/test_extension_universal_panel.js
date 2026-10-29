@@ -151,6 +151,7 @@ const mockBrowser = {
 
 global.window = mockWindow;
 global.document = mockDocument;
+global.location = mockWindow.location;
 global.browser = mockBrowser;
 global.chrome = mockBrowser;
 global.MutationObserver = class {
@@ -658,7 +659,25 @@ setTimeout(() => {
                           assert(!dl.url.includes("n="), "c=WEB with n=... challenge must NEVER be dispatched to download_media");
                           assert(dl.url.includes("svpuc=1"), "Stream with svpuc=1 must be dispatched to download_media");
                           console.log("[PASS] Case 17: Rejection of c=WEB with n=... cipher and acceptance of svpuc=1 signed streams verified 100%");
-                          console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+
+                          // Case 18: YouTube video URL direct delegation to OpenDM engine
+                          global.location.hostname = "www.youtube.com";
+                          global.location.search = "?v=dQw4w9WgXcQ";
+                          global.location.pathname = "/watch";
+                          sentMessages.length = 0;
+                          bar.dispatch("click", {
+                            target: bar,
+                            stopPropagation: () => {},
+                            preventDefault: () => {}
+                          });
+
+                          setTimeout(() => {
+                            const ytDl = sentMessages.find(m => m.action === "download_media");
+                            assert(ytDl, "YouTube video URL must be dispatched to download_media");
+                            assert.strictEqual(ytDl.url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "Exact canonical YouTube video URL must be sent to OpenDM");
+                            console.log("[PASS] Case 18: YouTube video URL direct delegation to OpenDM engine verified 100%");
+                            console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
+                          }, 50);
                         }, 50);
                       }, 50);
                     }, 1700);

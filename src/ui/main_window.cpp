@@ -7,9 +7,11 @@
 #include "add_url_dialog.hpp"
 #include "about_dialog.hpp"
 #include "options_dialog.hpp"
+#include "youtube_format_dialog.hpp"
 #include "ui_assets.hpp"
 #include "../core/batch_importer.hpp"
 #include "../core/site_logon.hpp"
+#include "../core/youtube_engine.hpp"
 #include <gdk/gdkkeysyms.h>
 #include <iomanip>
 #include <sstream>
@@ -913,40 +915,153 @@ void MainWindow::prompt_download(const DownloadPromptInfo& info) {
             GtkWindow* parent = GTK_WINDOW(data->main_win->window_);
             gtk_window_present(parent);
 
-            DownloadInfoDialog::show(parent, data->info, [win = data->main_win](DownloadInfoAction action, const DownloadInfoParams& res) {
-                if (action == DownloadInfoAction::CANCEL) {
-                    return;
+            // Check if URL or referer is a YouTube video URL
+            std::string yt_url = data->info.url;
+            if (!YouTubeEngine::is_youtube_url(yt_url)) {
+                if (YouTubeEngine::is_youtube_url(data->info.referer)) {
+                    yt_url = data->info.referer;
                 }
+            }
 
-                std::string dest_file = res.save_as_path;
-                if (dest_file.empty()) {
-                    dest_file = (fs::path(res.destination_dir) / (res.filename.empty() ? "download.bin" : res.filename)).string();
-                }
+            if (YouTubeEngine::is_youtube_url(yt_url)) {
+                // Show analyzing dialog with spinner while OpenDM engine resolves formats
+                GtkWidget* loading_dlg = gtk_window_new();
+                gtk_window_set_title(GTK_WINDOW(loading_dlg), "OpenDM - Analyzing Video");
+                gtk_window_set_modal(GTK_WINDOW(loading_dlg), TRUE);
+                gtk_window_set_transient_for(GTK_WINDOW(loading_dlg), parent);
+                gtk_window_set_default_size(GTK_WINDOW(loading_dlg), 380, 140);
+                gtk_window_set_resizable(GTK_WINDOW(loading_dlg), FALSE);
 
-                std::error_code ec;
-                fs::create_directories(fs::path(dest_file).parent_path(), ec);
+                GtkWidget* box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+                gtk_widget_set_margin_start(box, 20);
+                gtk_widget_set_margin_end(box, 20);
+                gtk_widget_set_margin_top(box, 20);
+                gtk_widget_set_margin_bottom(box, 20);
+                gtk_window_set_child(GTK_WINDOW(loading_dlg), box);
 
-                static uint64_t counter = 1;
-                std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+                GtkWidget* spinner = gtk_spinner_new();
+                gtk_spinner_start(GTK_SPINNER(spinner));
+                gtk_widget_set_size_request(spinner, 32, 32);
+                gtk_box_append(GTK_BOX(box), spinner);
 
-                auto session = std::make_shared<DownloadSession>(id, res.url, dest_file);
-                if (!res.audio_stream_url.empty()) {
-                    session->set_audio_stream_url(res.audio_stream_url);
-                }
-                SiteLogonManager::instance().apply_to_session(*session, res.url);
-                if (!res.username.empty()) session->set_credentials(res.username, res.password);
-                if (!res.referer.empty()) session->set_header("Referer", res.referer);
-                if (!res.cookies.empty()) session->set_header("Cookie", res.cookies);
-                if (!res.user_agent.empty()) session->set_header("User-Agent", res.user_agent);
+                GtkWidget* lbl = gtk_label_new("Resolving YouTube video streams via OpenDM Engine...");
+                gtk_label_set_xalign(GTK_LABEL(lbl), 0.5f);
+                gtk_box_append(GTK_BOX(box), lbl);
 
-                bool start_now = (action == DownloadInfoAction::START_NOW);
-                QueueManager::instance().get_main_queue().add_session(session, start_now);
-                win->refresh_downloads_list();
+                gtk_window_present(GTK_WINDOW(loading_dlg));
 
-                if (start_now) {
-                    win->on_row_activated(id);
-                }
-            });
+                struct WorkerData {
+                    MainWindow* main_win;
+                    GtkWidget* loading_dlg;
+                    DownloadPromptInfo original_info;
+                    std::string yt_url;
+                    YouTubeVideoInfo yt_info;
+                    std::string err;
+                    bool success{false};
+                };
+
+                auto* wd = new WorkerData{data->main_win, loading_dlg, data->info, yt_url, {}, "", false};
+                std::thread([wd]() {
+                    wd->success = YouTubeEngine::extract_video_info(wd->yt_url, wd->yt_info, &wd->err);
+
+                    g_idle_add(+[](gpointer p) -> gboolean {
+                        auto* d = static_cast<WorkerData*>(p);
+                        gtk_window_destroy(GTK_WINDOW(d->loading_dlg));
+
+                        if (d->success && d->yt_info.has_playable_formats()) {
+                            GtkWindow* win_parent = GTK_WINDOW(d->main_win->window_);
+                            YouTubeFormatDialog::show(win_parent, d->yt_info, [win = d->main_win](DownloadInfoAction action, const DownloadPromptInfo& prompt) {
+                                if (action == DownloadInfoAction::CANCEL) return;
+
+                                std::string dest_file = (fs::path(prompt.destination_dir) / (prompt.filename.empty() ? "video.mp4" : prompt.filename)).string();
+                                std::error_code ec;
+                                fs::create_directories(fs::path(dest_file).parent_path(), ec);
+
+                                static uint64_t counter = 1;
+                                std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+
+                                auto session = std::make_shared<DownloadSession>(id, prompt.url, dest_file);
+                                if (!prompt.audio_stream_url.empty()) {
+                                    session->set_audio_stream_url(prompt.audio_stream_url);
+                                }
+                                if (!prompt.user_agent.empty()) {
+                                    session->set_header("User-Agent", prompt.user_agent);
+                                }
+
+                                bool start_now = (action == DownloadInfoAction::START_NOW);
+                                QueueManager::instance().get_main_queue().add_session(session, start_now);
+                                win->refresh_downloads_list();
+
+                                if (start_now) {
+                                    win->on_row_activated(id);
+                                }
+                            });
+                        } else {
+                            // Fallback to standard prompt dialog if network extraction could not parse formats
+                            GtkWindow* win_parent = GTK_WINDOW(d->main_win->window_);
+                            DownloadInfoDialog::show(win_parent, d->original_info, [win = d->main_win](DownloadInfoAction action, const DownloadInfoParams& res) {
+                                if (action == DownloadInfoAction::CANCEL) return;
+                                std::string dest_file = res.save_as_path;
+                                if (dest_file.empty()) {
+                                    dest_file = (fs::path(res.destination_dir) / (res.filename.empty() ? "download.bin" : res.filename)).string();
+                                }
+                                std::error_code ec;
+                                fs::create_directories(fs::path(dest_file).parent_path(), ec);
+                                static uint64_t counter = 1;
+                                std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+                                auto session = std::make_shared<DownloadSession>(id, res.url, dest_file);
+                                if (!res.audio_stream_url.empty()) session->set_audio_stream_url(res.audio_stream_url);
+                                SiteLogonManager::instance().apply_to_session(*session, res.url);
+                                if (!res.username.empty()) session->set_credentials(res.username, res.password);
+                                if (!res.referer.empty()) session->set_header("Referer", res.referer);
+                                if (!res.cookies.empty()) session->set_header("Cookie", res.cookies);
+                                if (!res.user_agent.empty()) session->set_header("User-Agent", res.user_agent);
+                                bool start_now = (action == DownloadInfoAction::START_NOW);
+                                QueueManager::instance().get_main_queue().add_session(session, start_now);
+                                win->refresh_downloads_list();
+                                if (start_now) win->on_row_activated(id);
+                            });
+                        }
+                        delete d;
+                        return G_SOURCE_REMOVE;
+                    }, wd);
+                }).detach();
+            } else {
+                DownloadInfoDialog::show(parent, data->info, [win = data->main_win](DownloadInfoAction action, const DownloadInfoParams& res) {
+                    if (action == DownloadInfoAction::CANCEL) {
+                        return;
+                    }
+
+                    std::string dest_file = res.save_as_path;
+                    if (dest_file.empty()) {
+                        dest_file = (fs::path(res.destination_dir) / (res.filename.empty() ? "download.bin" : res.filename)).string();
+                    }
+
+                    std::error_code ec;
+                    fs::create_directories(fs::path(dest_file).parent_path(), ec);
+
+                    static uint64_t counter = 1;
+                    std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+
+                    auto session = std::make_shared<DownloadSession>(id, res.url, dest_file);
+                    if (!res.audio_stream_url.empty()) {
+                        session->set_audio_stream_url(res.audio_stream_url);
+                    }
+                    SiteLogonManager::instance().apply_to_session(*session, res.url);
+                    if (!res.username.empty()) session->set_credentials(res.username, res.password);
+                    if (!res.referer.empty()) session->set_header("Referer", res.referer);
+                    if (!res.cookies.empty()) session->set_header("Cookie", res.cookies);
+                    if (!res.user_agent.empty()) session->set_header("User-Agent", res.user_agent);
+
+                    bool start_now = (action == DownloadInfoAction::START_NOW);
+                    QueueManager::instance().get_main_queue().add_session(session, start_now);
+                    win->refresh_downloads_list();
+
+                    if (start_now) {
+                        win->on_row_activated(id);
+                    }
+                });
+            }
         }
         delete data;
         return G_SOURCE_REMOVE;

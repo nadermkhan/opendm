@@ -2,6 +2,7 @@
 #include "../core/download_queue.hpp"
 #include "../core/media_muxer.hpp"
 #include "../core/site_logon.hpp"
+#include "../core/youtube_engine.hpp"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -686,7 +687,7 @@ std::string IpcServer::handle_request(const std::string& request) {
             }
 
             // 5. Apply IDM content & extension filtering rules
-            if (!is_attachment && !is_explicit_user_action) {
+            if (!is_attachment && !is_explicit_user_action && !YouTubeEngine::is_youtube_url(url)) {
                 if (is_web_content_type(content_type)) {
                     std::cout << "OpenDM IPC: Ignored web content type '" << content_type << "' for " << url << std::endl;
                     return "{\"status\": \"ignored\", \"reason\": \"web_content_type\"}";
@@ -701,7 +702,7 @@ std::string IpcServer::handle_request(const std::string& request) {
                 }
             }
 
-            if (is_explicit_user_action) {
+            if (is_explicit_user_action || YouTubeEngine::is_youtube_url(url)) {
                 if (!page_title.empty() && (filename.empty() || filename == "download.bin" || filename.rfind("videoplayback", 0) == 0)) {
                     filename = sanitize_media_filename(page_title, "mp4");
                 } else if (filename.find('.') == std::string::npos || filename == "download.bin") {
