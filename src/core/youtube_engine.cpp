@@ -256,11 +256,8 @@ std::string YouTubeEngine::get_or_fetch_visitor_data(const std::string& video_id
         }
     }
 
-    std::string url = "https://www.youtube.com/";
-    if (!video_id.empty()) {
-        url = "https://www.youtube.com/watch?v=" + video_id;
-    }
-
+    // Fetch lightweight InnerTube guide/sw.js_data or compressed watch page
+    std::string url = "https://www.youtube.com/sw.js_data";
     CURL* curl = curl_easy_init();
     if (!curl) return "";
 
@@ -271,23 +268,66 @@ std::string YouTubeEngine::get_or_fetch_visitor_data(const std::string& video_id
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, ""); // Enable gzip/br decompression
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_string_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &html_resp);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 6L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 4L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
     CURLcode res = curl_easy_perform(curl);
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
-    if (res == CURLE_OK && !html_resp.empty()) {
-        static const std::regex vd_rx(R"lit(\"VISITOR_DATA\":\s*\"([^\"]+)\")lit");
+    auto extract_vd = [](const std::string& body) -> std::string {
+        static const std::regex vd_rx(R"lit((?:\"VISITOR_DATA\":\s*\"([^\"]+)\"|\"(Cgt[0-9A-Za-z_-]+)\"))lit");
         std::smatch m;
-        if (std::regex_search(html_resp, m, vd_rx) && m.size() > 1) {
+        if (std::regex_search(body, m, vd_rx)) {
+            return (m[1].matched && !m[1].str().empty()) ? m[1].str() : m[2].str();
+        }
+        return "";
+    };
+
+    if (res == CURLE_OK && !html_resp.empty()) {
+        std::string token = extract_vd(html_resp);
+        if (!token.empty()) {
             std::lock_guard<std::mutex> lock(s_visitor_mutex);
-            s_cached_visitor_data = m[1].str();
+            s_cached_visitor_data = token;
             return s_cached_visitor_data;
+        }
+    }
+
+    // Fallback to compressed watch page if sw.js_data did not contain visitor data
+    if (!video_id.empty()) {
+        std::string watch_url = "https://www.youtube.com/watch?v=" + video_id;
+        CURL* curl2 = curl_easy_init();
+        if (curl2) {
+            std::string watch_resp;
+            struct curl_slist* h2 = nullptr;
+            h2 = curl_slist_append(h2, "User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0");
+            h2 = curl_slist_append(h2, "Accept-Language: en-US,en;q=0.5");
+
+            curl_easy_setopt(curl2, CURLOPT_URL, watch_url.c_str());
+            curl_easy_setopt(curl2, CURLOPT_HTTPHEADER, h2);
+            curl_easy_setopt(curl2, CURLOPT_ACCEPT_ENCODING, "");
+            curl_easy_setopt(curl2, CURLOPT_WRITEFUNCTION, curl_string_write);
+            curl_easy_setopt(curl2, CURLOPT_WRITEDATA, &watch_resp);
+            curl_easy_setopt(curl2, CURLOPT_TIMEOUT, 5L);
+            curl_easy_setopt(curl2, CURLOPT_CONNECTTIMEOUT, 3L);
+            curl_easy_setopt(curl2, CURLOPT_FOLLOWLOCATION, 1L);
+
+            CURLcode res2 = curl_easy_perform(curl2);
+            curl_slist_free_all(h2);
+            curl_easy_cleanup(curl2);
+
+            if (res2 == CURLE_OK && !watch_resp.empty()) {
+                std::string token = extract_vd(watch_resp);
+                if (!token.empty()) {
+                    std::lock_guard<std::mutex> lock(s_visitor_mutex);
+                    s_cached_visitor_data = token;
+                    return s_cached_visitor_data;
+                }
+            }
         }
     }
 
@@ -368,6 +408,8 @@ bool YouTubeEngine::query_innertube_client(
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(req_body.length()));
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, ""); // Enable gzip/br compression for InnerTube JSON
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_string_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_data);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
@@ -623,7 +665,11 @@ bool YouTubeEngine::extract_video_info(
     std::string primary_error;
     std::string last_error;
 
-    std::string visitor_data = get_or_fetch_visitor_data(vid);
+    std::string visitor_data;
+    {
+        std::lock_guard<std::mutex> lock(s_visitor_mutex);
+        visitor_data = s_cached_visitor_data;
+    }
 
     YouTubeVideoInfo merged_info;
     std::unordered_set<int> seen_prog_itags;
@@ -693,7 +739,7 @@ bool YouTubeEngine::extract_video_info(
                 clients_used.push_back(client.name);
             }
 
-            // Check if we have high definition video (>= 720p), audio, and progressive format
+            // Break immediately once HD adaptive video (>= 720p) and audio formats are retrieved
             bool has_hd = false;
             for (const auto& vf : merged_info.video_formats) {
                 if (vf.height >= 720) {
@@ -702,7 +748,7 @@ bool YouTubeEngine::extract_video_info(
                 }
             }
 
-            if (has_hd && !merged_info.progressive_formats.empty() && !merged_info.audio_formats.empty()) {
+            if (has_hd && !merged_info.audio_formats.empty()) {
                 break;
             }
         }

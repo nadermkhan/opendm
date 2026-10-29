@@ -111,6 +111,10 @@ private:
     void assemble_file();
     void update_speed_and_eta();
 
+    std::string resolve_user_agent_for_url(const std::string& target_url) const;
+    static bool is_googlevideo_url(const std::string& target_url);
+    bool download_audio_stream_to_file(const std::string& audio_url, const std::string& audio_tmp_path);
+
     std::string id_;
     std::string url_;
     std::string temp_dir_;
@@ -125,6 +129,7 @@ private:
     std::string last_modified_;
     bool custom_filename_set_{false};
     std::string audio_stream_url_;
+    std::atomic<bool> audio_download_complete_{false};
 
     std::atomic<SessionStatus> status_{SessionStatus::IDLE};
     std::atomic<bool> stop_requested_{false};

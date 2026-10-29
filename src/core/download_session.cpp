@@ -327,8 +327,36 @@ bool DownloadSession::redownload() {
     return start();
 }
 
+bool DownloadSession::is_googlevideo_url(const std::string& target_url) {
+    return (target_url.find("googlevideo.com") != std::string::npos ||
+            target_url.find("videoplayback") != std::string::npos);
+}
+
+std::string DownloadSession::resolve_user_agent_for_url(const std::string& target_url) const {
+    auto ua_it = custom_headers_.find("User-Agent");
+    if (ua_it != custom_headers_.end() && !ua_it->second.empty()) {
+        return ua_it->second;
+    }
+    if (target_url.find("c=VISIONOS") != std::string::npos) {
+        return "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+    }
+    if (target_url.find("c=ANDROID_VR") != std::string::npos) {
+        return "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
+    }
+    if (target_url.find("c=IOS") != std::string::npos) {
+        return "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)";
+    }
+    if (target_url.find("c=ANDROID") != std::string::npos) {
+        return "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip";
+    }
+    if (target_url.find("c=TVHTML5") != std::string::npos) {
+        return "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)";
+    }
+    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+}
+
 bool DownloadSession::probe_resource() {
-    if ((url_.find("googlevideo.com") != std::string::npos || url_.find("videoplayback") != std::string::npos) &&
+    if (is_googlevideo_url(url_) &&
         (url_.find("sabr=1") != std::string::npos || url_.find("sabr=2") != std::string::npos)) {
         std::lock_guard<std::mutex> lock(meta_mutex_);
         last_error_ = "YouTube SABR stream URL rejected. Please reload video page to capture direct stream.";
@@ -353,13 +381,10 @@ bool DownloadSession::probe_resource() {
     curl_easy_setopt(curl, CURLOPT_RANGE, "0-0"); // Probe range support with single byte
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &resp_headers);
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
 
-    const std::string default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
-    std::string ua = default_ua;
-    auto ua_it = custom_headers_.find("User-Agent");
-    if (ua_it != custom_headers_.end()) {
-        ua = ua_it->second;
-    }
+    std::string ua = resolve_user_agent_for_url(url_);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, ua.c_str());
 
     if (!auth_userpwd_.empty()) {
@@ -559,6 +584,28 @@ void DownloadSession::run_session() {
         }
     }
 
+    // Launch parallel audio download if separate audio stream is present
+    std::string audio_url;
+    std::string audio_tmp_path;
+    {
+        std::lock_guard<std::mutex> lock(meta_mutex_);
+        audio_url = audio_stream_url_;
+        if (!audio_url.empty()) {
+            audio_tmp_path = destination_path_ + ".audio.tmp";
+        }
+    }
+
+    audio_download_complete_.store(false);
+    std::thread audio_thread;
+    if (!audio_url.empty() &&
+        (!is_googlevideo_url(audio_url) || (audio_url.find("sabr=1") == std::string::npos && audio_url.find("sabr=2") == std::string::npos))) {
+        audio_thread = std::thread([this, audio_url, audio_tmp_path]() {
+            if (download_audio_stream_to_file(audio_url, audio_tmp_path)) {
+                audio_download_complete_.store(true);
+            }
+        });
+    }
+
     // Coordinator loop: monitor progress, ETA, and dynamically split chunks as in IDM
     dynamic_split_loop();
 
@@ -571,6 +618,10 @@ void DownloadSession::run_session() {
             }
         }
         worker_threads_.clear();
+    }
+
+    if (audio_thread.joinable()) {
+        audio_thread.join();
     }
 
     if (stop_requested_ || pause_requested_) {
@@ -645,6 +696,10 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
         return;
     }
 
+    // Use a 1 MB file stream buffer per worker to reduce syscall overhead
+    std::vector<char> file_buf(1024 * 1024);
+    data.file.rdbuf()->pubsetbuf(file_buf.data(), file_buf.size());
+
     chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::DOWNLOADING);
 
     int64_t start_pos = chunk.start_offset + disk_bytes;
@@ -654,6 +709,14 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
         chunk_manager_.mark_chunk_completed(chunk_id);
         return;
     }
+
+    std::string ua = resolve_user_agent_for_url(url_);
+    bool is_yt = is_googlevideo_url(url_);
+    bool is_mobile_yt = (url_.find("c=ANDROID_VR") != std::string::npos ||
+                         url_.find("c=VISIONOS") != std::string::npos ||
+                         url_.find("c=ANDROID_TESTSUITE") != std::string::npos ||
+                         url_.find("c=IOS") != std::string::npos ||
+                         url_.find("c=ANDROID") != std::string::npos);
 
     curl_easy_setopt(curl, CURLOPT_URL, url_.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
@@ -665,30 +728,15 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
-
-    const std::string default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
-    std::string ua = default_ua;
-    auto ua_it = custom_headers_.find("User-Agent");
-    if (ua_it != custom_headers_.end()) {
-        ua = ua_it->second;
-    }
     curl_easy_setopt(curl, CURLOPT_USERAGENT, ua.c_str());
-
-    if (supports_ranges_.load() && chunk.end_offset >= 0) {
-        std::string range_header = std::to_string(start_pos) + "-" + std::to_string(chunk.end_offset);
-        curl_easy_setopt(curl, CURLOPT_RANGE, range_header.c_str());
-    }
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 512L * 1024L);
 
     if (!auth_userpwd_.empty()) {
         curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
         curl_easy_setopt(curl, CURLOPT_USERPWD, auth_userpwd_.c_str());
     }
-
-    bool is_mobile_yt = (url_.find("c=ANDROID_VR") != std::string::npos ||
-                         url_.find("c=VISIONOS") != std::string::npos ||
-                         url_.find("c=ANDROID_TESTSUITE") != std::string::npos ||
-                         url_.find("c=IOS") != std::string::npos ||
-                         url_.find("c=ANDROID") != std::string::npos);
 
     struct curl_slist* header_list = nullptr;
     for (const auto& [k, v] : custom_headers_) {
@@ -703,9 +751,55 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
     }
 
-    CURLcode res = curl_easy_perform(curl);
+    CURLcode res = CURLE_OK;
     long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+    // FIX: For YouTube / googlevideo.com ranged streams, fetch in 8 MB segments
+    // on the SAME persistent CURL* handle to bypass CDN bandwidth throttling.
+    constexpr int64_t YT_SEGMENT_SIZE = 8 * 1024 * 1024; // 8 MB
+
+    if (is_yt && supports_ranges_.load() && chunk.end_offset >= 0) {
+        while (!stop_requested_ && !pause_requested_) {
+            Chunk cur_chunk;
+            if (!chunk_manager_.get_chunk(chunk_id, cur_chunk)) break;
+
+            int64_t cur_start = cur_chunk.start_offset + data.bytes_received;
+            int64_t cur_end = cur_chunk.end_offset;
+            if (cur_start > cur_end) {
+                res = CURLE_OK;
+                http_code = 206;
+                break;
+            }
+
+            int64_t seg_end = std::min<int64_t>(cur_start + YT_SEGMENT_SIZE - 1, cur_end);
+            std::string range_header = std::to_string(cur_start) + "-" + std::to_string(seg_end);
+            curl_easy_setopt(curl, CURLOPT_RANGE, range_header.c_str());
+
+            res = curl_easy_perform(curl);
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+            Chunk after_chunk;
+            bool has_after = chunk_manager_.get_chunk(chunk_id, after_chunk);
+            bool hit_split_bound = has_after &&
+                (after_chunk.downloaded_bytes >= (after_chunk.end_offset - after_chunk.start_offset + 1));
+
+            if (hit_split_bound) {
+                res = CURLE_OK;
+                http_code = 206;
+                break;
+            }
+            if (res != CURLE_OK || (http_code != 206 && !(cur_start == 0 && http_code == 200))) {
+                break;
+            }
+        }
+    } else {
+        if (supports_ranges_.load() && chunk.end_offset >= 0) {
+            std::string range_header = std::to_string(start_pos) + "-" + std::to_string(chunk.end_offset);
+            curl_easy_setopt(curl, CURLOPT_RANGE, range_header.c_str());
+        }
+        res = curl_easy_perform(curl);
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    }
 
     if (header_list) {
         curl_slist_free_all(header_list);
@@ -760,10 +854,10 @@ void DownloadSession::dynamic_split_loop() {
             }
         }
 
-        // Limit concurrent connections on Google Video to prevent CDN dropping connections
+        // Allow up to 6 concurrent segmented connections on Google Video (instead of 2)
         size_t effective_max_conns = max_connections_;
-        if (url_.find("googlevideo.com") != std::string::npos || url_.find("videoplayback") != std::string::npos) {
-            effective_max_conns = std::min<size_t>(max_connections_, 2);
+        if (is_googlevideo_url(url_)) {
+            effective_max_conns = std::min<size_t>(max_connections_, 6);
         }
 
         // Check IDM condition: NeedNewConnection()
@@ -784,6 +878,126 @@ void DownloadSession::dynamic_split_loop() {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
+}
+
+bool DownloadSession::download_audio_stream_to_file(const std::string& audio_url, const std::string& audio_tmp_path) {
+    if (audio_url.empty()) return false;
+
+    std::string ua = resolve_user_agent_for_url(audio_url);
+    bool is_audio_mobile_yt = (audio_url.find("c=ANDROID_VR") != std::string::npos ||
+                               audio_url.find("c=VISIONOS") != std::string::npos ||
+                               audio_url.find("c=ANDROID_TESTSUITE") != std::string::npos ||
+                               audio_url.find("c=IOS") != std::string::npos ||
+                               audio_url.find("c=ANDROID") != std::string::npos);
+
+    std::ofstream afp(audio_tmp_path, std::ios::binary | std::ios::trunc);
+    if (!afp.is_open()) return false;
+
+    std::vector<char> file_buf(512 * 1024);
+    afp.rdbuf()->pubsetbuf(file_buf.data(), file_buf.size());
+
+    CURL* acurl = curl_easy_init();
+    if (!acurl) return false;
+
+    constexpr int64_t SEG_SIZE = 8 * 1024 * 1024;
+    int64_t cur_off = 0;
+    int64_t total_audio_sz = -1;
+    bool audio_dl_ok = true;
+
+    curl_easy_setopt(acurl, CURLOPT_URL, audio_url.c_str());
+    curl_easy_setopt(acurl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(acurl, CURLOPT_MAXREDIRS, 10L);
+    curl_easy_setopt(acurl, CURLOPT_USERAGENT, ua.c_str());
+    curl_easy_setopt(acurl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+    curl_easy_setopt(acurl, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(acurl, CURLOPT_BUFFERSIZE, 512L * 1024L);
+    curl_easy_setopt(acurl, CURLOPT_CONNECTTIMEOUT, 15L);
+    curl_easy_setopt(acurl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(acurl, CURLOPT_LOW_SPEED_TIME, 30L);
+    curl_easy_setopt(acurl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(acurl, CURLOPT_XFERINFOFUNCTION, probe_xferinfo_callback);
+    curl_easy_setopt(acurl, CURLOPT_XFERINFODATA, this);
+
+    if (!auth_userpwd_.empty()) {
+        curl_easy_setopt(acurl, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
+        curl_easy_setopt(acurl, CURLOPT_USERPWD, auth_userpwd_.c_str());
+    }
+
+    struct curl_slist* aheaders = nullptr;
+    for (const auto& [k, v] : custom_headers_) {
+        std::string lk = k;
+        std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
+        if (lk == "user-agent") continue;
+        if (lk == "referer" && is_audio_mobile_yt) continue;
+        aheaders = curl_slist_append(aheaders, (k + ": " + v).c_str());
+    }
+    if (aheaders) {
+        curl_easy_setopt(acurl, CURLOPT_HTTPHEADER, aheaders);
+    }
+
+    curl_easy_setopt(acurl, CURLOPT_WRITEFUNCTION,
+        +[](char* ptr, size_t s, size_t n, void* ud) -> size_t {
+            auto* out = static_cast<std::ofstream*>(ud);
+            size_t total = s * n;
+            out->write(ptr, static_cast<std::streamsize>(total));
+            return out->fail() ? 0 : total;
+        });
+    curl_easy_setopt(acurl, CURLOPT_WRITEDATA, &afp);
+
+    std::map<std::string, std::string> a_resp_headers;
+    curl_easy_setopt(acurl, CURLOPT_HEADERFUNCTION, header_callback);
+    curl_easy_setopt(acurl, CURLOPT_HEADERDATA, &a_resp_headers);
+
+    while (!stop_requested_ && !pause_requested_) {
+        a_resp_headers.clear();
+        int64_t end_off = (total_audio_sz > 0)
+            ? std::min<int64_t>(cur_off + SEG_SIZE - 1, total_audio_sz - 1)
+            : (cur_off + SEG_SIZE - 1);
+        std::string rng = std::to_string(cur_off) + "-" + std::to_string(end_off);
+        curl_easy_setopt(acurl, CURLOPT_RANGE, rng.c_str());
+
+        int64_t seg_start = cur_off;
+        CURLcode ares = curl_easy_perform(acurl);
+        long http_code = 0;
+        curl_easy_getinfo(acurl, CURLINFO_RESPONSE_CODE, &http_code);
+
+        if (ares != CURLE_OK || (http_code != 200 && http_code != 206)) {
+            audio_dl_ok = false;
+            break;
+        }
+
+        if (total_audio_sz < 0) {
+            auto cr_it = a_resp_headers.find("content-range");
+            if (cr_it != a_resp_headers.end()) {
+                size_t sl = cr_it->second.find('/');
+                if (sl != std::string::npos) {
+                    try { total_audio_sz = std::stoll(cr_it->second.substr(sl + 1)); } catch (...) {}
+                }
+            }
+        }
+
+        cur_off = static_cast<int64_t>(afp.tellp());
+        int64_t expected_bytes = end_off - seg_start + 1;
+        if (http_code == 200 || (total_audio_sz > 0 && cur_off >= total_audio_sz) || (cur_off - seg_start < expected_bytes)) {
+            break;
+        }
+    }
+
+    afp.flush();
+    afp.close();
+
+    if (aheaders) {
+        curl_slist_free_all(aheaders);
+    }
+    curl_easy_cleanup(acurl);
+
+    if (stop_requested_ || pause_requested_) {
+        std::error_code ec;
+        std::filesystem::remove(audio_tmp_path, ec);
+        return false;
+    }
+
+    return audio_dl_ok && (total_audio_sz <= 0 || cur_off >= total_audio_sz);
 }
 
 void DownloadSession::assemble_file() {
@@ -807,7 +1021,7 @@ void DownloadSession::assemble_file() {
         audio_url.clear();
     }
 
-    double join_weight = audio_url.empty() ? 1.0 : 0.40;
+    double join_weight = audio_url.empty() ? 1.0 : 0.70;
     bool ok = chunk_manager_.join_file(dest_path, [this, join_weight](double p) {
         std::lock_guard<std::mutex> lock(callback_mutex_);
         if (progress_callback_) {
@@ -846,145 +1060,24 @@ void DownloadSession::assemble_file() {
         }
     }
 
-    // Download & mux separate adaptive audio track with pause/cancel support and ranged requests
+    // Mux separate adaptive audio track if present
     if (!audio_url.empty()) {
         std::string video_tmp = dest_path + ".video.tmp";
         std::string audio_tmp = dest_path + ".audio.tmp";
-        fs::rename(dest_path, video_tmp, ec);
-        if (!ec) {
-            const std::string default_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
-            std::string ua = default_ua;
-            bool is_audio_mobile_yt = (audio_url.find("c=ANDROID_VR") != std::string::npos ||
-                                       audio_url.find("c=VISIONOS") != std::string::npos ||
-                                       audio_url.find("c=ANDROID_TESTSUITE") != std::string::npos ||
-                                       audio_url.find("c=IOS") != std::string::npos ||
-                                       audio_url.find("c=ANDROID") != std::string::npos);
 
-            auto ua_it = custom_headers_.find("User-Agent");
-            if (ua_it != custom_headers_.end()) {
-                ua = ua_it->second;
-            } else if (is_audio_mobile_yt) {
-                if (audio_url.find("c=VISIONOS") != std::string::npos) {
-                    ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
-                } else if (audio_url.find("c=ANDROID_VR") != std::string::npos) {
-                    ua = "com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip";
-                } else if (audio_url.find("c=IOS") != std::string::npos) {
-                    ua = "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)";
-                } else if (audio_url.find("c=ANDROID") != std::string::npos) {
-                    ua = "com.google.android.youtube/21.26.364 (Linux; U; Android 11) gzip";
-                }
-            }
+        bool audio_dl_ok = audio_download_complete_.load();
+        if (!audio_dl_ok) {
+            audio_dl_ok = download_audio_stream_to_file(audio_url, audio_tmp);
+        }
 
-            // Download audio in 8 MB ranged segments to bypass YouTube CDN throttling and support instant abort
-            std::ofstream afp(audio_tmp, std::ios::binary | std::ios::trunc);
-            bool audio_dl_ok = false;
+        if (stop_requested_ || pause_requested_) {
+            fs::remove(audio_tmp, ec);
+            return;
+        }
 
-            if (afp.is_open()) {
-                constexpr int64_t SEG_SIZE = 8 * 1024 * 1024;
-                int64_t cur_off = 0;
-                int64_t total_audio_sz = -1;
-                audio_dl_ok = true;
-
-                while (!stop_requested_ && !pause_requested_) {
-                    CURL* acurl = curl_easy_init();
-                    if (!acurl) {
-                        audio_dl_ok = false;
-                        break;
-                    }
-
-                    std::map<std::string, std::string> a_resp_headers;
-                    int64_t end_off = (total_audio_sz > 0)
-                        ? std::min<int64_t>(cur_off + SEG_SIZE - 1, total_audio_sz - 1)
-                        : (cur_off + SEG_SIZE - 1);
-                    std::string rng = std::to_string(cur_off) + "-" + std::to_string(end_off);
-
-                    curl_easy_setopt(acurl, CURLOPT_URL, audio_url.c_str());
-                    curl_easy_setopt(acurl, CURLOPT_FOLLOWLOCATION, 1L);
-                    curl_easy_setopt(acurl, CURLOPT_MAXREDIRS, 10L);
-                    curl_easy_setopt(acurl, CURLOPT_RANGE, rng.c_str());
-                    curl_easy_setopt(acurl, CURLOPT_USERAGENT, ua.c_str());
-                    curl_easy_setopt(acurl, CURLOPT_CONNECTTIMEOUT, 15L);
-                    curl_easy_setopt(acurl, CURLOPT_NOPROGRESS, 0L);
-                    curl_easy_setopt(acurl, CURLOPT_XFERINFOFUNCTION, probe_xferinfo_callback);
-                    curl_easy_setopt(acurl, CURLOPT_XFERINFODATA, this);
-                    curl_easy_setopt(acurl, CURLOPT_HEADERFUNCTION, header_callback);
-                    curl_easy_setopt(acurl, CURLOPT_HEADERDATA, &a_resp_headers);
-
-                    if (!auth_userpwd_.empty()) {
-                        curl_easy_setopt(acurl, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
-                        curl_easy_setopt(acurl, CURLOPT_USERPWD, auth_userpwd_.c_str());
-                    }
-
-                    struct curl_slist* aheaders = nullptr;
-                    for (const auto& [k, v] : custom_headers_) {
-                        std::string lk = k;
-                        std::transform(lk.begin(), lk.end(), lk.begin(), ::tolower);
-                        if (lk == "user-agent") continue;
-                        if (lk == "referer" && is_audio_mobile_yt) continue;
-                        aheaders = curl_slist_append(aheaders, (k + ": " + v).c_str());
-                    }
-                    if (aheaders) {
-                        curl_easy_setopt(acurl, CURLOPT_HTTPHEADER, aheaders);
-                    }
-
-                    curl_easy_setopt(acurl, CURLOPT_WRITEFUNCTION,
-                        +[](char* ptr, size_t s, size_t n, void* ud) -> size_t {
-                            auto* out = static_cast<std::ofstream*>(ud);
-                            size_t total = s * n;
-                            out->write(ptr, static_cast<std::streamsize>(total));
-                            return out->fail() ? 0 : total;
-                        });
-                    curl_easy_setopt(acurl, CURLOPT_WRITEDATA, &afp);
-
-                    CURLcode ares = curl_easy_perform(acurl);
-                    long http_code = 0;
-                    curl_easy_getinfo(acurl, CURLINFO_RESPONSE_CODE, &http_code);
-                    if (aheaders) {
-                        curl_slist_free_all(aheaders);
-                    }
-                    curl_easy_cleanup(acurl);
-
-                    if (ares != CURLE_OK || (http_code != 200 && http_code != 206)) {
-                        audio_dl_ok = false;
-                        break;
-                    }
-
-                    if (total_audio_sz < 0) {
-                        auto cr_it = a_resp_headers.find("content-range");
-                        if (cr_it != a_resp_headers.end()) {
-                            size_t sl = cr_it->second.find('/');
-                            if (sl != std::string::npos) {
-                                try { total_audio_sz = std::stoll(cr_it->second.substr(sl + 1)); } catch (...) {}
-                            }
-                        }
-                    }
-
-                    cur_off = static_cast<int64_t>(afp.tellp());
-                    if (http_code == 200 || (total_audio_sz > 0 && cur_off >= total_audio_sz)) {
-                        break; // Finished full audio stream
-                    }
-
-                    if (total_audio_sz > 0) {
-                        std::lock_guard<std::mutex> lock(callback_mutex_);
-                        if (progress_callback_) {
-                            DownloadProgress prog = get_progress();
-                            prog.status = SessionStatus::ASSEMBLING;
-                            prog.progress_fraction = 0.40 + 0.35 * (static_cast<double>(cur_off) / total_audio_sz);
-                            progress_callback_(prog);
-                        }
-                    }
-                }
-                afp.flush();
-                afp.close();
-            }
-
-            if (stop_requested_ || pause_requested_) {
-                fs::remove(audio_tmp, ec);
-                fs::rename(video_tmp, dest_path, ec);
-                return;
-            }
-
-            if (audio_dl_ok) {
+        if (audio_dl_ok) {
+            fs::rename(dest_path, video_tmp, ec);
+            if (!ec) {
                 std::string mux_err;
                 bool mux_ok = MediaMuxer::mux_streams(
                     video_tmp, audio_tmp, dest_path,
@@ -993,7 +1086,7 @@ void DownloadSession::assemble_file() {
                         if (progress_callback_) {
                             DownloadProgress prog = get_progress();
                             prog.status = SessionStatus::ASSEMBLING;
-                            prog.progress_fraction = 0.75 + 0.25 * (pct / 100.0);
+                            prog.progress_fraction = 0.70 + 0.30 * (pct / 100.0);
                             progress_callback_(prog);
                         }
                     },
@@ -1011,10 +1104,9 @@ void DownloadSession::assemble_file() {
                     fs::remove(audio_tmp, ec);
                     std::cerr << "[OpenDM] MediaMuxer warning: " << mux_err << std::endl;
                 }
-            } else {
-                fs::remove(audio_tmp, ec);
-                fs::rename(video_tmp, dest_path, ec);
             }
+        } else {
+            fs::remove(audio_tmp, ec);
         }
     }
 
@@ -1036,9 +1128,11 @@ void DownloadSession::assemble_file() {
         }
     }
 
-    PostDownloadManager::instance().notify_completion(fn, sz, true);
-    PostDownloadManager::instance().scan_file(dest_path);
     update_speed_and_eta();
+    PostDownloadManager::instance().notify_completion(fn, sz, true);
+    std::thread([dest_path]() {
+        PostDownloadManager::instance().scan_file(dest_path);
+    }).detach();
 }
 
 void DownloadSession::update_speed_and_eta() {
@@ -1105,7 +1199,7 @@ DownloadProgress DownloadSession::get_progress() const {
 }
 
 std::string DownloadSession::serialize() const {
-    std::string dest, fn, cat, lm, et, aud;
+    std::string dest, fn, cat, lm, et, aud, ua;
     {
         std::lock_guard<std::mutex> lock(meta_mutex_);
         dest = destination_path_;
@@ -1114,12 +1208,17 @@ std::string DownloadSession::serialize() const {
         lm = last_modified_;
         et = etag_;
         aud = audio_stream_url_;
+        auto ua_it = custom_headers_.find("User-Agent");
+        if (ua_it != custom_headers_.end()) {
+            ua = ua_it->second;
+        }
     }
 
     std::ostringstream ss;
     ss << "{\n";
     ss << "  \"id\": \"" << id_ << "\",\n";
     ss << "  \"url\": \"" << url_ << "\",\n";
+    ss << "  \"user_agent\": \"" << ua << "\",\n";
     ss << "  \"audio_stream_url\": \"" << aud << "\",\n";
     ss << "  \"destination_path\": \"" << dest << "\",\n";
     ss << "  \"temp_dir\": \"" << temp_dir_ << "\",\n";
@@ -1149,6 +1248,7 @@ std::shared_ptr<DownloadSession> DownloadSession::deserialize(const std::string&
 
     std::string id = get_str("id");
     std::string url = get_str("url");
+    std::string ua = get_str("user_agent");
     std::string dest = get_str("destination_path");
     std::string temp = get_str("temp_dir");
     std::string cat = get_str("category");
@@ -1160,6 +1260,9 @@ std::shared_ptr<DownloadSession> DownloadSession::deserialize(const std::string&
     if (id.empty() || url.empty()) return nullptr;
 
     auto session = std::make_shared<DownloadSession>(id, url, dest, temp);
+    if (!ua.empty()) {
+        session->set_header("User-Agent", ua);
+    }
     if (!aud.empty()) {
         session->set_audio_stream_url(aud);
     }
