@@ -44,6 +44,7 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-curl
             mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-nlohmann-json
             zip
 
       - name: Configure and Build (Win32)
@@ -98,7 +99,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             cmake ninja-build g++ pkg-config file dpkg-dev \
-            libgtk-4-dev libcurl4-openssl-dev zlib1g-dev libssl-dev
+            libgtk-4-dev libcurl4-openssl-dev zlib1g-dev libssl-dev nlohmann-json3-dev
 
       - name: Configure and Build (GTK4)
         run: |
