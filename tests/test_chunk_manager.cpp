@@ -167,6 +167,7 @@ void test_chunk_assembly() {
     std::cout << "  ✓ Multi-chunk file assembly verified byte-for-byte (" << result.size() << " bytes)" << std::endl;
 
     // Cleanup
+    in.close();
     std::filesystem::remove_all(temp_dir);
 }
 

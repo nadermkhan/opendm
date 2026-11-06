@@ -8,9 +8,21 @@
 #include <filesystem>
 #include <fstream>
 #include <cstring>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#define close closesocket
+#define SHUT_RDWR SD_BOTH
+#ifdef ERROR
+#undef ERROR
+#endif
+typedef int socklen_t;
+#else
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#endif
 
 namespace fs = std::filesystem;
 
@@ -28,7 +40,7 @@ public:
         if (server_fd_ < 0) return false;
 
         int opt = 1;
-        setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        setsockopt(server_fd_, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
 
         struct sockaddr_in addr{};
         addr.sin_family = AF_INET;
@@ -173,7 +185,12 @@ private:
 #include <csignal>
 
 int main() {
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
+#else
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
     std::cout << "=== Running DownloadSession Pause/Resume Integration Test ===" << std::endl;
 
     // 1. Generate 2 MB deterministic test payload
@@ -281,5 +298,8 @@ int main() {
     fs::remove_all(test_temp);
 
     std::cout << "=== ALL PAUSE/RESUME TESTS PASSED ===" << std::endl;
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return 0;
 }

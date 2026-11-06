@@ -276,9 +276,12 @@ int main() {
     std::cout << "  ✓ Muxing succeeded! Output file size: " << fs::file_size(muxed_test) << " bytes." << std::endl;
 
     // Verify output contents: fast-start layout [ftyp] [moov] [mdat]
-    std::ifstream muxed_in(muxed_test, std::ios::binary);
-    std::vector<uint8_t> file_bytes((std::istreambuf_iterator<char>(muxed_in)),
-                                     std::istreambuf_iterator<char>());
+    std::vector<uint8_t> file_bytes;
+    {
+        std::ifstream muxed_in(muxed_test, std::ios::binary);
+        file_bytes.assign((std::istreambuf_iterator<char>(muxed_in)),
+                          std::istreambuf_iterator<char>());
+    }
 
     // Verify ftyp exists
     assert(file_bytes.size() > 20);

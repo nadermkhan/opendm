@@ -1,11 +1,19 @@
 #include "post_download.hpp"
 #include <iostream>
 #include <cstdlib>
-#include <unistd.h>
-#include <sys/wait.h>
 #include <filesystem>
 #include <sstream>
 #include <iomanip>
+#include <thread>
+
+#ifdef _WIN32
+#include <windows.h>
+#define popen _popen
+#define pclose _pclose
+#else
+#include <unistd.h>
+#include <sys/wait.h>
+#endif
 
 namespace opendm {
 
@@ -26,6 +34,11 @@ std::string format_file_size(int64_t bytes) {
 }
 
 void async_exec(const std::string& cmd) {
+#ifdef _WIN32
+    std::thread([cmd]() {
+        system(cmd.c_str());
+    }).detach();
+#else
     pid_t pid = fork();
     if (pid == 0) {
         // Child
@@ -33,6 +46,7 @@ void async_exec(const std::string& cmd) {
         execl("/bin/sh", "sh", "-c", cmd.c_str(), nullptr);
         _exit(1);
     }
+#endif
 }
 
 } // namespace
@@ -99,7 +113,11 @@ bool PostDownloadManager::scan_file(const std::string& filepath, std::string* ou
     int status = pclose(pipe);
 
     if (out_scan_report) *out_scan_report = output;
+#ifdef _WIN32
+    return (status == 0);
+#else
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0);
+#endif
 }
 
 void PostDownloadManager::execute_completion_action(CompletionAction action) {
@@ -110,11 +128,19 @@ void PostDownloadManager::execute_completion_action(CompletionAction action) {
             break;
         case CompletionAction::SUSPEND_SYSTEM:
             std::cout << "[OpenDM] Completion action: Suspending system." << std::endl;
+#ifdef _WIN32
+            async_exec("rundll32.exe powrprof.dll,SetSuspendState 0,1,0");
+#else
             async_exec("systemctl suspend 2>/dev/null || dbus-send --system --print-reply --dest=org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager.Suspend boolean:true");
+#endif
             break;
         case CompletionAction::SHUTDOWN_SYSTEM:
             std::cout << "[OpenDM] Completion action: Shutting down system." << std::endl;
+#ifdef _WIN32
+            async_exec("shutdown.exe /s /t 0");
+#else
             async_exec("systemctl poweroff 2>/dev/null || dbus-send --system --print-reply --dest=org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager.PowerOff boolean:true");
+#endif
             break;
         case CompletionAction::NONE:
         default:

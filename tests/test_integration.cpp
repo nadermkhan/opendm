@@ -263,7 +263,7 @@ int main() {
         assert(restored_sess != nullptr);
         assert(restored_sess->get_id() == "sess_test_10");
         assert(restored_sess->get_url() == "https://example.com/archive.zip");
-        assert(restored_sess->get_destination_path() == "/tmp/archive.zip");
+        assert(fs::path(restored_sess->get_destination_path()) == fs::path("/tmp/archive.zip"));
         assert(restored_sess->get_category() == "Compressed");
         assert(restored_sess->get_filename() == "archive.zip");
 

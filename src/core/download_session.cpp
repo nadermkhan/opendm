@@ -2,6 +2,9 @@
 #include "post_download.hpp"
 #include "core/media_muxer.hpp"
 #include <curl/curl.h>
+#ifdef ERROR
+#undef ERROR
+#endif
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -157,9 +160,15 @@ DownloadSession::DownloadSession(const std::string& id, const std::string& url,
     : id_(id), url_(url), destination_path_(dest_path) {
     
     if (temp_dir.empty()) {
+#ifdef _WIN32
+        const char* localapp = getenv("LOCALAPPDATA");
+        std::filesystem::path base_cache = localapp ? (std::filesystem::path(localapp) / "OpenDM" / "chunks")
+                                                    : (std::filesystem::temp_directory_path() / "opendm_chunks");
+#else
         const char* home = getenv("HOME");
         std::filesystem::path base_cache = home ? (std::filesystem::path(home) / ".cache" / "opendm" / "chunks")
                                                 : (std::filesystem::temp_directory_path() / "opendm_chunks");
+#endif
         temp_dir_ = (base_cache / id_).string();
     } else {
         temp_dir_ = temp_dir;
@@ -179,7 +188,14 @@ DownloadSession::DownloadSession(const std::string& id, const std::string& url,
 }
 
 DownloadSession::~DownloadSession() {
-    cancel();
+    // Only stop and join threads here. Partial chunk files are intentionally kept so
+    // paused downloads can resume after an application restart. Explicit removal
+    // goes through cancel(), which also deletes the temp files.
+    try {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+        stop_and_join_locked();
+    } catch (...) {
+    }
 }
 
 void DownloadSession::set_max_connections(size_t max_conns) {
@@ -246,16 +262,54 @@ void DownloadSession::set_custom_filename(const std::string& fname) {
     destination_path_ = (p.parent_path() / fname).string();
 }
 
+void DownloadSession::stop_and_join_locked() {
+    stop_requested_ = true;
+    pause_requested_ = false;
+
+    const auto self_id = std::this_thread::get_id();
+
+    // Never join the calling thread (would throw resource_deadlock_would_occur
+    // and std::terminate the process).
+    if (coordinator_thread_.joinable()) {
+        if (coordinator_thread_.get_id() == self_id) {
+            coordinator_thread_.detach();
+        } else {
+            coordinator_thread_.join();
+        }
+    }
+
+    // Join workers outside of workers_mutex_ so nothing else blocks on it meanwhile.
+    std::vector<std::thread> workers;
+    {
+        std::lock_guard<std::mutex> wlock(workers_mutex_);
+        workers.swap(worker_threads_);
+    }
+    for (auto& t : workers) {
+        if (!t.joinable()) continue;
+        if (t.get_id() == self_id) {
+            t.detach();
+        } else {
+            t.join();
+        }
+    }
+}
+
 bool DownloadSession::start() {
-    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    if (disposed_) return false;
+
+    // Never block the caller (often the UI thread) behind a running teardown.
+    std::unique_lock<std::mutex> lock(lifecycle_mutex_, std::try_to_lock);
+    if (!lock.owns_lock() || disposed_) {
+        return false;
+    }
+
     SessionStatus st = status_.load();
     if (st == SessionStatus::DOWNLOADING || st == SessionStatus::PROBING || st == SessionStatus::ASSEMBLING) {
         return false;
     }
 
-    if (coordinator_thread_.joinable()) {
-        coordinator_thread_.join();
-    }
+    // A previous run may still be winding down after a non-blocking pause(); reap it.
+    stop_and_join_locked();
 
     stop_requested_ = false;
     pause_requested_ = false;
@@ -266,9 +320,17 @@ bool DownloadSession::start() {
 }
 
 void DownloadSession::pause() {
-    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    // Non-blocking: signal the threads and flip the state immediately. The threads
+    // are reaped lazily by the next start()/cancel()/destructor, so the UI thread
+    // never waits on network I/O (DNS, TLS handshake, stalled sockets...).
+    std::unique_lock<std::mutex> lock(lifecycle_mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return; // a cancel/teardown is already in progress
+    }
+
     SessionStatus st = status_.load();
-    if (st == SessionStatus::PAUSED || st == SessionStatus::COMPLETED || st == SessionStatus::IDLE) {
+    if (st == SessionStatus::PAUSED || st == SessionStatus::COMPLETED ||
+        st == SessionStatus::IDLE || st == SessionStatus::ASSEMBLING) {
         return;
     }
     pause_requested_ = true;
@@ -279,10 +341,6 @@ void DownloadSession::pause() {
         chunk_manager_.update_chunk_progress(c.id, c.downloaded_bytes, 0);
     }
 
-    if (coordinator_thread_.joinable()) {
-        coordinator_thread_.join();
-    }
-
     status_ = SessionStatus::PAUSED;
     current_speed_ = 0;
     eta_seconds_ = 0;
@@ -290,29 +348,23 @@ void DownloadSession::pause() {
 }
 
 void DownloadSession::resume() {
-    if (status_.load() == SessionStatus::PAUSED) {
+    SessionStatus st = status_.load();
+    if (st == SessionStatus::PAUSED || st == SessionStatus::IDLE || st == SessionStatus::ERROR) {
         start();
     }
 }
 
-void DownloadSession::cancel() {
-    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+void DownloadSession::request_stop(bool permanent) {
+    if (permanent) {
+        disposed_ = true;
+    }
     stop_requested_ = true;
     pause_requested_ = false;
+}
 
-    if (coordinator_thread_.joinable()) {
-        coordinator_thread_.join();
-    }
-
-    {
-        std::lock_guard<std::mutex> wlock(workers_mutex_);
-        for (auto& t : worker_threads_) {
-            if (t.joinable()) {
-                t.join();
-            }
-        }
-        worker_threads_.clear();
-    }
+void DownloadSession::cancel() {
+    std::lock_guard<std::mutex> lock(lifecycle_mutex_);
+    stop_and_join_locked();
 
     chunk_manager_.cleanup_temp_files();
 
@@ -615,15 +667,18 @@ void DownloadSession::run_session() {
     // Coordinator loop: monitor progress, ETA, and dynamically split chunks as in IDM
     dynamic_split_loop();
 
-    // Wait for all workers to finish or abort
+    // Wait for all workers to finish or abort (join outside the mutex)
     {
-        std::lock_guard<std::mutex> lock(workers_mutex_);
-        for (auto& t : worker_threads_) {
+        std::vector<std::thread> workers;
+        {
+            std::lock_guard<std::mutex> lock(workers_mutex_);
+            workers.swap(worker_threads_);
+        }
+        for (auto& t : workers) {
             if (t.joinable()) {
                 t.join();
             }
         }
-        worker_threads_.clear();
     }
 
     if (audio_thread.joinable()) {
@@ -1082,6 +1137,7 @@ void DownloadSession::assemble_file() {
         }
 
         if (audio_dl_ok) {
+            fs::remove(video_tmp, ec);
             fs::rename(dest_path, video_tmp, ec);
             if (!ec) {
                 std::string mux_err;
@@ -1124,13 +1180,10 @@ void DownloadSession::assemble_file() {
         lm_str = last_modified_;
     }
     if (!lm_str.empty()) {
-        std::tm tm{};
-        if (strptime(lm_str.c_str(), "%a, %d %b %Y %H:%M:%S GMT", &tm) != nullptr) {
-            time_t t = timegm(&tm);
-            if (t != -1) {
-                auto ftime = std::chrono::file_clock::from_sys(std::chrono::system_clock::from_time_t(t));
-                std::filesystem::last_write_time(dest_path, ftime, ec);
-            }
+        time_t t = curl_getdate(lm_str.c_str(), nullptr);
+        if (t != -1) {
+            auto ftime = std::chrono::file_clock::from_sys(std::chrono::system_clock::from_time_t(t));
+            std::filesystem::last_write_time(dest_path, ftime, ec);
         }
     }
 
@@ -1180,8 +1233,11 @@ DownloadProgress DownloadSession::get_progress() const {
     p.status = status_.load();
     p.total_size = total_size_.load();
     p.downloaded_bytes = chunk_manager_.get_total_downloaded_bytes();
-    p.speed_bytes_per_sec = current_speed_.load();
-    p.eta_seconds = eta_seconds_.load();
+    // While a stop/pause is pending, worker threads may still be winding down;
+    // report zero speed so the UI reflects the user's action immediately.
+    const bool halting = pause_requested_.load() || stop_requested_.load();
+    p.speed_bytes_per_sec = halting ? 0 : current_speed_.load();
+    p.eta_seconds = halting ? 0 : eta_seconds_.load();
     {
         std::lock_guard<std::mutex> lock(meta_mutex_);
         p.error_message = last_error_;

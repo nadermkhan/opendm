@@ -10,6 +10,10 @@
 #include <functional>
 #include <map>
 
+#ifdef ERROR
+#undef ERROR
+#endif
+
 namespace opendm {
 
 enum class SessionStatus {
@@ -68,6 +72,12 @@ public:
     void cancel();
     bool redownload();
 
+    // Non-blocking: signal all threads to abort without joining them.
+    // If `permanent` is true the session can never be started again (used when
+    // the session is being removed from the list).
+    void request_stop(bool permanent = false);
+    bool is_disposed() const { return disposed_.load(); }
+
     // Query status
     std::string get_id() const { return id_; }
     std::string get_url() const { return url_; }
@@ -110,6 +120,8 @@ private:
     void dynamic_split_loop();
     void assemble_file();
     void update_speed_and_eta();
+    // Signals stop and joins all threads (caller must hold lifecycle_mutex_).
+    void stop_and_join_locked();
 
     std::string resolve_user_agent_for_url(const std::string& target_url) const;
     static bool is_googlevideo_url(const std::string& target_url);
@@ -134,6 +146,7 @@ private:
     std::atomic<SessionStatus> status_{SessionStatus::IDLE};
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> pause_requested_{false};
+    std::atomic<bool> disposed_{false};
 
     size_t max_connections_{8};
     std::atomic<bool> supports_ranges_{false};

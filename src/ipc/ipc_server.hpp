@@ -5,9 +5,15 @@
 #include <atomic>
 #include <functional>
 #include <memory>
-
 #include <vector>
 #include <mutex>
+
+#ifdef _WIN32
+#include <windows.h>
+#ifdef ERROR
+#undef ERROR
+#endif
+#endif
 
 namespace opendm {
 
@@ -36,7 +42,11 @@ using DownloadPromptCallback = std::function<void(const DownloadPromptInfo& info
 
 class IpcServer {
 public:
+#ifdef _WIN32
+    static constexpr const char* DEFAULT_SOCKET_PATH = "\\\\.\\pipe\\opendm_pipe";
+#else
     static constexpr const char* DEFAULT_SOCKET_PATH = "/tmp/opendm.sock";
+#endif
 
     explicit IpcServer(const std::string& socket_path = DEFAULT_SOCKET_PATH);
     ~IpcServer();
@@ -48,7 +58,7 @@ public:
     void set_gui_mode(bool gui_mode);
     void set_download_prompt_callback(DownloadPromptCallback cb);
 
-    // Send a command to a running OpenDM instance via UNIX socket (client mode)
+    // Send a command to a running OpenDM instance via UNIX socket / Named Pipe (client mode)
     static std::string send_command(const std::string& json_request,
                                     const std::string& socket_path = DEFAULT_SOCKET_PATH);
 
@@ -57,7 +67,11 @@ private:
     std::string handle_request(const std::string& request);
 
     std::string socket_path_;
+#ifdef _WIN32
+    HANDLE stop_event_{nullptr};
+#else
     int server_fd_{-1};
+#endif
     std::atomic<bool> running_{false};
     std::atomic<bool> gui_mode_{true};
     std::thread server_thread_;
@@ -95,4 +109,3 @@ struct YouTubeVideoInfo;
 std::string build_youtube_extract_json(const YouTubeVideoInfo& info);
 
 } // namespace opendm
-

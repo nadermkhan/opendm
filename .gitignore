@@ -35,3 +35,6 @@ data/extracted_icons/
 data/toolbar_icons/
 opencode.json
 
+*.bin
+test_*.m4a
+test_*.mp4

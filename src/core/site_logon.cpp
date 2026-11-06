@@ -39,9 +39,27 @@ SiteLogonManager::SiteLogonManager() {
 }
 
 std::string SiteLogonManager::default_config_path() const {
+#ifdef _WIN32
+    const char* appdata = getenv("APPDATA");
+    if (appdata) {
+        std::string p = std::string(appdata) + "/OpenDM";
+        std::error_code ec;
+        std::filesystem::create_directories(p, ec);
+        return (std::filesystem::path(p) / "site_logins.json").string();
+    }
+    const char* up = getenv("USERPROFILE");
+    if (up) {
+        std::string p = std::string(up) + "/.opendm";
+        std::error_code ec;
+        std::filesystem::create_directories(p, ec);
+        return (std::filesystem::path(p) / "site_logins.json").string();
+    }
+    return "site_logins.json";
+#else
     const char* home = getenv("HOME");
     std::string base = home ? home : "/home/nader";
     return (std::filesystem::path(base) / ".config" / "opendm" / "site_logins.json").string();
+#endif
 }
 
 void SiteLogonManager::set_credential(const SiteCredential& cred) {

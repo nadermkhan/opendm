@@ -3,10 +3,18 @@
 #include "../core/media_muxer.hpp"
 #include "../core/site_logon.hpp"
 #include "../core/youtube_engine.hpp"
+
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#include <shlobj.h>
+#else
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include <fcntl.h>
+#endif
+
 #include <iostream>
 #include <sstream>
 #include <cstring>
@@ -48,6 +56,22 @@ std::string extract_json_field(const std::string& json, const std::string& field
         while (!val.empty() && (val.back() == ' ' || val.back() == '\t')) val.pop_back();
         return val;
     }
+}
+
+std::string get_default_downloads_folder() {
+#ifdef _WIN32
+    PWSTR pPath = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &pPath))) {
+        std::wstring ws(pPath);
+        CoTaskMemFree(pPath);
+        return std::string(ws.begin(), ws.end());
+    }
+    const char* up = getenv("USERPROFILE");
+    if (up) return (std::filesystem::path(up) / "Downloads").string();
+    return "Downloads";
+#else
+    return (std::filesystem::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string();
+#endif
 }
 
 } // namespace
@@ -364,7 +388,15 @@ std::string sanitize_media_filename(const std::string& title, const std::string&
     return clean;
 }
 
-IpcServer::IpcServer(const std::string& socket_path) : socket_path_(socket_path) {}
+IpcServer::IpcServer(const std::string& socket_path) : socket_path_(socket_path) {
+#ifdef _WIN32
+    if (socket_path_.rfind("\\\\.\\pipe\\", 0) != 0) {
+        std::string stem = std::filesystem::path(socket_path_).stem().string();
+        if (stem.empty()) stem = "opendm_pipe";
+        socket_path_ = "\\\\.\\pipe\\" + stem;
+    }
+#endif
+}
 
 IpcServer::~IpcServer() {
     stop();
@@ -373,6 +405,12 @@ IpcServer::~IpcServer() {
 bool IpcServer::start() {
     if (running_) return true;
 
+#ifdef _WIN32
+    stop_event_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    running_ = true;
+    server_thread_ = std::thread(&IpcServer::server_loop, this);
+    return true;
+#else
     // Unlink old socket file if it exists
     unlink(socket_path_.c_str());
 
@@ -404,12 +442,30 @@ bool IpcServer::start() {
     running_ = true;
     server_thread_ = std::thread(&IpcServer::server_loop, this);
     return true;
+#endif
 }
 
 void IpcServer::stop() {
     if (!running_) return;
 
     running_ = false;
+#ifdef _WIN32
+    if (stop_event_) {
+        SetEvent(stop_event_);
+    }
+    std::wstring wpipe(socket_path_.begin(), socket_path_.end());
+    DWORD bytesRead = 0;
+    char buf[16] = {0};
+    CallNamedPipeW(wpipe.c_str(), (LPVOID)"\n", 1, buf, sizeof(buf), &bytesRead, 50);
+
+    if (server_thread_.joinable()) {
+        server_thread_.join();
+    }
+    if (stop_event_) {
+        CloseHandle(stop_event_);
+        stop_event_ = nullptr;
+    }
+#else
     if (server_fd_ >= 0) {
         // Shutdown server socket to unblock accept()
         shutdown(server_fd_, SHUT_RDWR);
@@ -422,6 +478,7 @@ void IpcServer::stop() {
     }
 
     unlink(socket_path_.c_str());
+#endif
 }
 
 bool IpcServer::is_running() const {
@@ -429,6 +486,51 @@ bool IpcServer::is_running() const {
 }
 
 void IpcServer::server_loop() {
+#ifdef _WIN32
+    std::wstring wpipe(socket_path_.begin(), socket_path_.end());
+    while (running_) {
+        HANDLE hPipe = CreateNamedPipeW(
+            wpipe.c_str(),
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+            PIPE_UNLIMITED_INSTANCES,
+            16384, 16384, 1000, nullptr
+        );
+        if (hPipe == INVALID_HANDLE_VALUE) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+
+        BOOL connected = ConnectNamedPipe(hPipe, nullptr) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
+        if (connected && running_) {
+            std::string request;
+            char buffer[16384];
+            DWORD bytesRead = 0;
+            BOOL readOk = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
+            if (readOk || GetLastError() == ERROR_MORE_DATA) {
+                buffer[bytesRead] = '\0';
+                request.append(buffer, bytesRead);
+                while (!readOk && GetLastError() == ERROR_MORE_DATA) {
+                    readOk = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
+                    if (bytesRead > 0) {
+                        buffer[bytesRead] = '\0';
+                        request.append(buffer, bytesRead);
+                    }
+                }
+            }
+
+            if (!request.empty()) {
+                std::string response = handle_request(request) + "\n";
+                DWORD bytesWritten = 0;
+                WriteFile(hPipe, response.c_str(), static_cast<DWORD>(response.length()), &bytesWritten, nullptr);
+                FlushFileBuffers(hPipe);
+            }
+        }
+
+        DisconnectNamedPipe(hPipe);
+        CloseHandle(hPipe);
+    }
+#else
     while (running_) {
         struct sockaddr_un client_addr;
         socklen_t client_len = sizeof(client_addr);
@@ -457,6 +559,7 @@ void IpcServer::server_loop() {
         (void)write(client_fd, response.c_str(), response.length());
         close(client_fd);
     }
+#endif
 }
 
 void IpcServer::set_gui_mode(bool gui_mode) {
@@ -881,7 +984,7 @@ std::string IpcServer::handle_request(const std::string& request) {
                 std::cout << "OpenDM IPC: Intercepted download from browser, prompting user: " << url << " (" << filename << ", size: " << file_size << ")" << std::endl;
                 return "{\"status\": \"prompting\", \"filename\": \"" + filename + "\"}";
             } else {
-                std::string path = (std::filesystem::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string();
+                std::string path = get_default_downloads_folder();
                 std::string dest_file = path + "/" + filename;
                 static uint64_t counter = 1;
                 std::string id = "ext_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
@@ -971,7 +1074,7 @@ std::string IpcServer::handle_request(const std::string& request) {
         }
 
         if (path.empty()) {
-            path = (std::filesystem::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string();
+            path = get_default_downloads_folder();
         }
 
         std::string dest_file = path + "/" + filename;
@@ -1090,6 +1193,45 @@ std::string IpcServer::handle_request(const std::string& request) {
 }
 
 std::string IpcServer::send_command(const std::string& json_request, const std::string& socket_path) {
+#ifdef _WIN32
+    std::string pipe_name = socket_path;
+    if (pipe_name.rfind("\\\\.\\pipe\\", 0) != 0) {
+        std::string stem = std::filesystem::path(pipe_name).stem().string();
+        if (stem.empty()) stem = "opendm_pipe";
+        pipe_name = "\\\\.\\pipe\\" + stem;
+    }
+
+    std::wstring wpipe(pipe_name.begin(), pipe_name.end());
+    std::string req = json_request + "\n";
+    char buffer[16384] = {0};
+    DWORD bytesRead = 0;
+
+    BOOL ok = FALSE;
+    for (int retry = 0; retry < 15; ++retry) {
+        ok = CallNamedPipeW(
+            wpipe.c_str(),
+            (LPVOID)req.c_str(),
+            static_cast<DWORD>(req.length()),
+            buffer,
+            sizeof(buffer) - 1,
+            &bytesRead,
+            2000
+        );
+        if (ok) break;
+        if (GetLastError() == ERROR_PIPE_BUSY) {
+            WaitNamedPipeW(wpipe.c_str(), 500);
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+
+    if (!ok) {
+        return "{\"status\": \"error\", \"message\": \"Could not connect to OpenDM socket\"}";
+    }
+
+    buffer[bytesRead] = '\0';
+    return std::string(buffer, bytesRead);
+#else
     int client_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (client_fd < 0) {
         return "{\"status\": \"error\", \"message\": \"Failed to create client socket\"}";
@@ -1119,6 +1261,7 @@ std::string IpcServer::send_command(const std::string& json_request, const std::
 
     close(client_fd);
     return response;
+#endif
 }
 
 } // namespace opendm

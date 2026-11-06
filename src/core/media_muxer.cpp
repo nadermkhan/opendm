@@ -8,8 +8,13 @@
 #include <filesystem>
 #include <mutex>
 #include <sstream>
+#ifdef _WIN32
+#include <windows.h>
+#include <shlwapi.h>
+#else
 #include <unistd.h>
 #include <sys/wait.h>
+#endif
 
 namespace opendm {
 
@@ -48,6 +53,18 @@ inline void write_be64(uint8_t* p, uint64_t v) {
 }
 
 static std::string escape_shell_arg(const std::string& arg) {
+#ifdef _WIN32
+    std::string escaped = "\"";
+    for (char c : arg) {
+        if (c == '"') {
+            escaped += "\\\"";
+        } else {
+            escaped += c;
+        }
+    }
+    escaped += "\"";
+    return escaped;
+#else
     std::string escaped = "'";
     for (char c : arg) {
         if (c == '\'') {
@@ -58,6 +75,7 @@ static std::string escape_shell_arg(const std::string& arg) {
     }
     escaped += "'";
     return escaped;
+#endif
 }
 
 struct ChildBox {
@@ -112,6 +130,28 @@ std::string MediaMuxer::find_ffmpeg() {
     }
     s_checked = true;
 
+#ifdef _WIN32
+    wchar_t exe_path[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, exe_path, MAX_PATH) > 0) {
+        PathRemoveFileSpecW(exe_path);
+        std::wstring p = std::wstring(exe_path) + L"\\ffmpeg.exe";
+        if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            s_cached_path = std::string(p.begin(), p.end());
+            return s_cached_path;
+        }
+    }
+    wchar_t sp_buf[MAX_PATH] = {0};
+    if (SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, sp_buf, nullptr) > 0) {
+        std::wstring ws(sp_buf);
+        s_cached_path = std::string(ws.begin(), ws.end());
+        return s_cached_path;
+    }
+    if (system("where ffmpeg >nul 2>nul") == 0) {
+        s_cached_path = "ffmpeg";
+        return s_cached_path;
+    }
+    return "";
+#else
     const char* home = getenv("HOME");
     std::vector<std::string> search_paths = {
         home ? std::string(home) + "/.local/bin/ffmpeg" : "",
@@ -139,6 +179,7 @@ std::string MediaMuxer::find_ffmpeg() {
         }
     }
     return "";
+#endif
 }
 
 std::vector<MediaMuxer::BoxInfo> MediaMuxer::scan_mp4_boxes(const std::string& file_path) {
@@ -477,23 +518,23 @@ bool MediaMuxer::defragment_mp4_if_needed(
     for (const auto& c : moov_children) {
         if (c.type == "mvhd") {
             new_moov_payload.insert(new_moov_payload.end(),
-                                    &moov_payload[c.offset],
-                                    &moov_payload[c.offset + c.size]);
+                                    moov_payload.data() + c.offset,
+                                    moov_payload.data() + c.offset + c.size);
         } else if (c.type == "trak") {
             std::vector<uint8_t> trak_payload;
             auto trak_ch = parse_children(moov_payload.data(), c.payload_offset, c.offset + c.size);
             for (const auto& tc : trak_ch) {
                 if (tc.type != "mdia") {
                     trak_payload.insert(trak_payload.end(),
-                                        &moov_payload[tc.offset],
-                                        &moov_payload[tc.offset + tc.size]);
+                                        moov_payload.data() + tc.offset,
+                                        moov_payload.data() + tc.offset + tc.size);
                     continue;
                 }
                 std::vector<uint8_t> mdia_payload;
                 auto mdia_ch = parse_children(moov_payload.data(), tc.payload_offset, tc.offset + tc.size);
                 for (const auto& mc : mdia_ch) {
                     if (mc.type == "mdhd" && mc.payload_size >= 20) {
-                        std::vector<uint8_t> mdhd_data(&moov_payload[mc.offset], &moov_payload[mc.offset + mc.size]);
+                        std::vector<uint8_t> mdhd_data(moov_payload.data() + mc.offset, moov_payload.data() + mc.offset + mc.size);
                         uint8_t ver = mdhd_data[8];
                         if (ver == 0 && mdhd_data.size() >= 28) {
                             write_be32(&mdhd_data[24], static_cast<uint32_t>(total_media_ticks));
@@ -505,8 +546,8 @@ bool MediaMuxer::defragment_mp4_if_needed(
                     }
                     if (mc.type != "minf") {
                         mdia_payload.insert(mdia_payload.end(),
-                                            &moov_payload[mc.offset],
-                                            &moov_payload[mc.offset + mc.size]);
+                                            moov_payload.data() + mc.offset,
+                                            moov_payload.data() + mc.offset + mc.size);
                         continue;
                     }
                     std::vector<uint8_t> minf_payload;
@@ -514,8 +555,8 @@ bool MediaMuxer::defragment_mp4_if_needed(
                     for (const auto& mfc : minf_ch) {
                         if (mfc.type != "stbl") {
                             minf_payload.insert(minf_payload.end(),
-                                                &moov_payload[mfc.offset],
-                                                &moov_payload[mfc.offset + mfc.size]);
+                                                moov_payload.data() + mfc.offset,
+                                                moov_payload.data() + mfc.offset + mfc.size);
                             continue;
                         }
                         std::vector<uint8_t> stbl_payload;
@@ -523,8 +564,8 @@ bool MediaMuxer::defragment_mp4_if_needed(
                         for (const auto& sc : stbl_ch) {
                             if (sc.type == "stsd") {
                                 stbl_payload.insert(stbl_payload.end(),
-                                                    &moov_payload[sc.offset],
-                                                    &moov_payload[sc.offset + sc.size]);
+                                                    moov_payload.data() + sc.offset,
+                                                    moov_payload.data() + sc.offset + sc.size);
                             }
                         }
                         append_box(stbl_payload, "stts", stts_payload);
@@ -563,7 +604,7 @@ bool MediaMuxer::defragment_mp4_if_needed(
     auto top_ch = parse_children(new_moov.data(), 8, new_moov.size());
     for (const auto& tc : top_ch) {
         if (tc.type == "trak") {
-            std::vector<uint8_t> trak_vec(&new_moov[tc.offset], &new_moov[tc.offset + tc.size]);
+            std::vector<uint8_t> trak_vec(new_moov.data() + tc.offset, new_moov.data() + tc.offset + tc.size);
             rewrite_stco_co64(trak_vec, 0, mdat_payload_offset);
             std::memcpy(&new_moov[tc.offset], trak_vec.data(), trak_vec.size());
         }
@@ -608,6 +649,30 @@ bool MediaMuxer::defragment_mp4_if_needed(
     return true;
 }
 
+#ifdef _WIN32
+static bool run_process_hidden(const std::wstring& cmd_line) {
+    STARTUPINFOW si = {sizeof(si)};
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi = {};
+
+    std::vector<wchar_t> cmd_buf(cmd_line.begin(), cmd_line.end());
+    cmd_buf.push_back(L'\0');
+
+    if (!CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, FALSE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        return false;
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(pi.hProcess, &exit_code);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return (exit_code == 0);
+}
+#endif
+
 bool MediaMuxer::try_external_ffmpeg(
     const std::string& video_file,
     const std::string& audio_file,
@@ -636,11 +701,52 @@ bool MediaMuxer::try_external_ffmpeg(
         extra_flags += " -f mp4";
     }
 
+#ifdef _WIN32
+    auto to_w = [](const std::string& s) { return std::wstring(s.begin(), s.end()); };
+    std::wstring w_ffmpeg = to_w(escape_shell_arg(ffmpeg_bin));
+    std::wstring w_vid = to_w(escape_shell_arg(video_file));
+    std::wstring w_aud = to_w(escape_shell_arg(audio_file));
+    std::wstring w_out = to_w(escape_shell_arg(output_file));
+    std::wstring w_extra = to_w(extra_flags);
+
+    std::wstring wcmd = w_ffmpeg + L" -y -loglevel error -i " +
+                        w_vid + L" -i " + w_aud +
+                        L" -map 0:v:0 -map 1:a:0 -c copy" + w_extra + L" " +
+                        w_out;
+
+    if (run_process_hidden(wcmd) && fs::exists(output_file, ec) && fs::file_size(output_file, ec) > 0) {
+        if (progress_cb) progress_cb(100.0);
+        return true;
+    }
+
+    std::string fallback_flags;
+    if (ext == ".webm") {
+        fallback_flags = "-c:v copy -c:a libopus";
+    } else if (ext == ".mkv") {
+        fallback_flags = "-c:v copy -c:a aac";
+    } else {
+        fallback_flags = "-c:v copy -c:a aac -movflags +faststart";
+    }
+
+    std::wstring w_fb = to_w(fallback_flags);
+    std::wstring wcmd2 = w_ffmpeg + L" -y -loglevel error -i " +
+                         w_vid + L" -i " + w_aud +
+                         L" -map 0:v:0 -map 1:a:0 " + w_fb + L" " +
+                         w_out;
+
+    if (run_process_hidden(wcmd2) && fs::exists(output_file, ec) && fs::file_size(output_file, ec) > 0) {
+        if (progress_cb) progress_cb(100.0);
+        return true;
+    }
+
+    return false;
+#else
     // Attempt 1: Pure lossless stream copy of both video and audio
+    std::string null_dev = " >/dev/null 2>&1";
     std::string cmd = escape_shell_arg(ffmpeg_bin) + " -y -loglevel error -i " +
                       escape_shell_arg(video_file) + " -i " + escape_shell_arg(audio_file) +
                       " -map 0:v:0 -map 1:a:0 -c copy" + extra_flags + " " +
-                      escape_shell_arg(output_file) + " >/dev/null 2>&1";
+                      escape_shell_arg(output_file) + null_dev;
 
     if (system(cmd.c_str()) == 0 && fs::exists(output_file, ec) && fs::file_size(output_file, ec) > 0) {
         if (progress_cb) progress_cb(100.0);
@@ -653,7 +759,7 @@ bool MediaMuxer::try_external_ffmpeg(
     std::string cmd2 = escape_shell_arg(ffmpeg_bin) + " -y -loglevel error -i " +
                        escape_shell_arg(video_file) + " -i " + escape_shell_arg(audio_file) +
                        " -map 0:v:0 -map 1:a:0 " + fallback_flags + " " +
-                       escape_shell_arg(output_file) + " >/dev/null 2>&1";
+                       escape_shell_arg(output_file) + null_dev;
 
     if (system(cmd2.c_str()) == 0 && fs::exists(output_file, ec) && fs::file_size(output_file, ec) > 0) {
         if (progress_cb) progress_cb(100.0);
@@ -661,6 +767,7 @@ bool MediaMuxer::try_external_ffmpeg(
     }
 
     return false;
+#endif
 }
 
 bool MediaMuxer::mux_mp4_and_mp4(
@@ -740,14 +847,14 @@ bool MediaMuxer::mux_mp4_and_mp4(
     std::vector<uint8_t> v_trak, v_mvhd, a_trak;
     for (const auto& c : parse_children(v_moov_data.data(), 0, v_moov_data.size())) {
         if (c.type == "mvhd" && v_mvhd.empty()) {
-            v_mvhd.assign(&v_moov_data[c.offset], &v_moov_data[c.offset + c.size]);
+            v_mvhd.assign(v_moov_data.data() + c.offset, v_moov_data.data() + c.offset + c.size);
         } else if (c.type == "trak" && v_trak.empty()) {
-            v_trak.assign(&v_moov_data[c.offset], &v_moov_data[c.offset + c.size]);
+            v_trak.assign(v_moov_data.data() + c.offset, v_moov_data.data() + c.offset + c.size);
         }
     }
     for (const auto& c : parse_children(a_moov_data.data(), 0, a_moov_data.size())) {
         if (c.type == "trak" && a_trak.empty()) {
-            a_trak.assign(&a_moov_data[c.offset], &a_moov_data[c.offset + c.size]);
+            a_trak.assign(a_moov_data.data() + c.offset, a_moov_data.data() + c.offset + c.size);
         }
     }
 
@@ -937,10 +1044,30 @@ bool MediaMuxer::convert_ts_to_mp4(
 
     std::string ffmpeg_bin = find_ffmpeg();
     if (!ffmpeg_bin.empty()) {
+#ifdef _WIN32
+        auto to_w = [](const std::string& s) { return std::wstring(s.begin(), s.end()); };
+        std::wstring w_ffmpeg = to_w(escape_shell_arg(ffmpeg_bin));
+        std::wstring w_ts = to_w(escape_shell_arg(ts_file));
+        std::wstring w_out = to_w(escape_shell_arg(output_file));
+
+        std::wstring wcmd = w_ffmpeg + L" -y -loglevel error -i " + w_ts +
+                            L" -c copy -bsf:a aac_adtstoasc -movflags +faststart " + w_out;
+        if (run_process_hidden(wcmd) && std::filesystem::exists(output_file)) {
+            if (progress_cb) progress_cb(100.0);
+            return true;
+        }
+        std::wstring wcmd2 = w_ffmpeg + L" -y -loglevel error -i " + w_ts +
+                             L" -c copy -movflags +faststart " + w_out;
+        if (run_process_hidden(wcmd2) && std::filesystem::exists(output_file)) {
+            if (progress_cb) progress_cb(100.0);
+            return true;
+        }
+#else
+        std::string null_dev = " >/dev/null 2>&1";
         std::string cmd = escape_shell_arg(ffmpeg_bin) + " -y -loglevel error -i " +
                           escape_shell_arg(ts_file) +
                           " -c copy -bsf:a aac_adtstoasc -movflags +faststart " +
-                          escape_shell_arg(output_file) + " >/dev/null 2>&1";
+                          escape_shell_arg(output_file) + null_dev;
         if (system(cmd.c_str()) == 0) {
             if (progress_cb) progress_cb(100.0);
             return true;
@@ -948,11 +1075,12 @@ bool MediaMuxer::convert_ts_to_mp4(
         // Fallback without aac_adtstoasc for non-AAC audio tracks (e.g. MP3/AC3/Opus in TS)
         std::string cmd2 = escape_shell_arg(ffmpeg_bin) + " -y -loglevel error -i " +
                            escape_shell_arg(ts_file) + " -c copy -movflags +faststart " +
-                           escape_shell_arg(output_file) + " >/dev/null 2>&1";
+                           escape_shell_arg(output_file) + null_dev;
         if (system(cmd2.c_str()) == 0) {
             if (progress_cb) progress_cb(100.0);
             return true;
         }
+#endif
     }
 
     if (out_error) *out_error = "TS to MP4 conversion requires ffmpeg";

@@ -5,12 +5,29 @@
 #include "core/youtube_engine.hpp"
 #include "cli/cli_parser.hpp"
 #include "ipc/ipc_server.hpp"
+
+#ifdef _WIN32
+#include <windows.h>
+#include <commctrl.h>
+#ifdef ERROR
+#undef ERROR
+#endif
+#include "ui_win32/win32_main_window.hpp"
+#include "ui_win32/win32_about_dialog.hpp"
+#include "ui_win32/win32_download_info_dialog.hpp"
+#include "ui_win32/win32_progress_dialog.hpp"
+#include "ui_win32/dpi_helper.hpp"
+#include "ui_win32/win32_assets.hpp"
+#include "ui_win32/resource.h"
+#else
 #include "ui/main_window.hpp"
 #include "ui/about_dialog.hpp"
 #include "ui/download_info_dialog.hpp"
 #include "ui/progress_dialog.hpp"
-#include <curl/curl.h>
 #include <gtk/gtk.h>
+#endif
+
+#include <curl/curl.h>
 #include <iostream>
 #include <chrono>
 #include <thread>
@@ -205,7 +222,158 @@ int main(int argc, char* argv[]) {
             }
         }
     } else {
-        // GTK4 GUI Mode
+#ifdef _WIN32
+        // Win32 API GUI Mode with Common Controls v6 & DPI v2
+        opendm::win32::DpiHelper::init_dpi_awareness();
+
+        INITCOMMONCONTROLSEX iccex = {sizeof(INITCOMMONCONTROLSEX)};
+        iccex.dwICC = ICC_WIN95_CLASSES | ICC_COOL_CLASSES | ICC_BAR_CLASSES |
+                      ICC_USEREX_CLASSES | ICC_PROGRESS_CLASS | ICC_TAB_CLASSES |
+                      ICC_TREEVIEW_CLASSES | ICC_LISTVIEW_CLASSES;
+        InitCommonControlsEx(&iccex);
+
+        opendm::win32::Win32Assets::init_gdiplus();
+
+        auto main_win = std::make_unique<opendm::win32::Win32MainWindow>(GetModuleHandleW(nullptr));
+        main_win->present();
+
+        ipc_server.set_download_prompt_callback([win = main_win.get()](const opendm::DownloadPromptInfo& info) {
+            // Invoked on the IPC server thread: marshal to the UI thread. Creating
+            // windows / modal dialogs from a worker thread freezes and crashes Win32.
+            win->post_prompt_download(info);
+        });
+
+        if (opts.start_queue) {
+            opendm::QueueManager::instance().get_main_queue().start_queue();
+        }
+
+        if (opts.speed_limit_kb > 0) {
+            opendm::QueueManager::instance().enable_global_speed_limit(true);
+            opendm::QueueManager::instance().set_global_speed_limit(opts.speed_limit_kb * 1024);
+        }
+
+        // Demo progress screenshot
+        if (opts.url == "demo_progress" && !opts.screenshot_path.empty()) {
+            std::string json_state = R"({
+                "id": "demo_prog",
+                "url": "https://www.internetdownloadmanager.com/video2/idm.ogv",
+                "destination_path": "idm.ogv",
+                "filename": "idm.ogv",
+                "category": "Video",
+                "total_size": 18607144960,
+                "supports_ranges": true,
+                "status": 2,
+                "chunk_manager": {
+                    "total_file_size": 18607144960,
+                    "is_streaming": false,
+                    "next_chunk_id": 6,
+                    "chunks": [
+                        {"id": 0, "start_offset": 0, "end_offset": 3101190826, "downloaded_bytes": 671744000, "status": 1, "temp_filepath": ""},
+                        {"id": 1, "start_offset": 3101190827, "end_offset": 6202381653, "downloaded_bytes": 808895488, "status": 1, "temp_filepath": ""},
+                        {"id": 2, "start_offset": 6202381654, "end_offset": 9303572480, "downloaded_bytes": 656000000, "status": 1, "temp_filepath": ""},
+                        {"id": 3, "start_offset": 9303572481, "end_offset": 12404763307, "downloaded_bytes": 592000000, "status": 1, "temp_filepath": ""},
+                        {"id": 4, "start_offset": 12404763308, "end_offset": 15505954134, "downloaded_bytes": 464000000, "status": 1, "temp_filepath": ""},
+                        {"id": 5, "start_offset": 15505954135, "end_offset": 18607144959, "downloaded_bytes": 439999488, "status": 1, "temp_filepath": ""}
+                    ]
+                }
+            })";
+            auto mock_sess = opendm::DownloadSession::deserialize(json_state);
+            if (!mock_sess) {
+                mock_sess = std::make_shared<opendm::DownloadSession>("demo_prog", "https://www.internetdownloadmanager.com/video2/idm.ogv", "idm.ogv");
+            }
+            auto dlg = std::make_shared<opendm::win32::Win32ProgressDialog>(mock_sess, main_win->get_hwnd());
+            dlg->show();
+            UpdateWindow(dlg->get_hwnd());
+            dlg->save_snapshot(opts.screenshot_path);
+            opendm::win32::Win32Assets::shutdown_gdiplus();
+            opendm::QueueManager::instance().save_to_file();
+            ipc_server.stop();
+            curl_global_cleanup();
+            return 0;
+        }
+
+        // Add URL prompt / screenshot
+        if (!opts.url.empty() && !opts.screenshot_path.empty()) {
+            opendm::DownloadPromptInfo prompt_info;
+            prompt_info.url = opts.url;
+            prompt_info.filename = opts.filename.empty() ? "idm_al.zip" : opts.filename;
+            prompt_info.category = opendm::QueueManager::detect_category(prompt_info.filename);
+            prompt_info.file_size = 38656; // 37.75 KB
+
+            main_win->save_snapshot(opts.screenshot_path);
+            opendm::win32::Win32Assets::shutdown_gdiplus();
+            opendm::QueueManager::instance().save_to_file();
+            ipc_server.stop();
+            curl_global_cleanup();
+            return 0;
+        }
+
+        if (!opts.url.empty()) {
+            main_win->add_download_url(opts.url, opts.path, opts.filename, !opts.add_only);
+        }
+
+        if (opts.show_about || opts.show_appreciation) {
+            if (!opts.screenshot_path.empty()) {
+                opendm::win32::Win32AboutDialog::save_snapshot(main_win->get_hwnd(), opts.screenshot_path);
+                opendm::win32::Win32Assets::shutdown_gdiplus();
+                opendm::QueueManager::instance().save_to_file();
+                ipc_server.stop();
+                curl_global_cleanup();
+                return 0;
+            } else {
+                opendm::win32::Win32AboutDialog::show(main_win->get_hwnd());
+            }
+        }
+
+        if (!opts.screenshot_path.empty()) {
+            UpdateWindow(main_win->get_hwnd());
+            MSG pmsg;
+            for (int i = 0; i < 30 && PeekMessageW(&pmsg, nullptr, 0, 0, PM_REMOVE); ++i) {
+                TranslateMessage(&pmsg);
+                DispatchMessageW(&pmsg);
+            }
+            main_win->save_snapshot(opts.screenshot_path);
+            opendm::win32::Win32Assets::shutdown_gdiplus();
+            opendm::QueueManager::instance().save_to_file();
+            ipc_server.stop();
+            curl_global_cleanup();
+            return 0;
+        }
+
+        HACCEL hAccel = LoadAcceleratorsW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDR_MAIN_ACCEL));
+
+        MSG msg;
+        while (GetMessageW(&msg, nullptr, 0, 0)) {
+            if (opts.exit_after_download) {
+                auto sessions = opendm::QueueManager::instance().get_main_queue().get_all_sessions();
+                if (!sessions.empty()) {
+                    bool all_done = true;
+                    for (const auto& s : sessions) {
+                        auto st = s->get_status();
+                        if (st != opendm::SessionStatus::COMPLETED && st != opendm::SessionStatus::ERROR) {
+                            all_done = false;
+                            break;
+                        }
+                    }
+                    if (all_done) {
+                        break;
+                    }
+                }
+            }
+            // Only route keystrokes aimed at the main window (or its children) through
+            // the accelerator table; otherwise e.g. pressing Del inside a progress
+            // window would trigger "Delete download" in the main list.
+            HWND main_hwnd = main_win->get_hwnd();
+            bool for_main = (msg.hwnd == main_hwnd) || IsChild(main_hwnd, msg.hwnd);
+            if (!hAccel || !for_main || !TranslateAcceleratorW(main_hwnd, hAccel, &msg)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+
+        opendm::win32::Win32Assets::shutdown_gdiplus();
+#else
+        // GTK4 GUI Mode (Linux)
         GtkApplication* app = nullptr;
         if (!opts.screenshot_path.empty()) {
             app = gtk_application_new(nullptr, G_APPLICATION_NON_UNIQUE);
@@ -402,10 +570,13 @@ int main(int argc, char* argv[]) {
         char* empty_argv[] = {argv[0], nullptr};
         exit_code = g_application_run(G_APPLICATION(app), 1, empty_argv);
         g_object_unref(app);
+#endif
     }
 
     opendm::QueueManager::instance().save_to_file();
     ipc_server.stop();
+    // Let background session teardowns finish before libcurl is torn down
+    opendm::QueueManager::instance().wait_for_pending_teardowns();
     curl_global_cleanup();
     return exit_code;
 }

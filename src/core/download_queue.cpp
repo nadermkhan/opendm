@@ -64,13 +64,13 @@ void DownloadQueue::add_session(std::shared_ptr<DownloadSession> session, bool s
     }
 }
 
-bool DownloadQueue::remove_session(const std::string& session_id) {
+bool DownloadQueue::remove_session(const std::string& session_id, bool persist) {
     std::shared_ptr<DownloadSession> to_cancel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = std::find_if(items_.begin(), items_.end(),
             [&session_id](const std::shared_ptr<DownloadSession>& s) {
-                return s->get_id() == session_id;
+                return s && s->get_id() == session_id;
             });
         if (it == items_.end()) {
             return false;
@@ -80,10 +80,15 @@ bool DownloadQueue::remove_session(const std::string& session_id) {
     }
 
     if (to_cancel) {
-        to_cancel->cancel();
+        // Mark permanently stopped first so a concurrent scheduler tick cannot
+        // restart it, then join threads + delete temp files off the caller's thread.
+        to_cancel->request_stop(true);
+        QueueManager::instance().cancel_session_async(std::move(to_cancel));
     }
 
-    QueueManager::instance().save_to_file();
+    if (persist) {
+        QueueManager::instance().save_to_file();
+    }
 
     if (update_callback_) {
         update_callback_();
@@ -215,7 +220,11 @@ void DownloadQueue::check_schedule_triggers() {
     auto now = std::chrono::system_clock::now();
     std::time_t now_c = std::chrono::system_clock::to_time_t(now);
     std::tm now_tm;
+#ifdef _WIN32
+    localtime_s(&now_tm, &now_c);
+#else
     localtime_r(&now_c, &now_tm);
+#endif
 
     // Check Start Trigger
     if (cfg.start_hour >= 0 && cfg.start_minute >= 0) {
@@ -319,6 +328,42 @@ QueueManager::QueueManager() {
 
 DownloadQueue& QueueManager::get_main_queue() {
     return *main_queue_;
+}
+
+void QueueManager::cancel_session_async(std::shared_ptr<DownloadSession> session) {
+    if (!session) return;
+    session->request_stop(false); // never clears a permanent (disposed) flag
+
+    std::lock_guard<std::mutex> lock(teardown_mutex_);
+    // Drop futures of teardowns that already finished
+    teardowns_.erase(std::remove_if(teardowns_.begin(), teardowns_.end(),
+        [](std::future<void>& f) {
+            return !f.valid() || f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+        }), teardowns_.end());
+
+    try {
+        teardowns_.push_back(std::async(std::launch::async, [s = session]() mutable {
+            try {
+                s->cancel();
+            } catch (...) {
+            }
+            s.reset(); // last reference may be released here, off the UI thread
+        }));
+    } catch (...) {
+        // Could not spawn a thread: fall back to synchronous teardown
+        if (session) session->cancel();
+    }
+}
+
+void QueueManager::wait_for_pending_teardowns() {
+    std::vector<std::future<void>> pending;
+    {
+        std::lock_guard<std::mutex> lock(teardown_mutex_);
+        pending.swap(teardowns_);
+    }
+    for (auto& f : pending) {
+        if (f.valid()) f.wait();
+    }
 }
 
 std::shared_ptr<DownloadQueue> QueueManager::create_queue(const std::string& name, size_t max_concurrent) {
@@ -431,9 +476,27 @@ uint64_t QueueManager::get_global_speed_limit() const {
 }
 
 std::string QueueManager::get_default_storage_path() {
+#ifdef _WIN32
+    const char* appdata = getenv("APPDATA");
+    if (appdata) {
+        std::string p = std::string(appdata) + "/OpenDM";
+        std::error_code ec;
+        std::filesystem::create_directories(p, ec);
+        return p + "/downloads.json";
+    }
+    const char* up = getenv("USERPROFILE");
+    if (up) {
+        std::string p = std::string(up) + "/.opendm";
+        std::error_code ec;
+        std::filesystem::create_directories(p, ec);
+        return p + "/downloads.json";
+    }
+    return "downloads.json";
+#else
     const char* home = getenv("HOME");
     std::string base = home ? home : "/home/nader";
     return base + "/.config/opendm/downloads.json";
+#endif
 }
 
 void QueueManager::set_storage_path(const std::string& path) {

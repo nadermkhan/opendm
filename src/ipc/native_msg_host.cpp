@@ -4,11 +4,19 @@
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <filesystem>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#include <shlwapi.h>
+#else
 #include <unistd.h>
 #include <fcntl.h>
-#include <filesystem>
 #include <sys/types.h>
 #include <sys/wait.h>
+#endif
 
 namespace opendm {
 
@@ -86,6 +94,26 @@ void ensure_opendm_running() {
         return; // Already running
     }
 
+#ifdef _WIN32
+    wchar_t host_path[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, host_path, MAX_PATH) > 0) {
+        PathRemoveFileSpecW(host_path);
+        std::wstring exe_path = std::wstring(host_path) + L"\\opendm.exe";
+        STARTUPINFOW si = {sizeof(si)};
+        PROCESS_INFORMATION pi = {};
+        if (CreateProcessW(exe_path.c_str(), nullptr, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+    }
+    for (int i = 0; i < 30; ++i) {
+        Sleep(100);
+        std::string check = IpcServer::send_command("{\"action\": \"ping\"}");
+        if (check.find("Could not connect") == std::string::npos) {
+            break;
+        }
+    }
+#else
     std::string opendm_bin = "opendm";
     const char* home = getenv("HOME");
     if (home) {
@@ -128,6 +156,7 @@ void ensure_opendm_running() {
             }
         }
     }
+#endif
 }
 
 } // namespace opendm
@@ -136,10 +165,18 @@ void ensure_opendm_running() {
 #include <csignal>
 
 int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    _setmode(_fileno(stdin), _O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+    const char* tmp = getenv("TEMP");
+    std::string log_file = (tmp ? tmp : ".") + std::string("/opendm_native_host.log");
+#else
     signal(SIGCHLD, SIG_IGN); // Prevent zombie processes
+    std::string log_file = "/tmp/opendm_native_host.log";
+#endif
     std::ios_base::sync_with_stdio(false);
 
-    std::ofstream log("/tmp/opendm_native_host.log", std::ios::app);
+    std::ofstream log(log_file, std::ios::app);
     log << "[NATIVE_HOST] Started. argc=" << argc << std::endl;
     for (int i = 0; i < argc; ++i) {
         log << "  argv[" << i << "] = " << argv[i] << std::endl;

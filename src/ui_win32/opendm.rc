@@ -1,0 +1,13 @@
+#include "resource.h"
+#include <windows.h>
+
+IDI_APP_ICON ICON "../../data/icons/opendm.ico"
+
+// Manifest for Common Controls v6 and PerMonitorV2
+1 24 "../../data/opendm.manifest"
+
+IDR_MAIN_ACCEL ACCELERATORS
+BEGIN
+    "N", IDM_TASKS_ADD_URL, VIRTKEY, CONTROL
+    VK_DELETE, IDM_FILE_DELETE, VIRTKEY
+END

@@ -72,8 +72,12 @@ CliOptions CliParser::parse(int argc, char* argv[]) {
 }
 
 void CliParser::print_help(const char* program_name) {
-    std::cout << "OpenDM - Linux High-Speed Download Accelerator\n"
-              << "Compatible with Internet Download Manager (IDM) CLI switches\n\n"
+#ifdef _WIN32
+    std::cout << "OpenDM - High-Speed Download Accelerator (Windows Win32 Common Controls v6 & DPI v2)\n";
+#else
+    std::cout << "OpenDM - Linux High-Speed Download Accelerator\n";
+#endif
+    std::cout << "Compatible with Internet Download Manager (IDM) CLI switches\n\n"
               << "Usage: " << program_name << " [OPTIONS] [URL]\n\n"
               << "Options:\n"
               << "  -d, /d <URL>             Download URL\n"
@@ -91,15 +95,20 @@ void CliParser::print_help(const char* program_name) {
               << "  -h, --help               Show this help message\n"
               << "  -v, --version            Display version information\n\n"
               << "Examples:\n"
-              << "  " << program_name << " -d https://example.com/file.iso -p ~/Downloads\n"
+              << "  " << program_name << " -d https://example.com/file.iso -p C:\\Downloads\n"
               << "  " << program_name << " -d https://example.com/video.mp4 -f clip.mp4 -c 16\n"
               << "  " << program_name << " -a -d https://example.com/archive.zip\n"
               << "  " << program_name << " -s\n";
 }
 
 void CliParser::print_version() {
+#ifdef _WIN32
+    std::cout << "OpenDM 1.0.0 (Windows x86_64, Win32 Common Controls v6 & DPI v2, libcurl)\n"
+              << "Engine: IDM 6.43.15 Algorithm Reimplementation\n";
+#else
     std::cout << "OpenDM 1.0.0 (Linux x86_64, GTK4, libcurl)\n"
               << "Engine: IDM 6.43.15 Algorithm Reimplementation\n";
+#endif
 }
 
 } // namespace opendm

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <functional>
 #include <chrono>
+#include <future>
 
 namespace opendm {
 
@@ -42,7 +43,10 @@ public:
 
     // Queue items
     void add_session(std::shared_ptr<DownloadSession> session, bool start_now = false);
-    bool remove_session(const std::string& session_id);
+    // Removes the session from the list. Its threads are stopped and its temp files
+    // deleted on a background thread, so this never blocks the caller.
+    // Set `persist` to false when removing many items, then call save_to_file() once.
+    bool remove_session(const std::string& session_id, bool persist = true);
     std::shared_ptr<DownloadSession> get_session(const std::string& session_id) const;
     std::vector<std::shared_ptr<DownloadSession>> get_all_sessions() const;
 
@@ -113,6 +117,12 @@ public:
     bool load_from_file(const std::string& filepath = "");
     void clear_all();
 
+    // Stops a session, joins its threads and deletes its temp files on a background
+    // thread. Safe to call from the UI thread: returns immediately.
+    void cancel_session_async(std::shared_ptr<DownloadSession> session);
+    // Blocks until every pending background teardown finished (call before exit).
+    void wait_for_pending_teardowns();
+
 private:
     QueueManager();
     ~QueueManager() = default;
@@ -124,6 +134,9 @@ private:
 
     bool global_limit_enabled_{false};
     uint64_t global_limit_bytes_per_sec_{0};
+
+    std::mutex teardown_mutex_;
+    std::vector<std::future<void>> teardowns_;
 };
 
 } // namespace opendm
