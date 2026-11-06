@@ -9,6 +9,7 @@
 [![Author: Nader Mahbub Khan](https://img.shields.io/badge/Author-Nader%20Mahbub%20Khan-blue?style=for-the-badge&logo=github)](https://github.com/nadermkhan)
 [![Platform: Windows & Linux](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg?style=for-the-badge)](#quick-start)
 [![Tests: 100% Passing](https://img.shields.io/badge/Tests-7%2F7%20Passed-brightgreen.svg?style=for-the-badge)](tests/)
+[![Release Workflow](https://img.shields.io/github/actions/workflow/status/nadermkhan/opendm/release.yml?style=for-the-badge&label=Release)](.github/workflows/release.yml)
 [![Zero Telemetry](https://img.shields.io/badge/Telemetry-0%25%20(None)-success.svg?style=for-the-badge)](SECURITY.md)
 
 **A high-performance, native C++20 recreation of Internet Download Manager (IDM) for Windows (Win32 API) and Linux (GTK4).**  
@@ -39,11 +40,17 @@ Contributions, bug reports, and forks are welcome!
 #### Main Interface
 ![OpenDM Windows Main Window](docs/screenshots/win32_main_window.png)
 
+#### Download File Info Dialog
+![OpenDM Windows Download File Info](docs/screenshots/win32_download_file_info.png)
+
 #### Download Progress & Multipart Connection Visualizer
 ![OpenDM Windows Download Progress](docs/screenshots/win32_download_progress.png)
 
 #### YouTube Adaptive Video & Audio Stream Selector
 ![OpenDM Windows YouTube Stream Options](docs/screenshots/win32_youtube_options.png)
+
+#### About Dialog
+![OpenDM Windows About Dialog](docs/screenshots/win32_about_dialog.png)
 
 ---
 

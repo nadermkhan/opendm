@@ -200,7 +200,10 @@ bool Win32AboutDialog::save_snapshot(HWND parent, const std::string& filename) {
     state.hFont = DpiHelper::create_font(9, FW_NORMAL, false, dpi);
     state.hFontBold = DpiHelper::create_font(9, FW_SEMIBOLD, false, dpi);
     state.hFontTitle = DpiHelper::create_font(13, FW_BOLD, false, dpi);
-    state.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    state.hIcon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, DpiHelper::scale(48, dpi), DpiHelper::scale(48, dpi), LR_DEFAULTCOLOR);
+    if (!state.hIcon) {
+        state.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    }
 
     static bool s_registered = false;
     const wchar_t* className = L"OpenDM_AboutDialog";
@@ -225,7 +228,62 @@ bool Win32AboutDialog::save_snapshot(HWND parent, const std::string& filename) {
         parent, nullptr, GetModuleHandleW(nullptr), &state
     );
 
+    int margin_x = DpiHelper::scale(20, dpi);
+    int icon_sz = DpiHelper::scale(48, dpi);
+
+    HWND hIcon = CreateWindowExW(0, L"STATIC", L"",
+        WS_CHILD | WS_VISIBLE | SS_ICON,
+        margin_x, DpiHelper::scale(24, dpi), icon_sz, icon_sz,
+        hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hIcon, STM_SETICON, (WPARAM)state.hIcon, 0);
+
+    int text_x = margin_x + icon_sz + DpiHelper::scale(16, dpi);
+    int text_w = dlg_w - text_x - margin_x - DpiHelper::scale(16, dpi);
+
+    HWND hTitle = CreateWindowExW(0, L"STATIC", L"OpenDM 1.0.0",
+        WS_CHILD | WS_VISIBLE,
+        text_x, DpiHelper::scale(22, dpi), text_w, DpiHelper::scale(26, dpi),
+        hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hTitle, WM_SETFONT, (WPARAM)state.hFontTitle, TRUE);
+
+    const wchar_t* desc =
+        L"High-Speed Multipart Download Accelerator\n"
+        L"Native Win32API recreation of IDM Architecture\n\n"
+        L"Created by Nader Mahbub Khan\n"
+        L"License: GNU GPL v3.0";
+    HWND hDesc = CreateWindowExW(0, L"STATIC", desc,
+        WS_CHILD | WS_VISIBLE,
+        text_x, DpiHelper::scale(52, dpi), text_w, DpiHelper::scale(80, dpi),
+        hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hDesc, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+
+    int btn_w = DpiHelper::scale(95, dpi);
+    int btn_h = DpiHelper::scale(26, dpi);
+    int btn_y = DpiHelper::scale(165, dpi);
+
+    HWND hBtnGithub = CreateWindowExW(0, L"BUTTON", L"GitHub...",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        text_x, btn_y, btn_w, btn_h,
+        hwnd, (HMENU)501, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hBtnGithub, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+
+    HWND hBtnOk = CreateWindowExW(0, L"BUTTON", L"OK",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+        dlg_w - margin_x - btn_w - DpiHelper::scale(16, dpi), btn_y, btn_w, btn_h,
+        hwnd, (HMENU)IDOK, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hBtnOk, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+
+    ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
+    for (int round = 0; round < 10; ++round) {
+        MSG pmsg;
+        while (PeekMessageW(&pmsg, nullptr, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&pmsg);
+            DispatchMessageW(&pmsg);
+        }
+        RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_ERASENOW);
+        Sleep(25);
+    }
 
     RECT rc;
     GetWindowRect(hwnd, &rc);
@@ -237,7 +295,7 @@ bool Win32AboutDialog::save_snapshot(HWND parent, const std::string& filename) {
     HBITMAP hBitmap = CreateCompatibleBitmap(hdcWin, w, h);
     HGDIOBJ hOld = SelectObject(hdcMem, hBitmap);
 
-    PrintWindow(hwnd, hdcMem, 2);
+    PrintWindow(hwnd, hdcMem, 0);
 
     Win32Assets::init_gdiplus();
     Gdiplus::Bitmap gdiBmp(hBitmap, nullptr);
@@ -251,6 +309,10 @@ bool Win32AboutDialog::save_snapshot(HWND parent, const std::string& filename) {
     DeleteDC(hdcMem);
     ReleaseDC(hwnd, hdcWin);
     DestroyWindow(hwnd);
+    if (state.hFont) DeleteObject(state.hFont);
+    if (state.hFontBold) DeleteObject(state.hFontBold);
+    if (state.hFontTitle) DeleteObject(state.hFontTitle);
+    if (state.hIcon) DestroyIcon(state.hIcon);
 
     return (st == Gdiplus::Ok);
 }

@@ -283,7 +283,15 @@ int main(int argc, char* argv[]) {
             }
             auto dlg = std::make_shared<opendm::win32::Win32ProgressDialog>(mock_sess, main_win->get_hwnd());
             dlg->show();
-            UpdateWindow(dlg->get_hwnd());
+            for (int round = 0; round < 10; ++round) {
+                MSG pmsg;
+                while (PeekMessageW(&pmsg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&pmsg);
+                    DispatchMessageW(&pmsg);
+                }
+                RedrawWindow(dlg->get_hwnd(), nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN | RDW_ERASENOW);
+                Sleep(25);
+            }
             dlg->save_snapshot(opts.screenshot_path);
             opendm::win32::Win32Assets::shutdown_gdiplus();
             opendm::QueueManager::instance().save_to_file();
@@ -300,7 +308,7 @@ int main(int argc, char* argv[]) {
             prompt_info.category = opendm::QueueManager::detect_category(prompt_info.filename);
             prompt_info.file_size = 38656; // 37.75 KB
 
-            main_win->save_snapshot(opts.screenshot_path);
+            opendm::win32::Win32DownloadInfoDialog::save_snapshot(main_win->get_hwnd(), prompt_info, opts.screenshot_path);
             opendm::win32::Win32Assets::shutdown_gdiplus();
             opendm::QueueManager::instance().save_to_file();
             ipc_server.stop();

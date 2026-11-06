@@ -22,6 +22,7 @@ struct DownloadInfoResult {
 class Win32DownloadInfoDialog {
 public:
     static DownloadInfoResult show(HWND parent, const DownloadPromptInfo& initial_info);
+    static bool save_snapshot(HWND parent, const DownloadPromptInfo& initial_info, const std::string& filename);
 };
 
 } // namespace win32

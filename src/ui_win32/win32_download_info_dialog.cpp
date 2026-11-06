@@ -4,6 +4,7 @@
 #include "../core/download_queue.hpp"
 #include <commctrl.h>
 #include <shlobj.h>
+#include <gdiplus.h>
 #include <curl/curl.h>
 #include <filesystem>
 #include <fstream>
@@ -11,6 +12,7 @@
 #include <iomanip>
 #include <thread>
 #include <atomic>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -461,6 +463,230 @@ DownloadInfoResult Win32DownloadInfoDialog::show(HWND parent, const DownloadProm
     if (state.hFontBold) DeleteObject(state.hFontBold);
 
     return state.result;
+}
+
+bool Win32DownloadInfoDialog::save_snapshot(HWND parent, const DownloadPromptInfo& initial_info, const std::string& filename) {
+    InfoDialogState state;
+    state.result.info = initial_info;
+
+    if (state.result.info.filename.empty()) {
+        state.result.info.filename = "download.bin";
+    }
+    if (state.result.info.category.empty()) {
+        state.result.info.category = QueueManager::detect_category(state.result.info.filename);
+    }
+    if (state.result.info.destination_dir.empty()) {
+        std::string root = get_default_downloads_dir();
+        state.result.info.destination_dir = (state.result.info.category == "General") ? root : (fs::path(root) / state.result.info.category).string();
+    }
+    if (state.result.info.save_as_path.empty()) {
+        state.result.info.save_as_path = (fs::path(state.result.info.destination_dir) / state.result.info.filename).string();
+    }
+
+    std::string ext = "";
+    size_t dot = state.result.info.filename.rfind('.');
+    if (dot != std::string::npos) {
+        ext = state.result.info.filename.substr(dot + 1);
+        for (char& c : ext) c = static_cast<char>(std::tolower(c));
+    }
+    bool is_zip = (ext == "zip" || state.result.info.is_archive);
+
+    UINT dpi = DpiHelper::get_dpi(parent);
+    state.hFont = DpiHelper::create_font(9, FW_NORMAL, false, dpi);
+    state.hFontBold = DpiHelper::create_font(9, FW_SEMIBOLD, false, dpi);
+
+    static bool s_registered = false;
+    const wchar_t* className = L"OpenDM_DownloadInfoDialog";
+    if (!s_registered) {
+        WNDCLASSEXW wc = {sizeof(WNDCLASSEXW)};
+        wc.lpfnWndProc = DownloadInfoWndProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = className;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        RegisterClassExW(&wc);
+        s_registered = true;
+    }
+
+    int dlg_w = DpiHelper::scale(580, dpi);
+    int dlg_h = DpiHelper::scale(330, dpi);
+    HWND hwnd = CreateWindowExW(
+        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        className, L"Download File Info",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        100, 100, dlg_w, dlg_h,
+        parent, nullptr, GetModuleHandleW(nullptr), &state
+    );
+
+    int margin_x = DpiHelper::scale(18, dpi);
+    int lbl_w = DpiHelper::scale(90, dpi);
+    int input_x = margin_x + lbl_w + DpiHelper::scale(8, dpi);
+    int input_w = dlg_w - input_x - margin_x - DpiHelper::scale(16, dpi);
+    int row_h = DpiHelper::scale(24, dpi);
+    int cur_y = DpiHelper::scale(16, dpi);
+
+    HWND hLblUrl = CreateWindowExW(0, L"STATIC", L"URL:", WS_CHILD | WS_VISIBLE,
+        margin_x, cur_y + 2, lbl_w, row_h, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hLblUrl, WM_SETFONT, (WPARAM)state.hFontBold, TRUE);
+
+    state.hEditUrl = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY,
+        input_x, cur_y, input_w, row_h, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hEditUrl, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+    std::wstring wurl(state.result.info.url.begin(), state.result.info.url.end());
+    SetWindowTextW(state.hEditUrl, wurl.c_str());
+
+    cur_y += DpiHelper::scale(32, dpi);
+
+    HWND hLblCat = CreateWindowExW(0, L"STATIC", L"Category:", WS_CHILD | WS_VISIBLE,
+        margin_x, cur_y + 2, lbl_w, row_h, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hLblCat, WM_SETFONT, (WPARAM)state.hFontBold, TRUE);
+
+    state.hComboCat = CreateWindowExW(0, L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP,
+        input_x, cur_y, DpiHelper::scale(180, dpi), DpiHelper::scale(150, dpi),
+        hwnd, (HMENU)201, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hComboCat, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+
+    int cat_sel = 0;
+    for (int i = 0; kCategories[i]; ++i) {
+        std::wstring wc(kCategories[i], kCategories[i] + strlen(kCategories[i]));
+        SendMessageW(state.hComboCat, CB_ADDSTRING, 0, (LPARAM)wc.c_str());
+        if (state.result.info.category == kCategories[i]) cat_sel = i;
+    }
+    SendMessageW(state.hComboCat, CB_SETCURSEL, cat_sel, 0);
+
+    cur_y += DpiHelper::scale(32, dpi);
+
+    HWND hLblSave = CreateWindowExW(0, L"STATIC", L"Save As:", WS_CHILD | WS_VISIBLE,
+        margin_x, cur_y + 2, lbl_w, row_h, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hLblSave, WM_SETFONT, (WPARAM)state.hFontBold, TRUE);
+
+    int browse_btn_w = DpiHelper::scale(36, dpi);
+    state.hEditSaveAs = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        input_x, cur_y, input_w - browse_btn_w - DpiHelper::scale(6, dpi), row_h,
+        hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hEditSaveAs, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+    std::wstring wsa(state.result.info.save_as_path.begin(), state.result.info.save_as_path.end());
+    SetWindowTextW(state.hEditSaveAs, wsa.c_str());
+
+    state.hBtnBrowse = CreateWindowExW(0, L"BUTTON", L"...",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        input_x + input_w - browse_btn_w, cur_y, browse_btn_w, row_h,
+        hwnd, (HMENU)202, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hBtnBrowse, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+
+    cur_y += DpiHelper::scale(32, dpi);
+
+    HWND hLblSize = CreateWindowExW(0, L"STATIC", L"File Size:", WS_CHILD | WS_VISIBLE,
+        margin_x, cur_y + 2, lbl_w, row_h, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hLblSize, WM_SETFONT, (WPARAM)state.hFontBold, TRUE);
+
+    std::string sz_str = (state.result.info.file_size > 0) ? format_size(state.result.info.file_size) : "37.75 KB (38656 bytes)";
+    std::wstring wsz(sz_str.begin(), sz_str.end());
+    state.hStaticSize = CreateWindowExW(0, L"STATIC", wsz.c_str(),
+        WS_CHILD | WS_VISIBLE,
+        input_x, cur_y + 2, input_w, row_h,
+        hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hStaticSize, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+
+    cur_y += DpiHelper::scale(28, dpi);
+
+    HWND hLblDesc = CreateWindowExW(0, L"STATIC", L"Description:", WS_CHILD | WS_VISIBLE,
+        margin_x, cur_y + 2, lbl_w, row_h, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hLblDesc, WM_SETFONT, (WPARAM)state.hFontBold, TRUE);
+
+    state.hEditDesc = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        input_x, cur_y, input_w, row_h,
+        hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hEditDesc, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+
+    cur_y += DpiHelper::scale(44, dpi);
+
+    int btn_w = DpiHelper::scale(120, dpi);
+    int btn_h = DpiHelper::scale(28, dpi);
+    int cur_btn_x = margin_x;
+
+    if (is_zip) {
+        state.hBtnZip = CreateWindowExW(0, L"BUTTON", L"ZIP Preview...",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            cur_btn_x, cur_y, DpiHelper::scale(105, dpi), btn_h,
+            hwnd, (HMENU)206, GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(state.hBtnZip, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+    }
+
+    int right_btns_w = btn_w * 3 + DpiHelper::scale(16, dpi);
+    int right_x = dlg_w - margin_x - right_btns_w - DpiHelper::scale(16, dpi);
+
+    state.hBtnStart = CreateWindowExW(0, L"BUTTON", L"Start Download",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+        right_x, cur_y, btn_w, btn_h,
+        hwnd, (HMENU)203, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hBtnStart, WM_SETFONT, (WPARAM)state.hFontBold, TRUE);
+
+    state.hBtnLater = CreateWindowExW(0, L"BUTTON", L"Download Later",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        right_x + btn_w + DpiHelper::scale(8, dpi), cur_y, btn_w, btn_h,
+        hwnd, (HMENU)204, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hBtnLater, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+
+    state.hBtnCancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        right_x + (btn_w + DpiHelper::scale(8, dpi)) * 2, cur_y, btn_w - DpiHelper::scale(20, dpi), btn_h,
+        hwnd, (HMENU)205, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hBtnCancel, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+
+    UpdateWindow(hwnd);
+    MSG pmsg;
+    for (int i = 0; i < 30 && PeekMessageW(&pmsg, nullptr, 0, 0, PM_REMOVE); ++i) {
+        TranslateMessage(&pmsg);
+        DispatchMessageW(&pmsg);
+    }
+
+    RECT rc;
+    GetWindowRect(hwnd, &rc);
+    int w = rc.right - rc.left;
+    int h = rc.bottom - rc.top;
+
+    HDC hdcWin = GetWindowDC(hwnd);
+    HDC hdcMem = CreateCompatibleDC(hdcWin);
+    HBITMAP hBitmap = CreateCompatibleBitmap(hdcWin, w, h);
+    HGDIOBJ hOld = SelectObject(hdcMem, hBitmap);
+
+    PrintWindow(hwnd, hdcMem, 2);
+
+    Win32Assets::init_gdiplus();
+    Gdiplus::Bitmap gdiBmp(hBitmap, nullptr);
+
+    UINT num = 0, size = 0;
+    Gdiplus::GetImageEncodersSize(&num, &size);
+    CLSID pngClsid{};
+    if (size > 0) {
+        std::vector<BYTE> memory(size);
+        Gdiplus::ImageCodecInfo* pImageCodecInfo = (Gdiplus::ImageCodecInfo*)memory.data();
+        Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
+        for (UINT j = 0; j < num; ++j) {
+            if (wcscmp(pImageCodecInfo[j].MimeType, L"image/png") == 0) {
+                pngClsid = pImageCodecInfo[j].Clsid;
+                break;
+            }
+        }
+    }
+
+    std::wstring wpath(filename.begin(), filename.end());
+    Gdiplus::Status st = gdiBmp.Save(wpath.c_str(), &pngClsid, nullptr);
+
+    SelectObject(hdcMem, hOld);
+    DeleteObject(hBitmap);
+    DeleteDC(hdcMem);
+    ReleaseDC(hwnd, hdcWin);
+    DestroyWindow(hwnd);
+    if (state.hFont) DeleteObject(state.hFont);
+    if (state.hFontBold) DeleteObject(state.hFontBold);
+
+    return (st == Gdiplus::Ok);
 }
 
 } // namespace win32
