@@ -1,28 +1,32 @@
-# OpenDM — High-Speed Download Accelerator for Linux
+# OpenDM — Cross-Platform High-Speed Download Accelerator
 
 <div align="center">
 
 [![C++20](https://img.shields.io/badge/C%2B%2B-20-blue.svg?style=for-the-badge&logo=c%2B%2B)](https://en.wikipedia.org/wiki/C%2B%2B20)
+[![Win32 API](https://img.shields.io/badge/GUI-Win32%20API-0078D6.svg?style=for-the-badge&logo=windows)](https://learn.microsoft.com/en-us/windows/win32/)
 [![GTK4](https://img.shields.io/badge/GUI-GTK4-green.svg?style=for-the-badge&logo=gtk)](https://www.gtk.org/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-orange.svg?style=for-the-badge)](LICENSE)
 [![Author: Nader Mahbub Khan](https://img.shields.io/badge/Author-Nader%20Mahbub%20Khan-blue?style=for-the-badge&logo=github)](https://github.com/nadermkhan)
-[![Platform: Linux](https://img.shields.io/badge/Platform-Linux-lightgrey.svg?style=for-the-badge&logo=linux)](https://kernel.org)
+[![Platform: Windows & Linux](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey.svg?style=for-the-badge)](#quick-start)
 [![Tests: 100% Passing](https://img.shields.io/badge/Tests-7%2F7%20Passed-brightgreen.svg?style=for-the-badge)](tests/)
 [![Zero Telemetry](https://img.shields.io/badge/Telemetry-0%25%20(None)-success.svg?style=for-the-badge)](SECURITY.md)
 
-**A high-performance, native C++20 / GTK4 recreation of Internet Download Manager (IDM).**  
+**A high-performance, native C++20 recreation of Internet Download Manager (IDM) for Windows (Win32 API) and Linux (GTK4).**  
 *Created by [Nader Mahbub Khan](https://github.com/nadermkhan).*
 
-[Screenshots](#screenshots) • [Features](#features) • [Quick Start](#quick-start) • [Browser Integration](#browser-integration) • [Notice](#notice) • [License](#license--attribution)
+[Screenshots](#screenshots) • [Features](#features) • [Quick Start](#quick-start) • [Browser Integration](#browser-integration) • [CLI Usage](#command-line-usage) • [License](#license--attribution)
 
 </div>
 
 ---
 
-## Notice
+## Overview
 
-It currently works only for Linux (Debian) and tested working in Firefox. Not tested in Chrome and contributions are welcomed. Fork it and improve it. ☺️
+OpenDM is a clean-room, native C++20 download accelerator built with zero bloat and native OS toolkits:
+* **Windows (10/11)**: Built directly on the **Win32 API**, **Common Controls v6**, **GDI+**, **Per-Monitor V2 High-DPI awareness**, and **Windows Named Pipes** (`\\.\pipe\opendm_pipe`) for IPC.
+* **Linux**: Built on **GTK4** and **Unix Domain Sockets** for IPC.
 
+Contributions, bug reports, and forks are welcome!
 
 ---
 
@@ -45,20 +49,56 @@ It currently works only for Linux (Debian) and tested working in Firefox. Not te
 
 ## Features
 
-* **Dynamic Multipart Socket Segmentation**: Splits active downloads dynamically mid-flight up to 32 concurrent threads without connection teardown.
-* **Browser Integration**: Native Messaging host compatible with Chromium (Chrome, Brave, Edge) and Firefox.
-* **Pre-Download File Info Prompt**: Automatically inspects file size, categorizes destinations, and supports folder synchronization.
-* **Remote ZIP Inspection**: Uses HTTP Range queries to read archive central directories and download individual files without fetching the entire archive.
-* **Native ISOBMFF Muxer & fMP4 Defragmenter**: Multiplexes separate video and audio DASH streams into fast-start MP4 containers without external re-encoding.
-* **Bandwidth Pacing**: Token-bucket speed limiting per session or globally across all downloads.
-* **Batch Import & Queue**: Supports IDM `.ef2` batch files, text URL lists, and queue scheduling.
+* **Dynamic Multipart Socket Segmentation**: Splits active downloads dynamically mid-flight up to 32 concurrent threads without connection teardown, adhering to IDM's 204 KB minimum split threshold.
+* **Adaptive YouTube & DASH Stream Engine**: Extracts adaptive video and audio streams with automatic container remuxing (MP4/WebM) so high-resolution video downloads include synchronized audio out of the box.
+* **Native ISOBMFF Muxer & fMP4 Defragmenter**: Multiplexes separate video and audio streams into fast-start `[ftyp][moov][mdat]` MP4 containers in pure C++ (with optional FFmpeg fallback for WebM/VP9/Opus).
+* **Native Cross-Platform GUI**:
+  * **Windows**: Native Win32 controls (`WC_LISTVIEW`, `WC_TREEVIEW`, `WC_TABCONTROL`), custom GDI+ Heroicons/3D toolbar rendering, Per-Monitor V2 DPI scaling, flicker-free delta list updates, and non-blocking asynchronous session teardown.
+  * **Linux**: Native GTK4 interface with custom CSS styling and responsive widgets.
+* **Browser Integration**: Native Messaging host (`opendm-native-host`) compatible with Chromium (Chrome, Brave, Edge) and Firefox, featuring thread-safe UI prompt marshaling.
+* **Pre-Download File Info Prompt**: Automatically inspects file size, categorizes destinations (`Compressed`, `Documents`, `Music`, `Programs`, `Video`), and supports folder synchronization.
+* **Remote ZIP Inspection**: Uses HTTP Range queries to read archive central directories and selectively extract individual files without fetching the entire archive.
+* **Site Grabber & Crawler**: Multi-depth website link spider with domain filtering and content-type rules.
+* **Bandwidth Pacing**: Token-bucket speed limiting per session or globally across all active downloads.
+* **Batch Import & Queue Scheduler**: Supports IDM `.ef2` batch files, text URL lists, and automated queue scheduling.
 * **Zero Telemetry**: No tracking, no ads, no remote data collection.
 
 ---
 
 ## Quick Start
 
-### 1. Install Dependencies
+### Windows (MSYS2 / MinGW-w64)
+
+#### 1. Install Dependencies
+Open an **MSYS2 MinGW64** shell and install the toolchain and required libraries:
+```bash
+pacman -S --needed mingw-w64-x86_64-toolchain \
+    mingw-w64-x86_64-cmake \
+    mingw-w64-x86_64-ninja \
+    mingw-w64-x86_64-curl \
+    mingw-w64-x86_64-zlib
+```
+
+#### 2. Build & Verify
+```powershell
+git clone https://github.com/nadermkhan/opendm.git
+cd opendm
+
+cmake -B build -S . -G Ninja -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+#### 3. Run
+```powershell
+.\build\opendm.exe
+```
+
+---
+
+### Linux (GTK4)
+
+#### 1. Install Dependencies
 
 **Debian / Ubuntu / Linux Mint / Pop!_OS:**
 ```bash
@@ -77,8 +117,7 @@ sudo dnf install cmake ninja-build gcc-c++ gtk4-devel libcurl-devel zlib-devel o
 sudo pacman -S cmake ninja gcc gtk4 curl zlib openssl
 ```
 
-### 2. Build & Verify
-
+#### 2. Build & Verify
 ```bash
 git clone https://github.com/nadermkhan/opendm.git
 cd opendm
@@ -88,12 +127,10 @@ cmake --build build -j$(nproc)
 ctest --test-dir build --output-on-failure
 ```
 
-### 3. Install Desktop Integration
-
+#### 3. Install Desktop Integration (Linux)
 ```bash
 ./install_desktop.sh
 ```
-
 This installs:
 * Desktop launcher (`opendm.desktop`) and application icons.
 * Command-line binaries: `~/.local/bin/opendm` and `~/.local/bin/opendm-native-host`.
@@ -103,9 +140,10 @@ This installs:
 
 ## Browser Integration
 
-1. Run `./install_desktop.sh` to install Native Messaging manifests.
-2. In your browser (Chrome / Brave / Edge), navigate to `chrome://extensions/`.
-3. Enable **Developer mode** (top right toggle).
+1. **Linux**: Run `./install_desktop.sh` to install the Native Messaging manifests automatically.  
+   **Windows**: Register the Native Messaging host manifest (`data/native-messaging/com.tonec.idm.chrome.json` or `com.tonec.idm.firefox.json`) pointing to `opendm-native-host.exe` under `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.tonec.idm` (or Mozilla's equivalent registry key).
+2. In your Chromium browser (Chrome / Brave / Edge), navigate to `chrome://extensions/`.
+3. Enable **Developer mode** (top-right toggle).
 4. Click **Load unpacked** and select the [`extension_extracted/`](extension_extracted/) directory from this repository.
 5. In Firefox, navigate to `about:debugging#/runtime/this-firefox` and select **Load Temporary Add-on** pointing to `extension_extracted/manifest.json`.
 
@@ -137,13 +175,19 @@ opendm -n -d https://example.com/archive.zip -p /tmp
 ```
 opendm/
 ├── src/
-│   ├── core/         # ChunkManager, DownloadSession, MediaMuxer, ZipPreviewer
-│   ├── ipc/          # Local IPC server and browser Native Messaging host
-│   ├── ui/           # GTK4 user interface and custom widgets
-│   └── main.cpp      # CLI argument parsing and GTK application entry point
-├── tests/            # Automated Catch2/CTest suites
-├── extension_extracted/ # Browser WebExtension
-└── install_desktop.sh# Desktop installation script
+│   ├── core/               # ChunkManager, DownloadSession, DownloadQueue,
+│   │                       # MediaMuxer, YouTubeEngine, DashParser, ZipPreviewer
+│   ├── ipc/                # Named Pipe (Win32) & Unix Socket (Linux) IPC server
+│   │                       # and Browser Native Messaging host
+│   ├── cli/                # Command-line interface parser
+│   ├── ui_win32/           # Native Windows Win32 API GUI, Common Controls v6,
+│   │                       # GDI+ icon renderer, and Per-Monitor V2 DPI helpers
+│   ├── ui/                 # Linux GTK4 user interface and custom widgets
+│   └── main.cpp            # Cross-platform CLI and GUI application entry point
+├── data/                   # Application icons, Win32 manifest, and UI assets
+├── tests/                  # Automated CTest suites (7/7 passing)
+├── extension_extracted/    # Browser WebExtension (Chrome / Edge / Brave / Firefox)
+└── install_desktop.sh      # Linux desktop & native host installation script
 ```
 
 ---
