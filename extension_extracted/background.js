@@ -276,7 +276,7 @@ async function extractYouTubeViaNativeHost(urlOrId) {
         ? browser.runtime
         : ((typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.sendNativeMessage) ? chrome.runtime : null);
       if (api) {
-        api.sendNativeMessage("com.tonec.idm", {
+        api.sendNativeMessage("com.opendm.host", {
           action: "extract_youtube",
           url: fullUrl
         }, (resp) => {
@@ -358,7 +358,7 @@ n.bb=function(a){browser.runtime.lastError;if(a){var b=a.value;a=za[b.mode];var 
 function Sb(a,b,c,d){if(b){var e=b.type;if(e=="direct")return"0";e=="socks"&&(e="socks5");if(ya(e)){var f=`1:${e}://${b.host}:${b.port}`;e=="socks5"&&b.proxyDNS&&(f+="#");c||d||!(c=a.Z)||(c=c.substr(c.indexOf(";")+1||c.length));c&&(f+=`;${c}`);d&&f&&(a.Z=f);return f}}}n.za=function(a,b,c,d){let e=this.l;return b in e?e[b]:e[b]=new tb(b,a,c,d)};function Tb(a,b){a=a.i;let c=b.id;a[c]!==b&&(a[c]=b);x&&b.v&&(a[b.v]=b)}
 function Ub(a,b,c,d,e){let f,g,k;G(b)?(f=b.frameId??0,g=b.parentFrameId,k=b.method&&b.id,c||=b.tabId,e||=b.url):f=b;let h=a.D[P(c,f)];h||(h=new ub(f,c,g),a.D[h.id]=h);k?(h.i!=k&&(h.i=k,h.u=e,h.l=!1,h.g&&(h.g=e.startsWith(b.initiator||b.originUrl))),h.v=b.method=="POST"):e&&(e.startsWith("about:blank")?f&&(h.g=!0):h.G=e);d!=null&&(h.refresh=d);return h}function Vb(a,b){return a.D[P(b.tabId,b.frameId)]}function Wb(a){let b=new sb;return a.$[b.g]=b}
 function Xb(a,b){let c;b instanceof sb?c=b.g:b=a.$[c=b];delete a.$[c];return b}function Yb(a,b){for(let c of a.aa)if(c&&c[101].test(b))return c.X;return 0}
-n.Ba=function(){var a=this.ta%(La.length+1);a<La.length?(a=this.S=new WebSocket(`ws://${La[a]}/?cid=${this.ca||0}&rnd=${F().toString().substr(2,9)}`,"plugin.v3.internetdownloadmanager.com"),a.onerror=Zb,a.onopen=this.Na,a.onclose=this.oa,a.onmessage=this.Lb,a.readyState==1?this.Na(1):a.readyState==3?this.oa():this.C=J.setTimeout(this.oa,1500,a)):(a=this.S=browser.runtime.connectNative("com.tonec.idm"),a.onDisconnect.addListener(this.oa),a.onMessage.addListener(this.zb),this.C=J.setTimeout(this.Na,
+n.Ba=function(){var a=this.ta%(La.length+1);a<La.length?(a=this.S=new WebSocket(`ws://${La[a]}/?cid=${this.ca||0}&rnd=${F().toString().substr(2,9)}`,"plugin.v3.internetdownloadmanager.com"),a.onerror=Zb,a.onopen=this.Na,a.onclose=this.oa,a.onmessage=this.Lb,a.readyState==1?this.Na(1):a.readyState==3?this.oa():this.C=J.setTimeout(this.oa,1500,a)):(a=this.S=browser.runtime.connectNative("com.opendm.host"),a.onDisconnect.addListener(this.oa),a.onMessage.addListener(this.zb),this.C=J.setTimeout(this.Na,
 0,2))};n.Na=function(a){this.C&&(J.clearTimeout(this.C),this.C=null);this.H=G(a)?1:a;this.hb=1;this.la=!1;var b=browser.i18n.getUILanguage().replace("_","-");b=="sr"&&(b+="-Cyrl-CS");a=[113,93,Xa?1028:1031,0,16845059,this.ca,15,M.manifest_version];b={[112]:Ca,[113]:Ba,[125]:JSON.stringify(this.nc),[116]:b};S(this,2,5,Xa?0:1024,a,b)};
 n.oa=function(a){this.C&&(J.clearTimeout(this.C),this.C=null);this.I&&(J.clearTimeout(this.I),this.I=null);var b=browser.runtime.lastError||a&&a.error,c=this.S;if(c instanceof WebSocket){if(a===c)return c.close()}else c&&pb(b&&b.message)&&(this.la=!0);this.S=null;this.H&&(this.H=0,this.qa={},Nb(this,!1),Mb(this,!1),this.Aa(1,2),this.ka=!1,this.J=this.Ra=null,R(this,!1));a=++this.ta;b=La.length+1;c=a/b;c<120&&(c==1&&$b(this),!a||a%b?this.Ba():J.setTimeout(this.Ba,5E3*c))};
 n.Za=function(){let a=this.S;a instanceof WebSocket?a.close():a&&(a.disconnect(),this.oa())};n.Ma=function(a){if(this.I)a?(this.I=null,S(this,0,1,1)):J.clearTimeout(this.I);else if(a)return;this.I=J.setTimeout(this.Ma,15E3,!0)};n.Lb=function(a){let b=new qb;b.u=this.$a;b.h=this.Za;wb(b,a.data)};n.zb=function(a){let b=new qb;b.u=this.$a;b.h=this.Za;wb(b,new Blob([a]))};
@@ -411,7 +411,7 @@ n.pa = async function(a, b, c, d, e, f, customUa) {
         var fallbackMsg = new qb(1, 14, 1, 0, g, payload, true, true);
         fallbackMsg.m || (fallbackMsg.o.push(";"), fallbackMsg.m = !0);
         var rawStr = fallbackMsg.o.join("");
-        var p = browser.runtime.sendNativeMessage("com.tonec.idm", rawStr, () => {});
+        var p = browser.runtime.sendNativeMessage("com.opendm.host", rawStr, () => {});
         if (p && typeof p.catch === "function") {
           p.catch(() => {});
         }

@@ -1,38 +1,38 @@
 {
    "cannot_contact_idm": {
-      "message": "Il modulo di integrazione IDM non può contattare l'applicazione IDM.\n\nAssicuratii di quanto segue:\n1) IDM è aggiornato alla versione più recente,\n2) nelle opzioni di IDM è abilitata l'integrazione avanzata del browser,\n3) quando si usano VPN o server proxy: sono consentite connessioni locali dirette,\n4) nessun antivirus o antimalware blocca l'integrazione IDM."
+      "message": "Il modulo di integrazione OpenDM non può contattare l'applicazione OpenDM.\n\nAssicuratii di quanto segue:\n1) OpenDM è aggiornato alla versione più recente,\n2) nelle opzioni di OpenDM è abilitata l'integrazione avanzata del browser,\n3) quando si usano VPN o server proxy: sono consentite connessioni locali dirette,\n4) nessun antivirus o antimalware blocca l'integrazione OpenDM."
    },
    "cannot_find_links": {
-      "message": "Impossibile trovare il collegamento!\n\nSe questa pagina ha dei collegamenti, ricarica o aggiorna la pagina, e prova di nuovo.\nSe il problema persiste, contatta il supporto di IDM."
+      "message": "Impossibile trovare il collegamento!\n\nSe questa pagina ha dei collegamenti, ricarica o aggiorna la pagina, e prova di nuovo.\nSe il problema persiste, contatta il supporto di OpenDM."
    },
    "extension_desc": {
-      "message": "Download file con Internet Download Manager"
+      "message": "Download file con OpenDM"
    },
    "language_name": {
       "message": "Italian"
    },
    "menu_download_all": {
-      "message": "Download di tutti i colleghamenti con IDM"
+      "message": "Download di tutti i colleghamenti con OpenDM"
    },
    "menu_download_item": {
-      "message": "Trasferisci download a IDM"
+      "message": "Trasferisci download a OpenDM"
    },
    "menu_download_link": {
-      "message": "Download con IDM"
+      "message": "Download con OpenDM"
    },
    "menu_download_selected": {
-      "message": "Download collegamenti selezionati con IDM"
+      "message": "Download collegamenti selezionati con OpenDM"
    },
    "tooltip_disabled": {
-      "message": "Internet Download Manager [DISABILITATO]"
+      "message": "OpenDM [DISABILITATO]"
    },
    "tooltip_error": {
-      "message": "Internet Download Manager [ERRORE]"
+      "message": "OpenDM [ERRORE]"
    },
    "tooltip_text": {
       "message": "(clic per abilitare/disabilitare l'integrazione)"
    },
    "tooltip_title": {
-      "message": "Internet Download Manager"
+      "message": "OpenDM"
    }
 }

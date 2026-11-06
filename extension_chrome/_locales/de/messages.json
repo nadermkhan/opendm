@@ -3,15 +3,15 @@
       "message": "German"
    },
    "menu_download_link": {
-      "message": "Download mit IDM"
+      "message": "Download mit OpenDM"
    },
    "menu_download_all": {
-      "message": "Download aller Links mit IDM"
+      "message": "Download aller Links mit OpenDM"
    },
    "menu_download_selected": {
-      "message": "Download ausgewählter Links mit IDM"
+      "message": "Download ausgewählter Links mit OpenDM"
    },
    "cannot_find_links": {
-      "message": "Link nicht gefunden!\n\nFalls diese Seite einen Link enthält, laden Sie die Seite bitte neu.\nBesteht das Problem weiter, kontaktieren Sie den IDM-Support."
+      "message": "Link nicht gefunden!\n\nFalls diese Seite einen Link enthält, laden Sie die Seite bitte neu.\nBesteht das Problem weiter, kontaktieren Sie den OpenDM-Support."
    }
 }

@@ -299,9 +299,9 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     e.preventDefault();
     try {
       if (typeof alert === "function") {
-        alert('This is IDM download panel.\nIt can be customized or turned off on "IDM->Options dialog->General tab"');
+        alert('This is OpenDM download panel.\nIt can be customized or turned off in "OpenDM -> Options -> General"');
       } else if (typeof window !== "undefined" && window.alert) {
-        window.alert('This is IDM download panel.\nIt can be customized or turned off on "IDM->Options dialog->General tab"');
+        window.alert('This is OpenDM download panel.\nIt can be customized or turned off in "OpenDM -> Options -> General"');
       }
     } catch (err) { console.error("CATCH IN CONTENT.JS:", err); }
   });
@@ -1058,14 +1058,14 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
     if (!activeTarget) return;
 
     const origText = label.textContent;
-    label.textContent = "Requesting IDM...";
+    label.textContent = "Requesting OpenDM...";
 
     const ytVid = getYouTubeVideoId();
     if (ytVid) {
       const ytVideoUrl = "https://www.youtube.com/watch?v=" + ytVid;
       const mediaTitle = getMediaTitle();
       downloadMedia(ytVideoUrl, mediaTitle ? (mediaTitle + ".mp4") : "");
-      label.textContent = "Sent to IDM!";
+      label.textContent = "Sent to OpenDM!";
       setTimeout(() => { label.textContent = origText; }, 1500);
       return;
     }
@@ -1099,7 +1099,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             if (audios.length > 0) {
               audios.sort((a, b) => (b.size || 0) - (a.size || 0));
               downloadMedia(cleanMediaStreamUrl(audios[0].url), mediaTitle + ".mp3");
-              label.textContent = "Sent to IDM!";
+              label.textContent = "Sent to OpenDM!";
               setTimeout(() => { label.textContent = origText; }, 1500);
               return;
             }
@@ -1144,7 +1144,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
 
             if (targetDownloadUrl) {
               downloadMedia(targetDownloadUrl, mediaTitle + ".mp4", targetDownloadUa);
-              label.textContent = "Sent to IDM!";
+              label.textContent = "Sent to OpenDM!";
               setTimeout(() => { label.textContent = origText; }, 1500);
               return;
             }
@@ -1153,7 +1153,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             const bestVideo = cleanMediaStreamUrl(videoStreams[0].url);
             if (bestVideo) {
               downloadMedia(bestVideo, mediaTitle + ".mp4");
-              label.textContent = "Sent to IDM!";
+              label.textContent = "Sent to OpenDM!";
               setTimeout(() => { label.textContent = origText; }, 1500);
               return;
             } else {
@@ -1178,7 +1178,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
                 if (paired.videoStreams.length > 0) {
                   const bestV = cleanMediaStreamUrl(paired.videoStreams[0].url);
                   downloadMedia(bestV, mediaTitle + ".mp4");
-                  label.textContent = "Sent to IDM!";
+                  label.textContent = "Sent to OpenDM!";
                 } else {
                   label.textContent = hasSabr ? "Please reload page" : "Please play video first";
                 }
@@ -1188,15 +1188,15 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
             return;
           } else if (streams.length > 0) {
             downloadMedia(cleanMediaStreamUrl(streams[0].url), mediaTitle + ".mp4");
-            label.textContent = "Sent to IDM!";
+            label.textContent = "Sent to OpenDM!";
           } else if (directSrc) {
             downloadMedia(directSrc, mediaTitle + ".mp4");
-            label.textContent = "Sent to IDM!";
+            label.textContent = "Sent to OpenDM!";
           } else {
             const ogVideo = document.querySelector('meta[property="og:video"], meta[property="og:video:url"], meta[name="twitter:player:stream"]');
             if (ogVideo && ogVideo.content) {
               downloadMedia(ogVideo.content, mediaTitle + ".mp4");
-              label.textContent = "Sent to IDM!";
+              label.textContent = "Sent to OpenDM!";
             } else {
               label.textContent = "No stream found";
             }
@@ -1537,7 +1537,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
         if (ytVid) {
           const ytVideoUrl = "https://www.youtube.com/watch?v=" + ytVid;
           downloadMedia(ytVideoUrl, mediaTitle + ".mp4");
-          label.textContent = "Sent to IDM!";
+          label.textContent = "Sent to OpenDM!";
           setTimeout(() => { label.textContent = origText; }, 1500);
           return;
         }
@@ -1588,7 +1588,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
           menu.style.display = "none";
           if (item.url) {
             downloadMedia(item.url, item.filename, item.userAgent);
-            label.textContent = "Sent to IDM!";
+            label.textContent = "Sent to OpenDM!";
             setTimeout(() => { label.textContent = origText; }, 1500);
             return;
           }
@@ -1596,13 +1596,13 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
           if (ytVid && !item.qName) {
             const ytVideoUrl = "https://www.youtube.com/watch?v=" + ytVid;
             downloadMedia(ytVideoUrl, item.filename, item.userAgent);
-            label.textContent = "Sent to IDM!";
+            label.textContent = "Sent to OpenDM!";
             setTimeout(() => { label.textContent = origText; }, 1500);
             return;
           }
           if (item.url) {
             downloadMedia(item.url, item.filename, item.userAgent);
-            label.textContent = "Sent to IDM!";
+            label.textContent = "Sent to OpenDM!";
             setTimeout(() => { label.textContent = origText; }, 1500);
           } else if (item.qName) {
             label.textContent = "Switching quality...";
@@ -1631,7 +1631,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
                   const fUrl = (cleanA && !item.isAudio) ? `yta2toidm://${cleanV}##${cleanA}` : cleanV;
                   if (cleanV) {
                     downloadMedia(fUrl, item.filename);
-                    label.textContent = "Sent to IDM!";
+                    label.textContent = "Sent to OpenDM!";
                   } else {
                     label.textContent = "Please reload page";
                   }
@@ -1640,7 +1640,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
                   const fUrl = paired.bestAudio ? (`yta2toidm://${bestV}##${paired.bestAudio}`) : bestV;
                   if (bestV) {
                     downloadMedia(fUrl, item.filename);
-                    label.textContent = "Sent to IDM!";
+                    label.textContent = "Sent to OpenDM!";
                   } else {
                     label.textContent = "Please reload page";
                   }
@@ -1649,7 +1649,7 @@ e[0]);for(let k of m.removedNodes)if(k.nodeType==1)for(n=0;n<f.length;n++)if(k.c
                   const fUrl = bestAudio ? (`yta2toidm://${bestV}##${bestAudio}`) : bestV;
                   if (bestV) {
                     downloadMedia(fUrl, item.filename);
-                    label.textContent = "Sent to IDM!";
+                    label.textContent = "Sent to OpenDM!";
                   } else {
                     label.textContent = "Please reload page";
                   }

@@ -3,15 +3,15 @@
       "message": "Hebrew"
    },
    "menu_download_link": {
-      "message": "הורד עם IDM"
+      "message": "הורד עם OpenDM"
    },
    "menu_download_all": {
-      "message": "הורד את כל הקישורים עם IDM"
+      "message": "הורד את כל הקישורים עם OpenDM"
    },
    "menu_download_selected": {
-      "message": "הורד קישורים נבחרים עם IDM"
+      "message": "הורד קישורים נבחרים עם OpenDM"
    },
    "cannot_find_links": {
-      "message": "לא יכול למצוא את הקישורים!\n\nאם בדף זה אין קישורים, אנא רענן את הדף ונסה שנית, \nבאם הבעיה נמשכת אנא פנה לתמיכת IDM."
+      "message": "לא יכול למצוא את הקישורים!\n\nאם בדף זה אין קישורים, אנא רענן את הדף ונסה שנית, \nבאם הבעיה נמשכת אנא פנה לתמיכת OpenDM."
    }
 }

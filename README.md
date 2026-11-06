@@ -164,7 +164,7 @@ This installs:
 ## Browser Integration
 
 1. **Linux**: Run `./install_desktop.sh` to install the Native Messaging manifests automatically.  
-   **Windows**: Register the Native Messaging host manifest (`data/native-messaging/com.tonec.idm.chrome.json` or `com.tonec.idm.firefox.json`) pointing to `opendm-native-host.exe` under `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.tonec.idm` (or Mozilla's equivalent registry key).
+   **Windows**: Register the Native Messaging host manifest (`data/native-messaging/com.opendm.host.chrome.json` or `com.opendm.host.firefox.json`) pointing to `opendm-native-host.exe` under `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.opendm.host` (or Mozilla's equivalent registry key).
 2. In your Chromium browser (Chrome / Brave / Edge), navigate to `chrome://extensions/`.
 3. Enable **Developer mode** (top-right toggle).
 4. Click **Load unpacked** and select the [`extension_extracted/`](extension_extracted/) directory from this repository.

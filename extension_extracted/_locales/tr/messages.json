@@ -3,27 +3,27 @@
       "message": "Turkish"
    },
    "extension_desc": {
-      "message": "Bu eklenti, tarayıcıdan başlatılan indirmeleri Internet Download Manager’ın devralmasını sağlar"
+      "message": "Bu eklenti, tarayıcıdan başlatılan indirmeleri OpenDM’ın devralmasını sağlar"
    },
    "tooltip_title": {
-      "message": "Internet Download Manager"
+      "message": "OpenDM"
    },
    "tooltip_disabled": {
-      "message": "Internet Download Manager [DEVRE DIŞI]"
+      "message": "OpenDM [DEVRE DIŞI]"
    },
    "tooltip_text": {
       "message": "(ilişkilendirmeyi açmak/kapatmak için tıklayın)"
    },
    "menu_download_link": {
-      "message": "IDM ile indir"
+      "message": "OpenDM ile indir"
    },
    "menu_download_all": {
-      "message": "Tüm bağlantıları IDM ile indir"
+      "message": "Tüm bağlantıları OpenDM ile indir"
    },
    "menu_download_selected": {
-      "message": "Seçilen bağlantıları IDM ile indir"
+      "message": "Seçilen bağlantıları OpenDM ile indir"
    },
    "menu_download_item": {
-      "message": "İndirmeyi IDM'ye aktarın"
+      "message": "İndirmeyi OpenDM'ye aktarın"
    }
 }

@@ -1,22 +1,24 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html>
 <head>
 
-  <title>IDM Integration Module</title>
+  <title>OpenDM Integration Module</title>
 
   <script src="welcome.js"></script>
 
   <style>
 
-    body { height: 100%; margin: 0; background-color: #FAFDFE; font-size: large; font-family: Arial, sans-serif; }
+    body { height: 100%; margin: 0; background-color: #FAFDFE; font-size: large; font-family: Segoe UI, Arial, sans-serif; color: #1E293B; }
     .warn { font-weight: bold; color: #AA0000; }
     .note { font-style: italic; font-size: medium; }
     #layoutWrapper { height: auto !important; min-height: 100%; margin: 0 auto -6em; }
+    #headerBar { display: flex; align-items: center; gap: 14px; padding: 14px 5em; background: linear-gradient(90deg, #0F172A, #1E3A8A); color: #FFFFFF; }
+    #headerBar img { width: 36px; height: 36px; }
+    #headerBar h2 { margin: 0; font-size: 20px; font-weight: 600; }
     #layoutContent { margin: 0 5em; line-height: 150%; }
-    #layoutFooter  { margin: 0 5em; text-align: center; font-style: italic; font-size: smaller; }
+    #layoutFooter  { margin: 0 5em; text-align: center; font-style: italic; font-size: smaller; color: #475569; }
     #layoutFooter, #layoutSpacer { height: 6em; }
-    #logoFooter { float: left; display: block; position: absolute; }
-    button { padding: 0.5em; font-size: large; border-radius: 5px; }
+    button { padding: 0.5em; font-size: large; border-radius: 5px; cursor: pointer; }
     button .markGood { color: #11AA11; }
     button .markBad  { color: #AA0000; }
     
@@ -27,109 +29,73 @@
 
   <div id="layoutWrapper">
 
-    <div style="height: 61px; background-image: url(images/headBkgd.gif);">
-      <img src="images/headTitle.gif" alt="Internet Download Manager" width="466" height="61"/>
+    <div id="headerBar">
+      <img src="images/logo48.png" alt="OpenDM"/>
+      <h2>OpenDM — High-Speed Download Accelerator</h2>
     </div>
 
     <div id="layoutContent">
 
       <p><br/></p>
-      <h3>Internet Download Manager extension for <span id="msgBrowserName">Google Chrome</span> has been
+      <h3>OpenDM Integration Module for <span id="msgBrowserName">Google Chrome</span> has been
       <span id="msgExtInstalled">installed</span><span id="msgExtUpdated" style="display: none">updated</span>.</h3>
 
-      <hr width="100%" color="darkBlue" size="1"/>
+      <hr width="100%" color="#CBD5E1" size="1"/>
 
       <div id="msgDataConsent" hidden>
         <h4><u>Data Transfer Consent</u></h4>
-        <p>To download files or multimedia content Firefox browser makes requests to the respective
-          servers over the network. This add-on transfers data of such requests to Internet Download
-          Manager (IDM) desktop application to download files in IDM instead of browser.</p>
-        <p>Do you allow IDM Integration Module to transfer this data to IDM to download files in IDM?</p>
+        <p>To download files or multimedia content, your browser makes requests to the respective
+          servers over the network. This add-on transfers data of such requests to the OpenDM
+          desktop application to accelerate downloads in OpenDM instead of the browser.</p>
+        <p>Do you allow OpenDM Integration Module to transfer this data to your local OpenDM application?</p>
 
         <button id="btnConsentAgree"><b class="markGood">&check;</b> I Allow</button>
         &nbsp;&nbsp;&nbsp;
         <button id="btnConsentDisagree"><b class="markBad">&cross;</b> I Decline</button>
-        <p class="note">&lowast;&lowast;&lowast; This data is stored by IDM on your local computer only
-          until you delete this download from IDM list of downloads.</p>
-        <p class="note">&lowast;&lowast;&lowast; This data may include URL, internet address, cookies,
-          encrypted credentials, query parameters, post data, namely all the data that the browser sends
-          to the server when requesting the file. In rare cases this data may contain your potentially
-          personally identifying information.</p>
-        <p>Full details about the transferred data, how this data is used
-          and stored, are provided in our <a id="linkPolicyView" href="#policy">Privacy Policy</a>.</p>
+        <p class="note">&lowast;&lowast;&lowast; This data is stored by OpenDM on your local computer only
+          until you delete the download from OpenDM's list of downloads. OpenDM has zero telemetry.</p>
+        <p>Full details are provided in our <a id="linkPolicyView" href="#policy">Privacy Policy</a>.</p>
       </div>
 
       <div id="msgPrivacyPolicy" hidden>
-        <h4><u>Privacy Policy</u></h4>
-        <p>IDM Integration Module extension for FireFox browser does not collect any data
-          or information except for the following case when it collects data that is required
-          to support IDM (Internet Download Manager) core functions.</p>
-        <p>When a browser starts a download that is going to be saved as a file on your local disk, and
-          not displayed in the browser, and the file type matches file types in <i>Options&gg;File Types</i>
-          IDM dialog, or when you start a download by using IDM pop-up menu or IDM download panel,
-          then IDM Integration Module extension for FireFox may collect only the data that is necessary
-          to download this file in IDM from this particular web site. This data is necessary to start,
-          or resume the download, or schedule this download in Internet Download Manager.
-          The data may include URL, internet address, cookies, encrypted credentials, query parameters,
-          post data, namely all the data that the browser sends to the server when requesting the file.
-          In rare cases this data may contain your potentially personally identifying information.</p>
-        <p>This data is stored on your local computer until you delete this download from the IDM's list
-          of downloads. To download a file, IDM re-sends the original download query made by your browser.
-          IDM sends the data only to the server where the browser sent it to, IDM DOES NOT send this data
-          to our servers, or any 3rd party servers.</p>
+        <h4><u>Privacy Policy (Zero Telemetry)</u></h4>
+        <p>OpenDM Integration Module does not collect or transmit any telemetry, analytics, or user data
+          to any external server. It only forwards download URLs and request headers locally to the
+          OpenDM desktop application running on your machine.</p>
         <button id="btnPolicyBack"><b>&lArr;</b> Return to Consent Form</button>
       </div>
 
       <div id="msgPolicyAccept" hidden>
-        <p>Thank you! You can start using Internet Download Manager for Firefox downloads now.</p>
+        <p>Thank you! You can start using OpenDM for browser downloads now.</p>
       </div>
 
       <div id="msgRefusalConfirm" hidden>
-        <p>Unfortunately, without transferring data to Internet Download Manager (IDM) from Firefox
-          browser, IDM will not be able to work. Unless you wish to reconsider the data you allow
-          to transfer, we recommend you to remove the extension.</p>
+        <p>Without transferring download URLs to the local OpenDM application, the extension cannot
+          intercept downloads.</p>
 
         <button id="btnRefusalBack"><b>&lArr;</b> Revisit Consent Form</button>
         &nbsp;&nbsp;&nbsp;
-        <button id="btnRemoveAddon"><b class="markBad">&cross;</b> Remove IDM Integration Module</button>
-
-        <p class="note">&lowast;&lowast;&lowast; The requirement to provide this consent form is imposed
-          by the Firefox
-          <a target="_blank" href="https://extensionworkshop.com/documentation/publish/add-on-policies/">Add-on
-          Policies</a>.</p>
+        <button id="btnRemoveAddon"><b class="markBad">&cross;</b> Remove OpenDM Integration Module</button>
       </div>
 
       <div id="msgIdmNotInstalled" hidden>
-        <p class="warn">Error: Cannot launch IDM, either IDM application is not installed,
-          or some of its files are corrupted</p>
-        <p>This extension works in conjunction with
-        <a href="http://www.internetdownloadmanager.com/"
-           target="_blank"><b>Internet Download Manager</b></a> (IDM) software.<br/>
-          To use the extension, you should have IDM desktop application installed on your computer,
-          and version number <b id="msgAppMinVersion1">6.42 build 61</b> or newer is required.<br/>
-          Advanced browser integration must be enabled in the IDM options.</p>
-        <p>To download a 30-day free trial version, please open
-        <a href="http://www.internetdownloadmanager.com/download.html"
-           target="_blank">IDM Download page</a>.</p>
-        <p class="note">&lowast;&lowast;&lowast; If this extension was added by the browser <b>Sync</b> function
-          and you do not have IDM installed on this computer, please click "<b>Close Page</b>" button once
-          to suppress this error message.</p>
+        <p class="warn">Notice: Could not connect to the OpenDM Native Messaging Host</p>
+        <p>This extension works in conjunction with the
+        <a href="https://github.com/nadermkhan/opendm" target="_blank"><b>OpenDM</b></a> desktop application.<br/>
+          Please ensure OpenDM and <code>opendm-native-host</code> are installed and registered on your system.</p>
       </div>
 
       <div id="msgIdmNeedsUpdate" hidden>
-        <p class="warn">Warning: Your IDM is very old. Some features require that IDM version number
-          <b id="msgAppMinVersion2">6.42 build 61</b> or newer is installed, please update your IDM and restart the browser.</p>
-        <p>To download the latest version, please open
-          <a href="http://www.internetdownloadmanager.com/download.html"
-             target="_blank">IDM Download page</a>, or select <b><i>Help&gg;Check for updates</i></b>
-          in the IDM's menu bar.</p>
+        <p class="warn">Notice: Please update your OpenDM desktop application to the latest release.</p>
+        <p>Download the latest version from the
+          <a href="https://github.com/nadermkhan/opendm/releases" target="_blank">OpenDM Releases page</a>.</p>
       </div>
 
       <div id="msgIncognitoAccess" hidden>
         <p>Please note:</p>
-        <p>If you want to use IDM integration in <b id="msgIncognitoName">Incognito browsing mode</b> as well,
+        <p>If you want to use OpenDM integration in <b id="msgIncognitoName">Incognito browsing mode</b> as well,
           open the Extensions page and turn on "<span id="msgIncognitoEnable">Allow in incognito</span>"
-          checkbox for the IDM Integration Module extension.</p>
+          for the OpenDM Integration Module extension.</p>
       </div>
 
       <div id="msgClosePage" style="text-align: right">
@@ -142,15 +108,15 @@
 
       <p><br/></p>
       <p><b>
-        <a id="linkContactSupport" href="http://www.internetdownloadmanager.com/support/chrome_integration.html"
-           target="_blank">Contact us</a>
+        <a id="linkContactSupport" href="https://github.com/nadermkhan/opendm/issues"
+           target="_blank">GitHub Issues &amp; Support</a>
 
         <span style="float: right">
-          <a href="http://www.internetdownloadmanager.com/support/terms-and-conditions.html"
-             target="_blank">Terms and Conditions</a>
+          <a href="https://github.com/nadermkhan/opendm/blob/main/LICENSE"
+             target="_blank">License (GPL-3.0)</a>
           &nbsp;&nbsp;&nbsp;
-          <a href="http://www.internetdownloadmanager.com/support/privacy.html"
-             target="_blank">Privacy Policy</a>
+          <a href="https://github.com/nadermkhan/opendm/blob/main/SECURITY.md"
+             target="_blank">Zero-Telemetry Policy</a>
         </span>
       </b></p>
 
@@ -162,12 +128,10 @@
 
   <div id="layoutFooter">
 
-    <hr width="100%" color="darkBlue" size="1"/>
+    <hr width="100%" color="#CBD5E1" size="1"/>
 
-    <p>Internet Download Manager, Tonec FZE<br/>
-      <img id="logoFooter" src="images/logoTonec.gif" width="68" height="22"
-           style="float: left; display: block; position: absolute;"/><br/>
-      &copy;&nbsp;1999-<span id="textThisYear">2026</span>. All rights reserved.</p>
+    <p>OpenDM — Created by Nader Mahbub Khan (<a href="https://github.com/nadermkhan/opendm" target="_blank">github.com/nadermkhan/opendm</a>)<br/>
+      &copy;&nbsp;<span id="textThisYear">2026</span> OpenDM Project. Licensed under GNU GPL v3.0.</p>
 
   </div>
 

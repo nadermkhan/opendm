@@ -3,15 +3,15 @@
       "message": "Polish"
    },
    "menu_download_link": {
-      "message": "Ściągnij przez IDM"
+      "message": "Ściągnij przez OpenDM"
    },
    "menu_download_all": {
-      "message": "Ściągnij wszystkie linki przez IDM"
+      "message": "Ściągnij wszystkie linki przez OpenDM"
    },
    "menu_download_selected": {
-      "message": "Ściągnij wybrane linki przez IDM"
+      "message": "Ściągnij wybrane linki przez OpenDM"
    },
    "cannot_find_links": {
-      "message": "Program nie znalazł linków!\n\nJeśli na stronie znajdują się linki, odśwież ją i spróbuj ponownie.\nJeżeli problem występuje nadal, skontaktuj się z pomocą techniczną IDM."
+      "message": "Program nie znalazł linków!\n\nJeśli na stronie znajdują się linki, odśwież ją i spróbuj ponownie.\nJeżeli problem występuje nadal, skontaktuj się z pomocą techniczną OpenDM."
    }
 }

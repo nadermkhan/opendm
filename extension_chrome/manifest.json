@@ -1,9 +1,9 @@
 {
-    "name"                     : "IDM Integration Module",
+    "name"                     : "OpenDM Integration Module",
     "description"              : "__MSG_extension_desc__",
-    "version"                  : "6.43.1",
-    "author"                   : "Tonec FZE",
-    "homepage_url"             : "http://www.internetdownloadmanager.com/",
+    "version"                  : "1.0.0",
+    "author"                   : "Nader Mahbub Khan",
+    "homepage_url"             : "https://github.com/nadermkhan/opendm",
     "default_locale"           : "en",
 
     "icons"                    : { "16": "images/logo16.png", "48": "images/logo48.png", "128": "images/logo128.png" },
@@ -21,7 +21,7 @@
 
     "browser_specific_settings": {
         "gecko": {
-            "id": "mozilla_cc@tonec.com",
+            "id": "extension@opendm.org",
             "strict_min_version": "109.0"
         }
     },

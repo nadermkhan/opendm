@@ -218,9 +218,9 @@ if(NOT WIN32)
     endif()
 
     # Browser Native Messaging Manifests
-    install(FILES data/native-messaging/com.tonec.idm.firefox.json
+    install(FILES data/native-messaging/com.opendm.host.firefox.json
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/mozilla/native-messaging-hosts
-        RENAME com.tonec.idm.json
+        RENAME com.opendm.host.json
     )
 
     # CPack Debian Package Configuration

@@ -3,12 +3,12 @@
       "message": "French"
    },
    "menu_download_link": {
-      "message": "Télécharger avec IDM"
+      "message": "Télécharger avec OpenDM"
    },
    "menu_download_all": {
-      "message": "Télécharger tous les liens avec IDM"
+      "message": "Télécharger tous les liens avec OpenDM"
    },
    "menu_download_selected": {
-      "message": "Télécharger les liens sélectionnés avec IDM"
+      "message": "Télécharger les liens sélectionnés avec OpenDM"
    }
 }

@@ -3,9 +3,9 @@
       "message": "Dutch"
    },
    "menu_download_link": {
-      "message": "Download met IDM"
+      "message": "Download met OpenDM"
    },
    "menu_download_all": {
-      "message": "Download alle links met IDM"
+      "message": "Download alle links met OpenDM"
    }
 }

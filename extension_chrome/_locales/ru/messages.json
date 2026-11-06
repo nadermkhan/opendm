@@ -3,27 +3,27 @@
       "message": "Russian"
    },
    "extension_desc": {
-      "message": "Скачивание файлов с использованием Internet Download Manager"
+      "message": "Скачивание файлов с использованием OpenDM"
    },
    "tooltip_disabled": {
-      "message": "Internet Download Manager [ОТКЛЮЧЕН]"
+      "message": "OpenDM [ОТКЛЮЧЕН]"
    },
    "tooltip_text": {
       "message": "(кликните для переключения интеграции)"
    },
    "menu_download_link": {
-      "message": "Скачать при помощи IDM"
+      "message": "Скачать при помощи OpenDM"
    },
    "menu_download_all": {
-      "message": "Скачать все ссылки при помощи IDM"
+      "message": "Скачать все ссылки при помощи OpenDM"
    },
    "menu_download_selected": {
-      "message": "Скачать выделенные ссылки при помощи IDM"
+      "message": "Скачать выделенные ссылки при помощи OpenDM"
    },
    "menu_download_item": {
-      "message": "Передать ссылку на загрузку в IDM"
+      "message": "Передать ссылку на загрузку в OpenDM"
    },
    "cannot_find_links": {
-      "message": "Ссылки для скачивания не обнаружены!\n\nЕсли они есть на странице, пожалуйста, обновите её, и попробуйте снова.\nЕсли проблема повторится, свяжитесь со службой поддержки IDM."
+      "message": "Ссылки для скачивания не обнаружены!\n\nЕсли они есть на странице, пожалуйста, обновите её, и попробуйте снова.\nЕсли проблема повторится, свяжитесь со службой поддержки OpenDM."
    }
 }

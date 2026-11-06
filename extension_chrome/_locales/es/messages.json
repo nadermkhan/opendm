@@ -3,9 +3,9 @@
       "message": "Spanish"
    },
    "menu_download_link": {
-      "message": "Descargar con IDM"
+      "message": "Descargar con OpenDM"
    },
    "menu_download_all": {
-      "message": "Descargar con IDM todos los enlaces"
+      "message": "Descargar con OpenDM todos los enlaces"
    }
 }

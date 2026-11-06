@@ -3,9 +3,9 @@
       "message": "Thai"
    },
    "menu_download_link": {
-      "message": "ดาวน์โหลดด้วย IDM"
+      "message": "ดาวน์โหลดด้วย OpenDM"
    },
    "menu_download_all": {
-      "message": "ดาวน์โหลดลิงก์ทั้งหมดด้วย IDM"
+      "message": "ดาวน์โหลดลิงก์ทั้งหมดด้วย OpenDM"
    }
 }

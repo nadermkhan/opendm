@@ -1,0 +1,9 @@
+{
+  "name": "com.opendm.host",
+  "description": "OpenDM Native Messaging Host",
+  "path": "/usr/bin/opendm-native-host",
+  "type": "stdio",
+  "allowed_extensions": [
+    "extension@opendm.org"
+  ]
+}

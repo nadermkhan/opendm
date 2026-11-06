@@ -3,9 +3,9 @@
       "message": "Arabic"
    },
    "menu_download_link": {
-      "message": "تحميل بواسطة Internet Download Manager"
+      "message": "تحميل بواسطة OpenDM"
    },
    "menu_download_all": {
-      "message": "تحميل الكل بواسطة Internet Download Manager"
+      "message": "تحميل الكل بواسطة OpenDM"
    }
 }

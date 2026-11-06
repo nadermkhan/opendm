@@ -1,4 +1,4 @@
-﻿
+
 let agent = typeof browser == 'undefined' ? chrome : browser;
 let param = {};
 
@@ -18,21 +18,21 @@ function onContentLoad(event)
         msgBrowserName.innerText = 'Microsoft Edge';
         msgIncognitoName.innerText = 'InPrivate browsing mode';
         msgIncognitoEnable.innerText = 'Allow in InPrivate';
-        linkContactSupport.href = 'http://www.internetdownloadmanager.com/support/msedge_integration.html';
+        linkContactSupport.href = 'https://github.com/nadermkhan/opendm/issues';
     }
     else if (param.mzffox)
     {
         msgBrowserName.innerText = 'Mozilla Firefox';
         msgIncognitoName.innerText = 'Private windows';
         msgIncognitoEnable.innerText = 'Run in Private Windows';
-        linkContactSupport.href = 'http://www.internetdownloadmanager.com/support/firefox_integration.html';
+        linkContactSupport.href = 'https://github.com/nadermkhan/opendm/issues';
     }
     else if (param.opera)
     {
         msgBrowserName.innerText = 'Opera';
         msgIncognitoName.innerText = 'Private browsing mode';
         msgIncognitoEnable.innerText = 'Allow in private mode';
-        linkContactSupport.href = 'http://www.internetdownloadmanager.com/support/opera_integration.html';
+        linkContactSupport.href = 'https://github.com/nadermkhan/opendm/issues';
     }
 
     if (param.error)

@@ -1,17 +1,20 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html>
 <head>
 
-  <title>Download with IDM</title>
+  <title>Download with OpenDM</title>
 
   <script src="captured.js"></script>
   
   <style>
 
-    body { height: 100%; margin: 0; background-color: #FAFDFE; font-size: large; font-family: Arial, sans-serif; }
+    body { height: 100%; margin: 0; background-color: #FAFDFE; font-size: large; font-family: Segoe UI, Arial, sans-serif; color: #1E293B; }
     #layoutWrapper { height: auto !important; min-height: 100%; margin: 0 auto -6em; }
+    #headerBar { display: flex; align-items: center; gap: 14px; padding: 14px 5em; background: linear-gradient(90deg, #0F172A, #1E3A8A); color: #FFFFFF; }
+    #headerBar img { width: 36px; height: 36px; }
+    #headerBar h2 { margin: 0; font-size: 20px; font-weight: 600; }
     #layoutContent { margin: 0 5em; }
-    #layoutFooter  { margin: 0 5em; text-align: center; font-style: italic; font-size: smaller; }
+    #layoutFooter  { margin: 0 5em; text-align: center; font-style: italic; font-size: smaller; color: #475569; }
     #layoutFooter, #layoutSpacer { height: 6em; }
 
   </style>
@@ -21,18 +24,18 @@
 
   <div id="layoutWrapper">
 
-    <div style="height: 61px; background-image: url(images/headBkgd.gif);">
-      <img src="images/headTitle.gif" alt="Internet Download Manager" width="466" height="61"/>
+    <div id="headerBar">
+      <img src="images/logo48.png" alt="OpenDM"/>
+      <h2>OpenDM — High-Speed Download Accelerator</h2>
     </div>
 
     <div id="layoutContent">
 
       <p><br/></p>
       <h3>
-        <span id="msgDownload">File download has been transferred to Internet Download Manager.</span>
-        <span id="msgDnldFrom" style="display: none">File download from <b id="strHostname">host</b> has been transferred to Internet Download Manager.</span>
-        <span id="msgRegister" style="display: none">Internet Download Manager will now show IDM registration dialog.<br/><br/>
-            Please verify your information on this dialog, and press OK button to register IDM.</span>
+        <span id="msgDownload">File download has been transferred to OpenDM.</span>
+        <span id="msgDnldFrom" style="display: none">File download from <b id="strHostname">host</b> has been transferred to OpenDM.</span>
+        <span id="msgRegister" style="display: none">OpenDM has processed your request.</span>
       </h3>
 
     </div>
@@ -43,12 +46,10 @@
 
   <div id="layoutFooter">
 
-    <hr width="100%" color="darkBlue" size="1"/>
+    <hr width="100%" color="#CBD5E1" size="1"/>
 
-    <p>Internet Download Manager, Tonec FZE<br/>
-      <img id="logoFooter" src="images/logoTonec.gif" width="68" height="22"
-            style="float: left; display: block; position: absolute;"/><br/>
-      &copy;&nbsp;1999-<span id="textThisYear">2026</span>. All rights reserved.</p>
+    <p>OpenDM — Created by Nader Mahbub Khan (<a href="https://github.com/nadermkhan/opendm" target="_blank">github.com/nadermkhan/opendm</a>)<br/>
+      &copy;&nbsp;<span id="textThisYear">2026</span> OpenDM Project. Licensed under GNU GPL v3.0.</p>
 
   </div>
 
