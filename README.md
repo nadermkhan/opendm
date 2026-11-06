@@ -34,14 +34,29 @@ Contributions, bug reports, and forks are welcome!
 
 <div align="center">
 
-### Main Interface
-![OpenDM Main Window](docs/screenshots/main_window.png)
+### Windows (Native Win32 API)
 
-### Download File Info Dialog
-![OpenDM Download File Info](docs/screenshots/download_file_info.png)
+#### Main Interface
+![OpenDM Windows Main Window](docs/screenshots/win32_main_window.png)
 
-### Download Progress & Connection Visualizer
-![OpenDM Download Progress](docs/screenshots/download_progress.png)
+#### Download Progress & Multipart Connection Visualizer
+![OpenDM Windows Download Progress](docs/screenshots/win32_download_progress.png)
+
+#### YouTube Adaptive Video & Audio Stream Selector
+![OpenDM Windows YouTube Stream Options](docs/screenshots/win32_youtube_options.png)
+
+---
+
+### Linux (GTK4)
+
+#### Main Interface
+![OpenDM Linux Main Window](docs/screenshots/main_window.png)
+
+#### Download File Info Dialog
+![OpenDM Linux Download File Info](docs/screenshots/download_file_info.png)
+
+#### Download Progress & Connection Visualizer
+![OpenDM Linux Download Progress](docs/screenshots/download_progress.png)
 
 </div>
 
