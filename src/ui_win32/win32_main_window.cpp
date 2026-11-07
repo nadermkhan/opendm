@@ -784,7 +784,9 @@ void Win32MainWindow::add_download_url(const std::string& url, const std::string
 
     DownloadPromptInfo info;
     info.url = url;
-    info.filename = filename.empty() ? "download.bin" : filename;
+    info.filename = filename.empty()
+        ? DownloadSession::extract_filename_from_url(url)
+        : DownloadSession::sanitize_filename(DownloadSession::url_decode(filename));
     info.destination_dir = path;
     info.category = QueueManager::detect_category(info.filename);
 
@@ -812,6 +814,14 @@ void Win32MainWindow::prompt_download(const DownloadPromptInfo& info) {
         }
     }
 
+    if (target_info.filename.empty() || target_info.filename == "download.bin") {
+        target_info.filename = DownloadSession::extract_filename_from_url(target_info.url);
+    }
+    if (target_info.category.empty() ||
+        (target_info.category == "General" && QueueManager::detect_category(target_info.filename) != "General")) {
+        target_info.category = QueueManager::detect_category(target_info.filename);
+    }
+
     auto res = Win32DownloadInfoDialog::show(hwnd_, target_info);
     if (res.action == DownloadInfoAction::CANCEL) {
         return;
@@ -822,7 +832,7 @@ void Win32MainWindow::prompt_download(const DownloadPromptInfo& info) {
     }
 
     std::error_code ec;
-    fs::create_directories(fs::path(res.info.save_as_path).parent_path(), ec);
+    fs::create_directories(fs::path(utf8_to_wide(res.info.save_as_path)).parent_path(), ec);
 
     static uint64_t counter = 1;
     std::string sess_id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
@@ -864,6 +874,8 @@ void Win32MainWindow::on_add_url() {
         info.url = res.url;
         info.username = res.username;
         info.password = res.password;
+        info.filename = DownloadSession::extract_filename_from_url(res.url);
+        info.category = QueueManager::detect_category(info.filename);
 
         if (YouTubeEngine::is_youtube_url(res.url)) {
             YouTubeVideoInfo yt_info;
@@ -1043,7 +1055,9 @@ void Win32MainWindow::on_batch_import() {
             for (const auto& it : items) {
                 static uint64_t cnt = 1;
                 std::string sid = "import_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(cnt++);
-                std::string fn = it.filename.empty() ? "download.bin" : it.filename;
+                std::string fn = (it.filename.empty() || it.filename == "download.bin")
+                    ? DownloadSession::extract_filename_from_url(it.url)
+                    : DownloadSession::sanitize_filename(DownloadSession::url_decode(it.filename));
                 auto sess = std::make_shared<DownloadSession>(sid, it.url, fn);
                 QueueManager::instance().get_main_queue().add_session(sess, false);
             }
@@ -1096,9 +1110,9 @@ void Win32MainWindow::on_open_file() {
     auto s = get_selected_session();
     if (s) {
         std::string dest = s->get_destination_path();
+        std::wstring wdest = utf8_to_wide(dest);
         std::error_code ec;
-        if (std::filesystem::exists(dest, ec)) {
-            std::wstring wdest(dest.begin(), dest.end());
+        if (std::filesystem::exists(std::filesystem::path(wdest), ec)) {
             ShellExecuteW(hwnd_, L"open", wdest.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         } else {
             MessageBoxW(hwnd_, L"The downloaded file does not exist on disk.", L"Open File", MB_OK | MB_ICONWARNING);
@@ -1110,13 +1124,13 @@ void Win32MainWindow::on_open_folder() {
     auto s = get_selected_session();
     if (s) {
         std::string dest = s->get_destination_path();
+        std::wstring wdest = utf8_to_wide(dest);
         std::error_code ec;
-        std::wstring wdest(dest.begin(), dest.end());
-        if (std::filesystem::exists(dest, ec)) {
+        if (std::filesystem::exists(std::filesystem::path(wdest), ec)) {
             std::wstring param = L"/select,\"" + wdest + L"\"";
             ShellExecuteW(hwnd_, L"open", L"explorer.exe", param.c_str(), nullptr, SW_SHOWNORMAL);
         } else {
-            std::wstring pdir = std::filesystem::path(dest).parent_path().wstring();
+            std::wstring pdir = std::filesystem::path(wdest).parent_path().wstring();
             ShellExecuteW(hwnd_, L"open", pdir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
     }

@@ -96,7 +96,10 @@ int main(int argc, char* argv[]) {
             std::cout << "Imported " << items.size() << " downloads from " << opts.import_file << std::endl;
             for (const auto& item : items) {
                 std::string dest_dir = item.path.empty() ? (opts.path.empty() ? "." : opts.path) : item.path;
-                std::string dest_file = dest_dir + "/" + (item.filename.empty() ? "download.bin" : item.filename);
+                std::string item_fn = (item.filename.empty() || item.filename == "download.bin")
+                    ? opendm::DownloadSession::extract_filename_from_url(item.url)
+                    : opendm::DownloadSession::sanitize_filename(opendm::DownloadSession::url_decode(item.filename));
+                std::string dest_file = dest_dir + "/" + item_fn;
                 static uint64_t counter = 1;
                 std::string id = "import_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
                 auto s = std::make_shared<opendm::DownloadSession>(id, item.url, dest_file);
@@ -128,7 +131,7 @@ int main(int argc, char* argv[]) {
             std::string download_url = opts.url;
             std::string audio_stream_url;
             std::string user_agent;
-            std::string default_fname = "download.bin";
+            std::string default_fname = opendm::DownloadSession::extract_filename_from_url(opts.url);
 
             if (opendm::YouTubeEngine::is_youtube_url(opts.url)) {
                 std::cout << "Detected YouTube video URL. Analyzing streams via OpenDM Native Engine..." << std::endl;

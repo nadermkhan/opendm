@@ -8,6 +8,15 @@ namespace win32 {
 
 namespace {
 
+std::wstring utf8_to_wide(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
+    if (needed <= 0) return std::wstring(str.begin(), str.end());
+    std::wstring out(needed, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), out.data(), needed);
+    return out;
+}
+
 std::string format_bytes(int64_t bytes) {
     if (bytes < 0) return "Unknown";
     constexpr double KB = 1024.0;
@@ -122,7 +131,7 @@ void Win32PropertiesDialog::show(HWND parent, std::shared_ptr<DownloadSession> s
             margin_x, cur_y + 2, lbl_w, row_h, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
         SendMessageW(hL, WM_SETFONT, (WPARAM)state.hFontBold, TRUE);
 
-        std::wstring wt(text.begin(), text.end());
+        std::wstring wt = utf8_to_wide(text);
         HWND hV = nullptr;
         if (is_edit) {
             hV = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", wt.c_str(),

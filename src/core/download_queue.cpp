@@ -389,6 +389,9 @@ std::shared_ptr<DownloadSession> QueueManager::find_session(const std::string& s
 }
 
 std::string QueueManager::detect_category(const std::string& filename) {
+    if (filename.empty() || filename == "download.bin") {
+        return "General";
+    }
     size_t dot_pos = filename.find_last_of('.');
     if (dot_pos == std::string::npos) {
         return "General";

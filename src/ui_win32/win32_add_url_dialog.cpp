@@ -8,6 +8,24 @@ namespace win32 {
 
 namespace {
 
+std::wstring utf8_to_wide(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
+    if (needed <= 0) return std::wstring(str.begin(), str.end());
+    std::wstring out(needed, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), out.data(), needed);
+    return out;
+}
+
+std::string wide_to_utf8(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
+    int needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) return std::string(wstr.begin(), wstr.end());
+    std::string out(needed, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), out.data(), needed, nullptr, nullptr);
+    return out;
+}
+
 std::string get_clipboard_url() {
     if (!OpenClipboard(nullptr)) return "";
     HANDLE hData = GetClipboardData(CF_UNICODETEXT);
@@ -21,13 +39,16 @@ std::string get_clipboard_url() {
         std::wstring wstr(text);
         GlobalUnlock(hData);
         CloseClipboard();
+        while (!wstr.empty() && (wstr.front() == L' ' || wstr.front() == L'\r' || wstr.front() == L'\n' || wstr.front() == L'\t')) {
+            wstr.erase(0, 1);
+        }
         // Check if starts with http://, https://, or ftp://
         if (wstr.rfind(L"http://", 0) == 0 || wstr.rfind(L"https://", 0) == 0 || wstr.rfind(L"ftp://", 0) == 0) {
             // Trim whitespace/newlines
             while (!wstr.empty() && (wstr.back() == L' ' || wstr.back() == L'\r' || wstr.back() == L'\n' || wstr.back() == L'\t')) {
                 wstr.pop_back();
             }
-            res.assign(wstr.begin(), wstr.end());
+            res = wide_to_utf8(wstr);
         }
     } else {
         CloseClipboard();
@@ -83,15 +104,15 @@ LRESULT CALLBACK AddUrlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                     wurl.clear();
                 }
                 if (!wurl.empty()) {
-                    state->result.url.assign(wurl.begin(), wurl.end());
+                    state->result.url = wide_to_utf8(wurl);
                     if (SendMessageW(state->hChkAuth, BM_GETCHECK, 0, 0) == BST_CHECKED) {
                         GetWindowTextW(state->hEditUser, buf, 2048);
                         std::wstring wu(buf);
-                        state->result.username.assign(wu.begin(), wu.end());
+                        state->result.username = wide_to_utf8(wu);
 
                         GetWindowTextW(state->hEditPass, buf, 2048);
                         std::wstring wp(buf);
-                        state->result.password.assign(wp.begin(), wp.end());
+                        state->result.password = wide_to_utf8(wp);
                     }
                     state->result.accepted = true;
                 }
@@ -191,7 +212,7 @@ AddUrlResult Win32AddUrlDialog::show(HWND parent, const std::string& default_url
         initial_url = get_clipboard_url();
     }
     if (!initial_url.empty()) {
-        std::wstring wurl(initial_url.begin(), initial_url.end());
+        std::wstring wurl = utf8_to_wide(initial_url);
         SetWindowTextW(state.hEditUrl, wurl.c_str());
         SendMessageW(state.hEditUrl, EM_SETSEL, 0, -1);
     }

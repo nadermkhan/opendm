@@ -1,4 +1,5 @@
 #include "batch_importer.hpp"
+#include "download_session.hpp"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -78,14 +79,7 @@ std::vector<BatchItem> BatchImporter::import_file(const std::string& filepath, s
             if (t.rfind("http://", 0) == 0 || t.rfind("https://", 0) == 0 || t.rfind("ftp://", 0) == 0) {
                 BatchItem bi;
                 bi.url = t;
-                size_t slash = t.find_last_of('/');
-                if (slash != std::string::npos && slash + 1 < t.length()) {
-                    bi.filename = t.substr(slash + 1);
-                    size_t q = bi.filename.find('?');
-                    if (q != std::string::npos) bi.filename = bi.filename.substr(0, q);
-                } else {
-                    bi.filename = "download.bin";
-                }
+                bi.filename = DownloadSession::extract_filename_from_url(t);
                 items.push_back(bi);
             }
         }

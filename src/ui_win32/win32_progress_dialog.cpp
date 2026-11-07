@@ -13,6 +13,15 @@ namespace win32 {
 
 namespace {
 
+std::wstring utf8_to_wide(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
+    if (needed <= 0) return std::wstring(str.begin(), str.end());
+    std::wstring out(needed, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), out.data(), needed);
+    return out;
+}
+
 std::string format_bytes(int64_t bytes) {
     if (bytes < 0) return "Unknown";
     constexpr double KB = 1024.0;
@@ -134,7 +143,7 @@ void Win32ProgressDialog::setup_ui() {
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlg_h) / 2;
 
     std::string title = session_ ? (std::to_string(static_cast<int>(session_->get_progress().progress_fraction * 100)) + "% of " + session_->get_filename()) : "Download Progress";
-    std::wstring wtitle(title.begin(), title.end());
+    std::wstring wtitle = utf8_to_wide(title);
 
     hwnd_ = CreateWindowExW(
         WS_EX_APPWINDOW,
@@ -285,7 +294,7 @@ void Win32ProgressDialog::update_ui() {
     // Title
     int pct = static_cast<int>(prog.progress_fraction * 100);
     std::string title = std::to_string(pct) + "% of " + session_->get_filename();
-    std::wstring wtitle(title.begin(), title.end());
+    std::wstring wtitle = utf8_to_wide(title);
     SetWindowTextW(hwnd_, wtitle.c_str());
 
     // Status text
@@ -296,7 +305,7 @@ void Win32ProgressDialog::update_ui() {
     else if (prog.status == SessionStatus::COMPLETED) st_str = "Complete";
     else if (prog.status == SessionStatus::ASSEMBLING) st_str = "Assembling file segments...";
     else if (prog.status == SessionStatus::ERROR) st_str = "Error: " + prog.error_message;
-    std::wstring wst(st_str.begin(), st_str.end());
+    std::wstring wst = utf8_to_wide(st_str);
     SetWindowTextW(hStaticStatus_, wst.c_str());
 
     // Size

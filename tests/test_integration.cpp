@@ -14,6 +14,9 @@ namespace fs = std::filesystem;
 int main() {
     std::cout << "=== Running OpenDM Subsystem Integration Tests ===" << std::endl;
 
+    // Isolate QueueManager storage path so tests never overwrite the user's real downloads.json
+    opendm::QueueManager::instance().set_storage_path("/tmp/opendm_test_queue.json");
+
     // 1. Test SiteLogon vault
     std::cout << "[Test 1] Site Logon Credential Vault..." << std::endl;
     auto& logon = opendm::SiteLogonManager::instance();
@@ -383,6 +386,41 @@ int main() {
 
         yt_ipc.stop();
         std::cout << "  [PASS] Stream scheme normalization, dual-stream demuxing, range parameter stripping, and IPC prompt verified." << std::endl;
+    }
+
+    // 13. Test URL Percent-Decoding, Filename Extraction & Category Detection (DhakaFlix regression test)
+    std::cout << "[Test 13] URL Percent-Decoding, Filename Extraction & Category Detection..." << std::endl;
+    {
+        std::string dhakaflix_url = "http://172.16.50.14/DHAKA-FLIX-14/SOUTH%20INDIAN%20MOVIES/South%20Movies/2025/Little%20Hearts%20%282025%29%201080p%20%28Telugu%29/Little%20Hearts%20%282025%29%20Telugu%201080p%20WEBRip%20x265%20HEVC%2010bit%20DD5.1%20ESub%20-1TMV.mkv";
+        std::string expected_fn = "Little Hearts (2025) Telugu 1080p WEBRip x265 HEVC 10bit DD5.1 ESub -1TMV.mkv";
+
+        std::string extracted = opendm::DownloadSession::extract_filename_from_url(dhakaflix_url);
+        assert(extracted == expected_fn);
+        assert(opendm::QueueManager::detect_category(extracted) == "Video");
+        assert(opendm::QueueManager::detect_category("download.bin") == "General");
+
+        // Even if DownloadSession is constructed with destination ending in download.bin, it must resolve the real filename from URL
+        auto df_sess = std::make_shared<opendm::DownloadSession>("df_1", dhakaflix_url, "/tmp/download.bin", "/tmp/opendm_test_chunks");
+        assert(df_sess->get_filename() == expected_fn);
+        assert(fs::path(df_sess->get_destination_path()).filename().string() == expected_fn);
+
+        // Query parameters containing slashes must not corrupt the path filename
+        std::string query_slash_url = "https://cdn.example.com/movies/Archive%20File.zip?redirect=http://other.com/foo/bar#section";
+        assert(opendm::DownloadSession::extract_filename_from_url(query_slash_url) == "Archive File.zip");
+
+        // S3 response-content-disposition in query string
+        std::string s3_url = "https://s3.amazonaws.com/bucket/blob123?response-content-disposition=attachment%3B%20filename%3D%22My%20Movie%202025.mp4%22&X-Amz-Signature=abc";
+        assert(opendm::DownloadSession::extract_filename_from_url(s3_url) == "My Movie 2025.mp4");
+
+        // RFC 5987 Content-Disposition header
+        std::string cd_hdr = "attachment; filename=\"fallback.mkv\"; filename*=UTF-8''Little%20Hearts%20%282025%29.mkv";
+        assert(opendm::DownloadSession::extract_filename_from_content_disposition(cd_hdr) == "Little Hearts (2025).mkv");
+
+        // Host-only URL fallback
+        assert(opendm::DownloadSession::extract_filename_from_url("https://example.com") == "download.bin");
+        assert(opendm::DownloadSession::extract_filename_from_url("https://example.com/") == "download.bin");
+
+        std::cout << "  [PASS] URL percent-decoding, filename extraction, and category detection verified." << std::endl;
     }
 
     std::cout << "All Subsystem Integration tests passed!" << std::endl;

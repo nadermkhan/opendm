@@ -60,7 +60,16 @@ DownloadInfoDialog* DownloadInfoDialog::show(GtkWindow* parent, const DownloadIn
 
 DownloadInfoDialog::DownloadInfoDialog(GtkWindow* parent, const DownloadInfoParams& params, DownloadInfoCallback callback)
     : parent_(parent), params_(params), callback_(callback) {
-    if (params_.category.empty()) {
+    if (params_.filename.empty() || params_.filename == "download.bin") {
+        params_.filename = DownloadSession::extract_filename_from_url(params_.url);
+    } else if (params_.filename.find('%') != std::string::npos) {
+        std::string decoded = DownloadSession::sanitize_filename(DownloadSession::url_decode(params_.filename));
+        if (!decoded.empty() && decoded != "download.bin") {
+            params_.filename = decoded;
+        }
+    }
+    if (params_.category.empty() ||
+        (params_.category == "General" && QueueManager::detect_category(params_.filename) != "General")) {
         params_.category = QueueManager::detect_category(params_.filename);
     }
     if (params_.destination_dir.empty()) {

@@ -86,6 +86,11 @@ std::string format_size(uint64_t bytes) {
 
 #define WM_PROBE_COMPLETE (WM_USER + 101)
 
+struct ProbeResult {
+    uint64_t file_size{0};
+    std::string filename;
+};
+
 struct InfoDialogState {
     HWND hwnd{nullptr};
     HWND hEditUrl{nullptr};
@@ -119,13 +124,34 @@ LRESULT CALLBACK DownloadInfoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
             return 0;
         }
         case WM_PROBE_COMPLETE: {
-            if (state && !state->destroyed) {
-                uint64_t probed_sz = (static_cast<uint64_t>(lParam) << 32) | static_cast<uint32_t>(wParam);
-                if (probed_sz > 0) {
-                    state->result.info.file_size = probed_sz;
-                    std::string sz_str = format_size(probed_sz);
-                    std::wstring wsz(sz_str.begin(), sz_str.end());
+            std::unique_ptr<ProbeResult> pr(reinterpret_cast<ProbeResult*>(lParam));
+            if (state && !state->destroyed && pr) {
+                if (pr->file_size > 0) {
+                    state->result.info.file_size = pr->file_size;
+                    std::string sz_str = format_size(pr->file_size);
+                    std::wstring wsz = utf8_to_wide(sz_str);
                     SetWindowTextW(state->hStaticSize, wsz.c_str());
+                }
+                if (!pr->filename.empty() && pr->filename != "download.bin" &&
+                    (state->result.info.filename.empty() || state->result.info.filename == "download.bin")) {
+                    state->result.info.filename = pr->filename;
+                    std::string new_cat = QueueManager::detect_category(pr->filename);
+                    state->result.info.category = new_cat;
+                    for (int i = 0; kCategories[i]; ++i) {
+                        if (new_cat == kCategories[i]) {
+                            SendMessageW(state->hComboCat, CB_SETCURSEL, i, 0);
+                            break;
+                        }
+                    }
+                    std::string root = get_default_downloads_dir();
+                    fs::path dp = (new_cat == "General")
+                        ? fs::path(utf8_to_wide(root))
+                        : (fs::path(utf8_to_wide(root)) / utf8_to_wide(new_cat));
+                    state->result.info.destination_dir = wide_to_utf8(dp.wstring());
+                    fs::path sp = dp / utf8_to_wide(state->result.info.filename);
+                    state->result.info.save_as_path = wide_to_utf8(sp.wstring());
+                    std::wstring wsa = utf8_to_wide(state->result.info.save_as_path);
+                    SetWindowTextW(state->hEditSaveAs, wsa.c_str());
                 }
             }
             return 0;
@@ -151,9 +177,12 @@ LRESULT CALLBACK DownloadInfoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                     }
 
                     std::string root = get_default_downloads_dir();
-                    std::string new_dir = (state->result.info.category == "General") ? root : (fs::path(utf8_to_wide(root)) / utf8_to_wide(state->result.info.category)).string();
+                    fs::path dp = (state->result.info.category == "General")
+                        ? fs::path(utf8_to_wide(root))
+                        : (fs::path(utf8_to_wide(root)) / utf8_to_wide(state->result.info.category));
+                    std::string new_dir = wide_to_utf8(dp.wstring());
                     state->result.info.destination_dir = new_dir;
-                    fs::path full_p = fs::path(utf8_to_wide(new_dir)) / utf8_to_wide(state->result.info.filename);
+                    fs::path full_p = dp / utf8_to_wide(state->result.info.filename);
                     state->result.info.save_as_path = wide_to_utf8(full_p.wstring());
                     std::wstring ws = utf8_to_wide(state->result.info.save_as_path);
                     SetWindowTextW(state->hEditSaveAs, ws.c_str());
@@ -249,10 +278,16 @@ DownloadInfoResult Win32DownloadInfoDialog::show(HWND parent, const DownloadProm
     InfoDialogState state;
     state.result.info = initial_info;
 
-    if (state.result.info.filename.empty()) {
-        state.result.info.filename = "download.bin";
+    if (state.result.info.filename.empty() || state.result.info.filename == "download.bin") {
+        state.result.info.filename = DownloadSession::extract_filename_from_url(state.result.info.url);
+    } else if (state.result.info.filename.find('%') != std::string::npos) {
+        std::string decoded = DownloadSession::sanitize_filename(DownloadSession::url_decode(state.result.info.filename));
+        if (!decoded.empty() && decoded != "download.bin") {
+            state.result.info.filename = decoded;
+        }
     }
-    if (state.result.info.category.empty()) {
+    if (state.result.info.category.empty() ||
+        (state.result.info.category == "General" && QueueManager::detect_category(state.result.info.filename) != "General")) {
         state.result.info.category = QueueManager::detect_category(state.result.info.filename);
     }
     if (state.result.info.destination_dir.empty()) {
@@ -440,27 +475,72 @@ DownloadInfoResult Win32DownloadInfoDialog::show(HWND parent, const DownloadProm
 
     SetFocus(state.hBtnStart);
 
-    // Background resource probe if size is 0
-    if (state.result.info.file_size == 0) {
+    // Background resource probe if size is 0 or filename is still download.bin
+    if (state.result.info.file_size == 0 || state.result.info.filename == "download.bin") {
         std::thread([hwnd, url = state.result.info.url, ua = state.result.info.user_agent]() {
             CURL* curl = curl_easy_init();
             if (!curl) return;
 
+            struct HeaderCapture {
+                uint64_t content_range_total{0};
+                uint64_t content_length{0};
+                std::string cd_filename;
+            } hc;
+
+            auto hdr_cb = +[](char* buffer, size_t size, size_t nitems, void* userdata) -> size_t {
+                size_t total = size * nitems;
+                auto* h = static_cast<HeaderCapture*>(userdata);
+                std::string line(buffer, total);
+                std::string lower = line;
+                for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+                if (lower.rfind("content-disposition:", 0) == 0) {
+                    std::string fn = DownloadSession::extract_filename_from_content_disposition(line.substr(20));
+                    if (!fn.empty()) h->cd_filename = fn;
+                } else if (lower.rfind("content-range:", 0) == 0) {
+                    size_t slash = line.find('/');
+                    if (slash != std::string::npos) {
+                        try { h->content_range_total = std::stoull(line.substr(slash + 1)); } catch (...) {}
+                    }
+                } else if (lower.rfind("content-length:", 0) == 0) {
+                    try { h->content_length = std::stoull(line.substr(15)); } catch (...) {}
+                }
+                return total;
+            };
+
+            auto sink_cb = +[](char*, size_t, size_t, void*) -> size_t {
+                return 0; // Abort body transfer immediately after headers
+            };
+
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-            curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+            curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
+            curl_easy_setopt(curl, CURLOPT_RANGE, "0-0");
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
-            std::string user_agent = ua.empty() ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" : ua;
+            curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 6L);
+            curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, hdr_cb);
+            curl_easy_setopt(curl, CURLOPT_HEADERDATA, &hc);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sink_cb);
+            std::string user_agent = ua.empty() ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36" : ua;
             curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent.c_str());
 
-            curl_off_t cl = 0;
-            CURLcode res = curl_easy_perform(curl);
-            if (res == CURLE_OK) {
-                curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
+            curl_easy_perform(curl);
+
+            std::string eff_fn;
+            char* eff_url = nullptr;
+            if (curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &eff_url) == CURLE_OK && eff_url && *eff_url) {
+                eff_fn = DownloadSession::extract_filename_from_url(eff_url);
             }
             curl_easy_cleanup(curl);
-            if (cl > 0 && IsWindow(hwnd)) {
-                PostMessageW(hwnd, WM_PROBE_COMPLETE, (WPARAM)static_cast<uint32_t>(cl), (LPARAM)(static_cast<uint64_t>(cl) >> 32));
+
+            uint64_t final_sz = (hc.content_range_total > 0) ? hc.content_range_total : hc.content_length;
+            std::string final_fn = !hc.cd_filename.empty() ? hc.cd_filename : eff_fn;
+
+            if ((final_sz > 0 || (!final_fn.empty() && final_fn != "download.bin")) && IsWindow(hwnd)) {
+                auto* pr = new ProbeResult{final_sz, final_fn};
+                if (!PostMessageW(hwnd, WM_PROBE_COMPLETE, 0, reinterpret_cast<LPARAM>(pr))) {
+                    delete pr;
+                }
             }
         }).detach();
     }
@@ -490,10 +570,16 @@ bool Win32DownloadInfoDialog::save_snapshot(HWND parent, const DownloadPromptInf
     InfoDialogState state;
     state.result.info = initial_info;
 
-    if (state.result.info.filename.empty()) {
-        state.result.info.filename = "download.bin";
+    if (state.result.info.filename.empty() || state.result.info.filename == "download.bin") {
+        state.result.info.filename = DownloadSession::extract_filename_from_url(state.result.info.url);
+    } else if (state.result.info.filename.find('%') != std::string::npos) {
+        std::string decoded = DownloadSession::sanitize_filename(DownloadSession::url_decode(state.result.info.filename));
+        if (!decoded.empty() && decoded != "download.bin") {
+            state.result.info.filename = decoded;
+        }
     }
-    if (state.result.info.category.empty()) {
+    if (state.result.info.category.empty() ||
+        (state.result.info.category == "General" && QueueManager::detect_category(state.result.info.filename) != "General")) {
         state.result.info.category = QueueManager::detect_category(state.result.info.filename);
     }
     if (state.result.info.destination_dir.empty()) {

@@ -218,12 +218,30 @@ DownloadSession::DownloadSession(const std::string& id, const std::string& url,
     // Extract filename from dest_path or URL
     std::filesystem::path p(dest_path);
     filename_ = p.filename().string();
-    if (filename_.empty()) {
-        size_t last_slash = url_.find_last_of("/\\?#");
-        if (last_slash != std::string::npos && last_slash + 1 < url_.length()) {
-            filename_ = url_.substr(last_slash + 1);
+    if (filename_.empty() || filename_ == "download.bin") {
+        std::string url_fn = extract_filename_from_url(url_);
+        if (!url_fn.empty() && url_fn != "download.bin") {
+            filename_ = url_fn;
+            if (!p.parent_path().empty()) {
+                destination_path_ = (p.parent_path() / filename_).string();
+            } else {
+                destination_path_ = filename_;
+            }
         } else {
             filename_ = "download.bin";
+            if (destination_path_.empty()) {
+                destination_path_ = filename_;
+            }
+        }
+    } else if (filename_.find('%') != std::string::npos) {
+        std::string decoded = sanitize_filename(url_decode(filename_));
+        if (!decoded.empty() && decoded != "download.bin") {
+            filename_ = decoded;
+            if (!p.parent_path().empty()) {
+                destination_path_ = (p.parent_path() / filename_).string();
+            } else {
+                destination_path_ = filename_;
+            }
         }
     }
 }
@@ -301,10 +319,223 @@ void DownloadSession::set_category(const std::string& cat) {
 
 void DownloadSession::set_custom_filename(const std::string& fname) {
     std::lock_guard<std::mutex> lock(meta_mutex_);
-    filename_ = fname;
-    custom_filename_set_ = true;
+    if (fname.empty() || fname == "download.bin") {
+        std::string url_fn = extract_filename_from_url(url_);
+        if (!url_fn.empty() && url_fn != "download.bin") {
+            filename_ = url_fn;
+        } else {
+            filename_ = "download.bin";
+        }
+        custom_filename_set_ = false;
+    } else {
+        filename_ = fname;
+        custom_filename_set_ = true;
+    }
     std::filesystem::path p(destination_path_);
-    destination_path_ = (p.parent_path() / fname).string();
+    if (!p.parent_path().empty()) {
+        destination_path_ = (p.parent_path() / filename_).string();
+    } else {
+        destination_path_ = filename_;
+    }
+}
+
+std::string DownloadSession::url_decode(const std::string& encoded) {
+    std::string src = encoded;
+    // Strip RFC 5987 charset/language prefix if present (e.g., UTF-8'' or utf-8'en')
+    if (src.size() > 7) {
+        std::string prefix = src.substr(0, 7);
+        std::transform(prefix.begin(), prefix.end(), prefix.begin(), ::tolower);
+        if (prefix.rfind("utf-8'", 0) == 0) {
+            size_t second_quote = src.find('\'', 6);
+            if (second_quote != std::string::npos && second_quote + 1 < src.size()) {
+                src = src.substr(second_quote + 1);
+            }
+        }
+    }
+
+    auto hex_val = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+
+    std::string out;
+    out.reserve(src.size());
+    for (size_t i = 0; i < src.size(); ++i) {
+        if (src[i] == '%' && i + 2 < src.size()) {
+            int hi = hex_val(src[i + 1]);
+            int lo = hex_val(src[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                char decoded = static_cast<char>((hi << 4) | lo);
+                if (decoded != '\0') {
+                    out.push_back(decoded);
+                }
+                i += 2;
+                continue;
+            }
+        }
+        out.push_back(src[i]);
+    }
+    return out;
+}
+
+std::string DownloadSession::sanitize_filename(const std::string& filename) {
+    std::string s = filename;
+
+    // Trim leading/trailing whitespace, quotes, semicolons, commas, control chars
+    while (!s.empty()) {
+        unsigned char c = static_cast<unsigned char>(s.front());
+        if (c <= 32 || c == '"' || c == '\'' || c == ';' || c == ',') {
+            s.erase(0, 1);
+        } else {
+            break;
+        }
+    }
+    while (!s.empty()) {
+        unsigned char c = static_cast<unsigned char>(s.back());
+        if (c <= 32 || c == '"' || c == '\'' || c == ';' || c == ',' || c == '.') {
+            s.pop_back();
+        } else {
+            break;
+        }
+    }
+
+    // Strip directory components if any
+    size_t last_sep = s.find_last_of("/\\");
+    if (last_sep != std::string::npos) {
+        s = s.substr(last_sep + 1);
+    }
+
+    std::string clean;
+    clean.reserve(s.size());
+    for (unsigned char c : s) {
+        if (c < 32 || c == '<' || c == '>' || c == ':' || c == '"' ||
+            c == '/' || c == '\\' || c == '|' || c == '?' || c == '*') {
+            clean.push_back('_');
+        } else {
+            clean.push_back(static_cast<char>(c));
+        }
+    }
+
+    while (!clean.empty() && (clean.front() == ' ' || clean.front() == '\t')) {
+        clean.erase(0, 1);
+    }
+    while (!clean.empty() && (clean.back() == ' ' || clean.back() == '\t' || clean.back() == '.')) {
+        clean.pop_back();
+    }
+
+    if (clean.empty() || clean == "." || clean == "..") {
+        return "download.bin";
+    }
+    return clean;
+}
+
+std::string DownloadSession::extract_filename_from_content_disposition(const std::string& cd) {
+    if (cd.empty()) return "";
+
+    // 1. Prefer RFC 5987 filename*=
+    {
+        std::regex fn_star_re(R"(filename\*\s*=\s*(?:UTF-8''|utf-8'')?["']?([^"';\r\n]+)["']?)", std::regex::icase);
+        std::smatch m;
+        if (std::regex_search(cd, m, fn_star_re) && m.size() > 1) {
+            std::string clean = sanitize_filename(url_decode(m[1].str()));
+            if (!clean.empty() && clean != "download.bin") {
+                return clean;
+            }
+        }
+    }
+
+    // 2. Quoted filename="..."
+    {
+        std::regex fn_quoted_re(R"re(filename\s*=\s*"([^"\r\n]+)")re", std::regex::icase);
+        std::smatch m;
+        if (std::regex_search(cd, m, fn_quoted_re) && m.size() > 1) {
+            std::string clean = sanitize_filename(url_decode(m[1].str()));
+            if (!clean.empty() && clean != "download.bin") {
+                return clean;
+            }
+        }
+    }
+
+    // 3. Unquoted filename=...
+    {
+        std::regex fn_unquoted_re(R"(filename\s*=\s*([^;\r\n"']+))", std::regex::icase);
+        std::smatch m;
+        if (std::regex_search(cd, m, fn_unquoted_re) && m.size() > 1) {
+            std::string clean = sanitize_filename(url_decode(m[1].str()));
+            if (!clean.empty() && clean != "download.bin") {
+                return clean;
+            }
+        }
+    }
+
+    return "";
+}
+
+std::string DownloadSession::extract_filename_from_url(const std::string& url) {
+    if (url.empty()) return "download.bin";
+
+    std::string trimmed = url;
+    while (!trimmed.empty() && static_cast<unsigned char>(trimmed.front()) <= 32) trimmed.erase(0, 1);
+    while (!trimmed.empty() && static_cast<unsigned char>(trimmed.back()) <= 32) trimmed.pop_back();
+    if (trimmed.empty()) return "download.bin";
+
+    // Separate fragment (#) and query (?)
+    size_t hash_pos = trimmed.find('#');
+    std::string no_frag = (hash_pos != std::string::npos) ? trimmed.substr(0, hash_pos) : trimmed;
+
+    size_t q_pos = no_frag.find('?');
+    std::string path_part = (q_pos != std::string::npos) ? no_frag.substr(0, q_pos) : no_frag;
+    std::string query_part = (q_pos != std::string::npos) ? no_frag.substr(q_pos + 1) : "";
+
+    // 1. Check if query_part contains an explicit response-content-disposition or filename= parameter
+    if (!query_part.empty()) {
+        std::string decoded_query = url_decode(query_part);
+        std::string cd_fn = extract_filename_from_content_disposition(decoded_query);
+        if (!cd_fn.empty() && cd_fn != "download.bin") {
+            return cd_fn;
+        }
+
+        std::regex q_fn_re(R"((?:^|[&;])(?:filename|file|name)\s*=\s*([^&;#\r\n]+))", std::regex::icase);
+        std::smatch m;
+        if (std::regex_search(query_part, m, q_fn_re) && m.size() > 1) {
+            std::string q_cand = sanitize_filename(url_decode(m[1].str()));
+            if (!q_cand.empty() && q_cand != "download.bin" && q_cand.find('.') != std::string::npos) {
+                return q_cand;
+            }
+        }
+    }
+
+    // 2. Extract filename from the URL path component (after scheme://authority/)
+    size_t scheme_pos = path_part.find("://");
+    size_t path_start = 0;
+    if (scheme_pos != std::string::npos) {
+        size_t first_slash = path_part.find_first_of("/\\", scheme_pos + 3);
+        if (first_slash == std::string::npos) {
+            return "download.bin"; // Only scheme://host with no path
+        }
+        path_start = first_slash;
+    }
+
+    // Strip trailing slashes
+    while (path_part.size() > path_start + 1 && (path_part.back() == '/' || path_part.back() == '\\')) {
+        path_part.pop_back();
+    }
+
+    size_t last_slash = path_part.find_last_of("/\\");
+    std::string raw_seg;
+    if (last_slash != std::string::npos && last_slash >= path_start && last_slash + 1 < path_part.size()) {
+        raw_seg = path_part.substr(last_slash + 1);
+    } else if (scheme_pos == std::string::npos) {
+        raw_seg = path_part;
+    }
+
+    if (raw_seg.empty()) {
+        return "download.bin";
+    }
+
+    return sanitize_filename(url_decode(raw_seg));
 }
 
 void DownloadSession::stop_and_join_locked() {
@@ -597,26 +828,45 @@ bool DownloadSession::probe_resource() {
         }
     }
 
-    // Extract filename from Content-Disposition if present
+    // Extract filename from Content-Disposition if present, or fallback to effective_url_ / url_
+    std::string resolved_fn;
     auto cd_it = resp_headers.find("content-disposition");
     if (cd_it != resp_headers.end()) {
-        std::regex fn_regex(R"(filename\*?=(?:UTF-8'')?["']?([^"';]+)["']?)", std::regex::icase);
-        std::smatch match;
-        if (std::regex_search(cd_it->second, match, fn_regex) && match.size() > 1) {
-            std::string extracted_fn = match[1].str();
-            if (!extracted_fn.empty()) {
-                // Strip directory components to prevent path traversal (e.g. "../../etc/passwd")
-                extracted_fn = std::filesystem::path(extracted_fn).filename().string();
-                extracted_fn.erase(std::remove_if(extracted_fn.begin(), extracted_fn.end(),
-                    [](char c) { return c == '\0' || c == '/' || c == '\\'; }), extracted_fn.end());
+        resolved_fn = extract_filename_from_content_disposition(cd_it->second);
+    }
 
-                if (!extracted_fn.empty()) {
-                    std::lock_guard<std::mutex> lock(meta_mutex_);
-                    if (!custom_filename_set_) {
-                        filename_ = extracted_fn;
-                        std::filesystem::path p(destination_path_);
-                        destination_path_ = (p.parent_path() / filename_).string();
-                    }
+    if (resolved_fn.empty()) {
+        std::lock_guard<std::mutex> lock(meta_mutex_);
+        if (filename_.empty() || filename_ == "download.bin") {
+            if (!effective_url_.empty() && !is_googlevideo_url(effective_url_)) {
+                std::string eff_fn = extract_filename_from_url(effective_url_);
+                if (!eff_fn.empty() && eff_fn != "download.bin") {
+                    resolved_fn = eff_fn;
+                }
+            }
+            if (resolved_fn.empty() && !is_googlevideo_url(url_)) {
+                std::string u_fn = extract_filename_from_url(url_);
+                if (!u_fn.empty() && u_fn != "download.bin") {
+                    resolved_fn = u_fn;
+                }
+            }
+        }
+    }
+
+    if (!resolved_fn.empty()) {
+        std::lock_guard<std::mutex> lock(meta_mutex_);
+        if (!custom_filename_set_ || filename_.empty() || filename_ == "download.bin") {
+            filename_ = resolved_fn;
+            std::filesystem::path p(destination_path_);
+            if (!p.parent_path().empty()) {
+                destination_path_ = (p.parent_path() / filename_).string();
+            } else {
+                destination_path_ = filename_;
+            }
+            if (category_.empty() || category_ == "General" || category_ == "Programs") {
+                std::string new_cat = QueueManager::detect_category(filename_);
+                if (new_cat != "General") {
+                    category_ = new_cat;
                 }
             }
         }

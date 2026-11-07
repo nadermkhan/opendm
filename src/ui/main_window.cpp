@@ -1132,15 +1132,10 @@ void MainWindow::on_add_url_clicked() {
             info.filename = res.filename;
             info.username = res.username;
             info.password = res.password;
-            if (info.filename.empty()) {
-                size_t slash = res.url.find_last_of('/');
-                if (slash != std::string::npos && slash + 1 < res.url.length()) {
-                    info.filename = res.url.substr(slash + 1);
-                    size_t q = info.filename.find('?');
-                    if (q != std::string::npos) info.filename = info.filename.substr(0, q);
-                } else {
-                    info.filename = "download.bin";
-                }
+            if (info.filename.empty() || info.filename == "download.bin") {
+                info.filename = DownloadSession::extract_filename_from_url(res.url);
+            } else {
+                info.filename = DownloadSession::sanitize_filename(DownloadSession::url_decode(info.filename));
             }
             info.category = QueueManager::detect_category(info.filename);
             self->prompt_download(info);
@@ -1154,32 +1149,16 @@ void MainWindow::add_download_url(const std::string& url, const std::string& pat
         DownloadPromptInfo info;
         info.url = url;
         info.destination_dir = path;
-        info.filename = filename;
-        if (info.filename.empty()) {
-            size_t slash = url.find_last_of('/');
-            if (slash != std::string::npos && slash + 1 < url.length()) {
-                info.filename = url.substr(slash + 1);
-                size_t q = info.filename.find('?');
-                if (q != std::string::npos) info.filename = info.filename.substr(0, q);
-            } else {
-                info.filename = "download.bin";
-            }
-        }
+        info.filename = (filename.empty() || filename == "download.bin")
+            ? DownloadSession::extract_filename_from_url(url)
+            : DownloadSession::sanitize_filename(DownloadSession::url_decode(filename));
         info.category = QueueManager::detect_category(info.filename);
         prompt_download(info);
     } else {
         std::string dest_dir = path.empty() ? (fs::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string() : path;
-        std::string fname = filename;
-        if (fname.empty()) {
-            size_t slash = url.find_last_of('/');
-            if (slash != std::string::npos && slash + 1 < url.length()) {
-                fname = url.substr(slash + 1);
-                size_t q = fname.find('?');
-                if (q != std::string::npos) fname = fname.substr(0, q);
-            } else {
-                fname = "download.bin";
-            }
-        }
+        std::string fname = (filename.empty() || filename == "download.bin")
+            ? DownloadSession::extract_filename_from_url(url)
+            : DownloadSession::sanitize_filename(DownloadSession::url_decode(filename));
 
         std::string dest_path = dest_dir + "/" + fname;
         static uint64_t counter = 1;

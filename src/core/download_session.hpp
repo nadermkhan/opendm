@@ -100,6 +100,12 @@ public:
     std::string serialize() const;
     static std::shared_ptr<DownloadSession> deserialize(const std::string& json_str);
 
+    // URL & filename utilities
+    static std::string url_decode(const std::string& encoded);
+    static std::string sanitize_filename(const std::string& filename);
+    static std::string extract_filename_from_url(const std::string& url);
+    static std::string extract_filename_from_content_disposition(const std::string& content_disposition);
+
     // Metadata accessors
     std::string get_last_modified() const;
     std::string get_etag() const;

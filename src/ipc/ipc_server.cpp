@@ -770,7 +770,7 @@ std::string IpcServer::handle_request(const std::string& request) {
             } else if (referer.empty() && page_url.rfind("http", 0) == 0) {
                 referer = page_url;
             }
-            std::string page_title = media_title.empty() ? page_url : media_title;
+            std::string page_title = !media_title.empty() ? media_title : (page_url.rfind("http", 0) == 0 ? "" : page_url);
             std::string cookies = extract_tonec_field(req, 51);
             std::string user_agent = extract_tonec_field(req, 54);
 
@@ -816,35 +816,27 @@ std::string IpcServer::handle_request(const std::string& request) {
                 }
 
                 if (filename.empty() || filename == "ZIP") {
-                    size_t cd_pos = lower_h.find("filename=");
-                    if (cd_pos != std::string::npos) {
-                        size_t fn_start = cd_pos + 9;
-                        size_t fn_end = resp_headers.find_first_of("\r\n;", fn_start);
-                        std::string cd_name = resp_headers.substr(fn_start, fn_end - fn_start);
-                        while (!cd_name.empty() && (cd_name.front() == '"' || cd_name.front() == ' ')) cd_name.erase(0, 1);
-                        while (!cd_name.empty() && (cd_name.back() == '"' || cd_name.back() == ' ')) cd_name.pop_back();
-                        if (!cd_name.empty()) {
-                            size_t slash = cd_name.find_last_of("/\\");
-                            if (slash != std::string::npos) cd_name = cd_name.substr(slash + 1);
-                            filename = cd_name;
-                        }
+                    std::string cd_fn = DownloadSession::extract_filename_from_content_disposition(resp_headers);
+                    if (!cd_fn.empty()) {
+                        filename = cd_fn;
                     }
                 }
             }
 
             if (filename.empty() || filename == "ZIP" || filename == "videoplayback" || filename == "videoplayback.mp4" || filename == "download.bin") {
-                if (!page_title.empty()) {
+                std::string url_fn = DownloadSession::extract_filename_from_url(url);
+                bool is_generic_stream = (url_fn.empty() || url_fn == "download.bin" ||
+                                          url_fn.rfind("videoplayback", 0) == 0 ||
+                                          url_fn == "master.m3u8" || url_fn == "index.m3u8");
+                if (!is_generic_stream) {
+                    filename = url_fn;
+                } else if (!page_title.empty()) {
                     filename = sanitize_media_filename(page_title, "mp4");
                 } else {
-                    size_t slash = url.find_last_of('/');
-                    if (slash != std::string::npos && slash + 1 < url.length()) {
-                        filename = url.substr(slash + 1);
-                        size_t q = filename.find('?');
-                        if (q != std::string::npos) filename = filename.substr(0, q);
-                    } else {
-                        filename = "download.bin";
-                    }
+                    filename = url_fn.empty() ? "download.bin" : url_fn;
                 }
+            } else {
+                filename = DownloadSession::sanitize_filename(DownloadSession::url_decode(filename));
             }
 
             // Clean filename from any directory separators and trailing delimiters
@@ -1043,15 +1035,10 @@ std::string IpcServer::handle_request(const std::string& request) {
         }
         std::string url = video_url;
 
-        if (filename.empty()) {
-            size_t slash = url.find_last_of('/');
-            if (slash != std::string::npos && slash + 1 < url.length()) {
-                filename = url.substr(slash + 1);
-                size_t q = filename.find('?');
-                if (q != std::string::npos) filename = filename.substr(0, q);
-            } else {
-                filename = "download.bin";
-            }
+        if (filename.empty() || filename == "download.bin") {
+            filename = DownloadSession::extract_filename_from_url(url);
+        } else {
+            filename = DownloadSession::sanitize_filename(DownloadSession::url_decode(filename));
         }
 
         if (gui_mode_ && no_prompt_str != "true" && add_only_str != "true") {

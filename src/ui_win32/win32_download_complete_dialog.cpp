@@ -13,6 +13,24 @@ namespace win32 {
 
 namespace {
 
+std::wstring utf8_to_wide(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
+    if (needed <= 0) return std::wstring(str.begin(), str.end());
+    std::wstring out(needed, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), out.data(), needed);
+    return out;
+}
+
+std::string wide_to_utf8(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
+    int needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) return std::string(wstr.begin(), wstr.end());
+    std::string out(needed, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), out.data(), needed, nullptr, nullptr);
+    return out;
+}
+
 std::string format_size(uint64_t bytes) {
     if (bytes == 0) return "0 Bytes";
     constexpr double KB = 1024.0;
@@ -55,20 +73,20 @@ LRESULT CALLBACK CompleteWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             if (id == 401) { // Open
-                std::wstring wp(state->filepath.begin(), state->filepath.end());
+                std::wstring wp = utf8_to_wide(state->filepath);
                 ShellExecuteW(hwnd, L"open", wp.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 state->done = true;
                 DestroyWindow(hwnd);
                 return 0;
             }
             if (id == 402) { // Open Folder
-                std::wstring wp(state->filepath.begin(), state->filepath.end());
+                std::wstring wp = utf8_to_wide(state->filepath);
                 std::error_code ec;
-                if (fs::exists(state->filepath, ec)) {
+                if (fs::exists(fs::path(wp), ec)) {
                     std::wstring param = L"/select,\"" + wp + L"\"";
                     ShellExecuteW(hwnd, L"open", L"explorer.exe", param.c_str(), nullptr, SW_SHOWNORMAL);
                 } else {
-                    std::wstring pdir = fs::path(state->filepath).parent_path().wstring();
+                    std::wstring pdir = fs::path(wp).parent_path().wstring();
                     ShellExecuteW(hwnd, L"open", pdir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
                 }
                 state->done = true;
@@ -150,9 +168,8 @@ void Win32DownloadCompleteDialog::show(HWND parent, const std::string& filepath,
     SendMessageW(hIcon, STM_SETICON, (WPARAM)state.hFileIcon, 0);
 
     // File info
-    fs::path p(filepath);
-    std::string fname = p.filename().string();
-    std::wstring wfn(fname.begin(), fname.end());
+    fs::path p(utf8_to_wide(filepath));
+    std::wstring wfn = p.filename().wstring();
 
     int text_x = margin_x + icon_size + DpiHelper::scale(16, dpi);
     int text_w = dlg_w - text_x - margin_x - DpiHelper::scale(16, dpi);
@@ -163,8 +180,8 @@ void Win32DownloadCompleteDialog::show(HWND parent, const std::string& filepath,
         hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(hLblName, WM_SETFONT, (WPARAM)state.hFontBold, TRUE);
 
-    std::string info_text = "Size: " + format_size(file_size) + "\nSaved to: " + p.parent_path().string();
-    std::wstring winfo(info_text.begin(), info_text.end());
+    std::string info_text = "Size: " + format_size(file_size) + "\nSaved to: " + wide_to_utf8(p.parent_path().wstring());
+    std::wstring winfo = utf8_to_wide(info_text);
     HWND hLblInfo = CreateWindowExW(0, L"STATIC", winfo.c_str(),
         WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
         text_x, DpiHelper::scale(44, dpi), text_w, DpiHelper::scale(45, dpi),
