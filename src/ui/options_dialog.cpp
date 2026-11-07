@@ -203,7 +203,8 @@ GtkWidget* OptionsDialog::build_connection_tab() {
     gtk_grid_attach(GTK_GRID(grid), lbl_conns, 0, 0, 1, 1);
 
     spin_connections_ = gtk_spin_button_new_with_range(1, 32, 1);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin_connections_), 8);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin_connections_),
+        static_cast<double>(QueueManager::instance().get_default_max_connections()));
     gtk_grid_attach(GTK_GRID(grid), spin_connections_, 1, 0, 1, 1);
 
     // Global speed limiter
@@ -420,10 +421,14 @@ void OptionsDialog::on_save_clicked() {
     int limit_kb = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spin_speed_limit_));
     bool enable_limiter = gtk_check_button_get_active(GTK_CHECK_BUTTON(chk_enable_limiter_));
 
+    if (conns > 0) {
+        QueueManager::instance().set_default_max_connections(static_cast<size_t>(conns));
+    }
     QueueManager::instance().enable_global_speed_limit(enable_limiter);
     if (limit_kb > 0) {
         QueueManager::instance().set_global_speed_limit(static_cast<uint64_t>(limit_kb) * 1024);
     }
+    QueueManager::instance().save_to_file();
 
     // 3. Save scheduler queue config
     int max_active = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spin_max_active_));

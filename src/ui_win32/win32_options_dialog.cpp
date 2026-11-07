@@ -111,7 +111,8 @@ LRESULT CALLBACK OptionsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                     int sel = static_cast<int>(SendMessageW(state->hComboMaxConns, CB_GETCURSEL, 0, 0));
                     int conns_val[] = {1, 2, 4, 8, 16, 24, 32};
                     if (sel >= 0 && sel < 7) {
-                        QueueManager::instance().get_main_queue().set_max_concurrent(conns_val[sel]);
+                        QueueManager::instance().set_default_max_connections(conns_val[sel]);
+                        QueueManager::instance().save_to_file();
                     }
                 }
                 if (state->hChkSpeedLimit) {
@@ -241,8 +242,8 @@ void Win32OptionsDialog::show(HWND parent, int initial_tab) {
         hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(state.hComboMaxConns, WM_SETFONT, (WPARAM)state.hFont, TRUE);
     const wchar_t* conn_opts[] = {L"1", L"2", L"4", L"8", L"16", L"24", L"32", nullptr};
-    int current_max = static_cast<int>(QueueManager::instance().get_main_queue().get_max_concurrent());
-    int cur_sel = 3; // default 8
+    int current_max = static_cast<int>(QueueManager::instance().get_default_max_connections());
+    int cur_sel = 4; // default 16
     int conns_val[] = {1, 2, 4, 8, 16, 24, 32};
     for (int i = 0; conn_opts[i]; ++i) {
         SendMessageW(state.hComboMaxConns, CB_ADDSTRING, 0, (LPARAM)conn_opts[i]);

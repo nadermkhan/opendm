@@ -7,24 +7,22 @@ SpeedLimiter::SpeedLimiter()
 
 void SpeedLimiter::set_enabled(bool enabled) {
     std::lock_guard<std::mutex> lock(mutex_);
-    enabled_ = enabled;
+    enabled_.store(enabled, std::memory_order_relaxed);
     reset();
 }
 
 bool SpeedLimiter::is_enabled() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return enabled_;
+    return enabled_.load(std::memory_order_relaxed);
 }
 
 void SpeedLimiter::set_limit_bytes_per_sec(uint64_t limit) {
     std::lock_guard<std::mutex> lock(mutex_);
-    limit_bytes_per_sec_ = limit;
+    limit_bytes_per_sec_.store(limit, std::memory_order_relaxed);
     reset();
 }
 
 uint64_t SpeedLimiter::get_limit_bytes_per_sec() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return limit_bytes_per_sec_;
+    return limit_bytes_per_sec_.load(std::memory_order_relaxed);
 }
 
 void SpeedLimiter::reset() {
@@ -33,8 +31,16 @@ void SpeedLimiter::reset() {
 }
 
 void SpeedLimiter::throttle(size_t bytes_read) {
+    // Lock-free fast path when speed limiting is disabled
+    if (!enabled_.load(std::memory_order_relaxed) ||
+        limit_bytes_per_sec_.load(std::memory_order_relaxed) == 0 ||
+        bytes_read == 0) {
+        return;
+    }
+
     std::unique_lock<std::mutex> lock(mutex_);
-    if (!enabled_ || limit_bytes_per_sec_ == 0 || bytes_read == 0) {
+    uint64_t limit = limit_bytes_per_sec_.load(std::memory_order_relaxed);
+    if (!enabled_.load(std::memory_order_relaxed) || limit == 0) {
         return;
     }
 
@@ -50,7 +56,7 @@ void SpeedLimiter::throttle(size_t bytes_read) {
 
     bytes_in_current_window_ += bytes_read;
     // Expected time (in ms) to transmit bytes_in_current_window_ at limit_bytes_per_sec_
-    int64_t expected_ms = (bytes_in_current_window_ * 1000) / limit_bytes_per_sec_;
+    int64_t expected_ms = (bytes_in_current_window_ * 1000) / limit;
 
     if (expected_ms > elapsed_ms) {
         int64_t sleep_ms = expected_ms - elapsed_ms;

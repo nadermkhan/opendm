@@ -2,6 +2,7 @@
 
 #include "chunk_manager.hpp"
 #include "speed_limiter.hpp"
+#include <array>
 #include <string>
 #include <memory>
 #include <thread>
@@ -133,6 +134,7 @@ private:
     std::map<std::string, std::string> custom_headers_;
 
     mutable std::mutex meta_mutex_;
+    std::string effective_url_;
     std::string destination_path_;
     std::string filename_;
     std::string category_{"General"};
@@ -148,7 +150,8 @@ private:
     std::atomic<bool> pause_requested_{false};
     std::atomic<bool> disposed_{false};
 
-    size_t max_connections_{8};
+    std::atomic<size_t> max_connections_{16};
+    std::atomic<size_t> active_workers_count_{0};
     std::atomic<bool> supports_ranges_{false};
     std::atomic<int64_t> total_size_{-1};
 
@@ -156,6 +159,9 @@ private:
     ChunkManager chunk_manager_;
     SpeedLimiter speed_limiter_;
 
+    void* curl_share_{nullptr};
+    std::array<std::mutex, 8> share_mutexes_;
+    mutable std::mutex split_mutex_;
     mutable std::mutex lifecycle_mutex_;
     mutable std::mutex workers_mutex_;
     std::vector<std::thread> worker_threads_;

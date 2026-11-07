@@ -102,24 +102,11 @@ int ChunkManager::find_max_free_chunk() {
     int64_t max_free = 0;
 
     for (const auto& c : chunks_) {
-        if (c->status == ChunkStatus::DOWNLOADING) {
+        if (c->status == ChunkStatus::DOWNLOADING || c->status == ChunkStatus::PENDING) {
             int64_t free_bytes = c->remaining_bytes();
             if (free_bytes > max_free) {
                 max_free = free_bytes;
                 best_id = static_cast<int>(c->id);
-            }
-        }
-    }
-
-    // If no downloading chunk found, check pending chunks
-    if (best_id == -1) {
-        for (const auto& c : chunks_) {
-            if (c->status == ChunkStatus::PENDING) {
-                int64_t free_bytes = c->remaining_bytes();
-                if (free_bytes > max_free) {
-                    max_free = free_bytes;
-                    best_id = static_cast<int>(c->id);
-                }
             }
         }
     }

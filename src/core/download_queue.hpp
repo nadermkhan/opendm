@@ -109,6 +109,10 @@ public:
     bool is_global_speed_limit_enabled() const;
     uint64_t get_global_speed_limit() const;
 
+    // Default max connections per download session (1..32, default 16)
+    void set_default_max_connections(size_t max_conns);
+    size_t get_default_max_connections() const;
+
     // State persistence across application restarts
     static std::string get_default_storage_path();
     void set_storage_path(const std::string& path);
@@ -134,6 +138,7 @@ private:
 
     bool global_limit_enabled_{false};
     uint64_t global_limit_bytes_per_sec_{0};
+    std::atomic<size_t> default_max_connections_{16};
 
     std::mutex teardown_mutex_;
     std::vector<std::future<void>> teardowns_;

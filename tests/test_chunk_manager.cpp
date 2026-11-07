@@ -111,6 +111,24 @@ void test_idm_midpoint_splitting() {
 
     std::cout << "  ✓ Chunk 0 split to [0, " << c0.end_offset << "] (" << c0.total_size() << " bytes)" << std::endl;
     std::cout << "  ✓ Chunk 1 created at [" << c1.start_offset << ", " << c1.end_offset << "] (" << c1.total_size() << " bytes)" << std::endl;
+
+    // Verify 16-way split balances across both DOWNLOADING and PENDING chunks
+    opendm::ChunkManager cm16;
+    int64_t size16 = 16 * 1024 * 1024; // 16 MB
+    cm16.init_first_chunk(size16, temp_dir, "split16");
+    cm16.set_chunk_status(0, opendm::ChunkStatus::DOWNLOADING);
+    for (int i = 1; i < 16; ++i) {
+        int tgt = cm16.find_max_free_chunk();
+        assert(tgt != -1);
+        int nid = cm16.split_chunk(tgt, temp_dir, "split16");
+        assert(nid != -1);
+    }
+    auto all_chunks = cm16.get_chunks_snapshot();
+    assert(all_chunks.size() == 16);
+    for (const auto& ch : all_chunks) {
+        assert(ch.total_size() == size16 / 16);
+    }
+    std::cout << "  ✓ 16-way split produced 16 balanced chunks of " << (size16 / 16) << " bytes each" << std::endl;
 }
 
 void test_chunk_assembly() {

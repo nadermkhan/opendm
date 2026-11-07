@@ -1,4 +1,5 @@
 #include "download_session.hpp"
+#include "download_queue.hpp"
 #include "post_download.hpp"
 #include "core/media_muxer.hpp"
 #include <curl/curl.h>
@@ -68,6 +69,35 @@ int probe_xferinfo_callback(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
         return 1; // Abort probe immediately
     }
     return 0;
+}
+
+struct ProbeWriteState {
+    size_t bytes_seen{0};
+};
+
+size_t probe_write_callback(char* /*ptr*/, size_t size, size_t nmemb, void* userdata) {
+    size_t total = size * nmemb;
+    auto* st = static_cast<ProbeWriteState*>(userdata);
+    if (!st) return 0;
+    st->bytes_seen += total;
+    // For a 206 Partial Content response to Range: bytes=0-0, body is 1 byte;
+    // consume it cleanly so libcurl finishes the transfer with CURLE_OK.
+    // If a server ignores Range: bytes=0-0 and streams a 200 OK body (> 64 bytes),
+    // abort immediately so probe_resource() never downloads the entire file during probing.
+    if (st->bytes_seen > 64) {
+        return 0;
+    }
+    return total;
+}
+
+void curl_share_lock_cb(CURL* /*handle*/, curl_lock_data data, curl_lock_access /*access*/, void* userptr) {
+    auto* mutexes = static_cast<std::array<std::mutex, 8>*>(userptr);
+    (*mutexes)[static_cast<size_t>(data) % 8].lock();
+}
+
+void curl_share_unlock_cb(CURL* /*handle*/, curl_lock_data data, void* userptr) {
+    auto* mutexes = static_cast<std::array<std::mutex, 8>*>(userptr);
+    (*mutexes)[static_cast<size_t>(data) % 8].unlock();
 }
 
 size_t write_callback(char* ptr, size_t size, size_t nmemb, void* userdata) {
@@ -158,7 +188,18 @@ void DownloadSession::set_credentials(const std::string& username, const std::st
 DownloadSession::DownloadSession(const std::string& id, const std::string& url,
                                  const std::string& dest_path, const std::string& temp_dir)
     : id_(id), url_(url), destination_path_(dest_path) {
-    
+    max_connections_.store(QueueManager::instance().get_default_max_connections(), std::memory_order_relaxed);
+
+    CURLSH* sh = curl_share_init();
+    if (sh) {
+        curl_share_setopt(sh, CURLSHOPT_USERDATA, &share_mutexes_);
+        curl_share_setopt(sh, CURLSHOPT_LOCKFUNC, curl_share_lock_cb);
+        curl_share_setopt(sh, CURLSHOPT_UNLOCKFUNC, curl_share_unlock_cb);
+        curl_share_setopt(sh, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+        curl_share_setopt(sh, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+        curl_share_ = sh;
+    }
+
     if (temp_dir.empty()) {
 #ifdef _WIN32
         const char* localapp = getenv("LOCALAPPDATA");
@@ -194,16 +235,20 @@ DownloadSession::~DownloadSession() {
     try {
         std::lock_guard<std::mutex> lock(lifecycle_mutex_);
         stop_and_join_locked();
+        if (curl_share_) {
+            curl_share_cleanup(static_cast<CURLSH*>(curl_share_));
+            curl_share_ = nullptr;
+        }
     } catch (...) {
     }
 }
 
 void DownloadSession::set_max_connections(size_t max_conns) {
-    max_connections_ = std::clamp<size_t>(max_conns, 1, 32);
+    max_connections_.store(std::clamp<size_t>(max_conns, 1, 32), std::memory_order_relaxed);
 }
 
 size_t DownloadSession::get_max_connections() const {
-    return max_connections_;
+    return max_connections_.load(std::memory_order_relaxed);
 }
 
 void DownloadSession::set_speed_limit(uint64_t bytes_per_sec) {
@@ -398,6 +443,12 @@ std::string DownloadSession::resolve_user_agent_for_url(const std::string& targe
     if (target_url.find("c=ANDROID_TESTSUITE") != std::string::npos) {
         return "com.google.android.youtube/1.9 (Linux; U; Android 11) gzip";
     }
+    if (target_url.find("c=ANDROID_KIDS") != std::string::npos) {
+        return "com.google.android.apps.youtube.kids/9.40.2 (Linux; U; Android 14) gzip";
+    }
+    if (target_url.find("c=IOS_KIDS") != std::string::npos) {
+        return "com.google.ios.youtubekids/9.40.2 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)";
+    }
     if (target_url.find("c=IOS") != std::string::npos) {
         return "com.google.ios.youtube/21.26.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)";
     }
@@ -428,10 +479,16 @@ bool DownloadSession::probe_resource() {
     }
 
     std::map<std::string, std::string> resp_headers;
+    ProbeWriteState probe_write_state;
+    if (curl_share_) {
+        curl_easy_setopt(curl, CURLOPT_SHARE, static_cast<CURLSH*>(curl_share_));
+    }
     curl_easy_setopt(curl, CURLOPT_URL, url_.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
     curl_easy_setopt(curl, CURLOPT_NOBODY, 0L);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, probe_write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &probe_write_state);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, probe_xferinfo_callback);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
@@ -441,6 +498,7 @@ bool DownloadSession::probe_resource() {
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &resp_headers);
     curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
     curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(curl, CURLOPT_TCP_NODELAY, 1L);
 
     std::string ua = resolve_user_agent_for_url(url_);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, ua.c_str());
@@ -478,12 +536,19 @@ bool DownloadSession::probe_resource() {
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
+    char* eff_url = nullptr;
+    if (curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &eff_url) == CURLE_OK && eff_url && *eff_url) {
+        std::lock_guard<std::mutex> lock(meta_mutex_);
+        effective_url_ = eff_url;
+    }
+
     if (header_list) {
         curl_slist_free_all(header_list);
     }
     curl_easy_cleanup(curl);
 
-    if (res != CURLE_OK && res != CURLE_PARTIAL_FILE) {
+    bool write_aborted_on_200 = (res == CURLE_WRITE_ERROR && http_code == 200);
+    if (res != CURLE_OK && res != CURLE_PARTIAL_FILE && !write_aborted_on_200) {
         std::lock_guard<std::mutex> lock(meta_mutex_);
         last_error_ = std::string("Probe network error: ") + curl_easy_strerror(res);
         return false;
@@ -608,6 +673,11 @@ void DownloadSession::run_session() {
         return;
     }
 
+    size_t max_conns = max_connections_.load(std::memory_order_relaxed);
+    size_t effective_max_conns = is_googlevideo_url(url_)
+        ? std::min<size_t>(max_conns, 6)
+        : std::min<size_t>(max_conns, 32);
+
     // Initialize or resume chunks
     auto existing_chunks = chunk_manager_.get_chunks_snapshot();
     if (!supports_ranges_) {
@@ -616,6 +686,17 @@ void DownloadSession::run_session() {
     } else if (existing_chunks.empty()) {
         if (total_size_ > 0) {
             chunk_manager_.init_first_chunk(total_size_, temp_dir_, id_);
+            // Pre-split initial chunk across effective_max_conns so all workers launch
+            // simultaneously in parallel at t=0 with exact Range headers
+            size_t current_chunks = 1;
+            while (current_chunks < effective_max_conns &&
+                   chunk_manager_.need_new_connection(current_chunks, effective_max_conns)) {
+                int target_chunk = chunk_manager_.find_max_free_chunk();
+                if (target_chunk == -1) break;
+                int new_id = chunk_manager_.split_chunk(target_chunk, temp_dir_, id_);
+                if (new_id == -1) break;
+                current_chunks++;
+            }
         } else {
             chunk_manager_.init_stream_chunk(temp_dir_, id_);
         }
@@ -629,14 +710,17 @@ void DownloadSession::run_session() {
     status_ = SessionStatus::DOWNLOADING;
     update_speed_and_eta();
 
-    // Launch worker thread(s) for all incomplete chunks
+    // Launch worker thread(s) for all incomplete chunks simultaneously
     existing_chunks = chunk_manager_.get_chunks_snapshot();
     {
+        std::lock_guard<std::mutex> slock(split_mutex_);
         std::lock_guard<std::mutex> lock(workers_mutex_);
         worker_threads_.clear();
+        active_workers_count_.store(0, std::memory_order_relaxed);
         for (const auto& c : existing_chunks) {
             if (c.status != ChunkStatus::COMPLETED) {
                 chunk_manager_.set_chunk_status(c.id, ChunkStatus::DOWNLOADING);
+                active_workers_count_.fetch_add(1, std::memory_order_relaxed);
                 worker_threads_.emplace_back(&DownloadSession::download_chunk_worker, this, c.id);
             }
         }
@@ -704,71 +788,26 @@ void DownloadSession::run_session() {
     }
 }
 
-void DownloadSession::download_chunk_worker(int chunk_id) {
-    Chunk chunk;
-    if (!chunk_manager_.get_chunk(chunk_id, chunk)) {
-        return;
-    }
+void DownloadSession::download_chunk_worker(int initial_chunk_id) {
+    struct ActiveWorkerGuard {
+        std::atomic<size_t>& counter;
+        ~ActiveWorkerGuard() { counter.fetch_sub(1, std::memory_order_relaxed); }
+    } worker_guard{active_workers_count_};
 
     CURL* curl = curl_easy_init();
     if (!curl) {
-        chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::FAILED);
+        chunk_manager_.set_chunk_status(initial_chunk_id, ChunkStatus::FAILED);
         return;
     }
 
-    WorkerData data;
-    data.session = this;
-    data.chunk_id = chunk_id;
-    data.last_speed_time = std::chrono::steady_clock::now();
-
-    // Synchronize downloaded_bytes with actual physical file size on disk to prevent resume corruption
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    int64_t disk_bytes = 0;
-    if (fs::exists(chunk.temp_filepath, ec)) {
-        uint64_t fsz = fs::file_size(chunk.temp_filepath, ec);
-        if (!ec) disk_bytes = static_cast<int64_t>(fsz);
+    if (curl_share_) {
+        curl_easy_setopt(curl, CURLOPT_SHARE, static_cast<CURLSH*>(curl_share_));
     }
 
-    if (!supports_ranges_.load()) {
-        disk_bytes = 0;
-    } else if (chunk.end_offset >= chunk.start_offset) {
-        int64_t max_chunk_sz = chunk.end_offset - chunk.start_offset + 1;
-        if (disk_bytes > max_chunk_sz) {
-            fs::resize_file(chunk.temp_filepath, static_cast<uintmax_t>(max_chunk_sz), ec);
-            disk_bytes = max_chunk_sz;
-        }
-    }
-
-    chunk_manager_.update_chunk_progress(chunk_id, disk_bytes, 0);
-    data.bytes_received = disk_bytes;
-
-    std::ios_base::openmode mode = std::ios::binary | std::ios::out;
-    if (disk_bytes > 0) {
-        mode |= std::ios::app;
-    } else {
-        mode |= std::ios::trunc;
-    }
-
-    data.file.open(chunk.temp_filepath, mode);
-    if (!data.file.is_open()) {
-        chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::FAILED);
-        curl_easy_cleanup(curl);
-        return;
-    }
-
-    // Use a 1 MB file stream buffer per worker to reduce syscall overhead
-    std::vector<char> file_buf(1024 * 1024);
-    data.file.rdbuf()->pubsetbuf(file_buf.data(), file_buf.size());
-
-    chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::DOWNLOADING);
-
-    int64_t start_pos = chunk.start_offset + disk_bytes;
-    if (supports_ranges_.load() && chunk.end_offset >= chunk.start_offset && start_pos > chunk.end_offset) {
-        data.file.close();
-        curl_easy_cleanup(curl);
-        chunk_manager_.mark_chunk_completed(chunk_id);
-        return;
+    std::string target_url;
+    {
+        std::lock_guard<std::mutex> lock(meta_mutex_);
+        target_url = !effective_url_.empty() ? effective_url_ : url_;
     }
 
     std::string ua = resolve_user_agent_for_url(url_);
@@ -779,20 +818,23 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
                          url_.find("c=IOS") != std::string::npos ||
                          url_.find("c=ANDROID") != std::string::npos);
 
-    curl_easy_setopt(curl, CURLOPT_URL, url_.c_str());
+    curl_easy_setopt(curl, CURLOPT_URL, target_url.c_str());
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, xferinfo_callback);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &data);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, ua.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
+    // Use HTTP/2 for YouTube CDN and HTTP/1.1 for standard multi-connection range workers
+    // so each connection gets full TCP window scaling without HTTP/2 single-stream flow-control caps.
+    curl_easy_setopt(curl, CURLOPT_HTTP_VERSION,
+                     is_yt ? CURL_HTTP_VERSION_2TLS : CURL_HTTP_VERSION_1_1);
     curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
-    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 512L * 1024L);
+    curl_easy_setopt(curl, CURLOPT_TCP_NODELAY, 1L);
+    curl_easy_setopt(curl, CURLOPT_BUFFERSIZE, 2L * 1024L * 1024L);
 
     if (!auth_userpwd_.empty()) {
         curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_ANY);
@@ -812,90 +854,203 @@ void DownloadSession::download_chunk_worker(int chunk_id) {
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
     }
 
-    CURLcode res = CURLE_OK;
-    long http_code = 0;
-
-    // FIX: For YouTube / googlevideo.com ranged streams, fetch in 8 MB segments
-    // on the SAME persistent CURL* handle to bypass CDN bandwidth throttling.
+    // Reuse a 2 MB file stream buffer across work-stolen chunks on this worker thread
+    std::vector<char> file_buf(2 * 1024 * 1024);
     constexpr int64_t YT_SEGMENT_SIZE = 8 * 1024 * 1024; // 8 MB
+    constexpr int MAX_CHUNK_RETRIES = 5;
+    bool using_effective_url = (target_url != url_);
 
-    if (is_yt && supports_ranges_.load() && chunk.end_offset >= 0) {
-        while (!stop_requested_ && !pause_requested_) {
-            Chunk cur_chunk;
-            if (!chunk_manager_.get_chunk(chunk_id, cur_chunk)) break;
+    int chunk_id = initial_chunk_id;
+    while (chunk_id != -1 && !stop_requested_ && !pause_requested_) {
+        Chunk chunk;
+        if (!chunk_manager_.get_chunk(chunk_id, chunk)) {
+            break;
+        }
 
-            int64_t cur_start = cur_chunk.start_offset + data.bytes_received;
-            int64_t cur_end = cur_chunk.end_offset;
-            if (cur_start > cur_end) {
-                res = CURLE_OK;
-                http_code = 206;
+        WorkerData data;
+        data.session = this;
+        data.chunk_id = chunk_id;
+        data.last_speed_time = std::chrono::steady_clock::now();
+
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &data);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &data);
+
+        // Synchronize downloaded_bytes with actual physical file size on disk to prevent resume corruption
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        int64_t disk_bytes = 0;
+        if (fs::exists(chunk.temp_filepath, ec)) {
+            uint64_t fsz = fs::file_size(chunk.temp_filepath, ec);
+            if (!ec) disk_bytes = static_cast<int64_t>(fsz);
+        }
+
+        if (!supports_ranges_.load()) {
+            disk_bytes = 0;
+        } else if (chunk.end_offset >= chunk.start_offset) {
+            int64_t max_chunk_sz = chunk.end_offset - chunk.start_offset + 1;
+            if (disk_bytes > max_chunk_sz) {
+                fs::resize_file(chunk.temp_filepath, static_cast<uintmax_t>(max_chunk_sz), ec);
+                disk_bytes = max_chunk_sz;
+            }
+        }
+
+        chunk_manager_.update_chunk_progress(chunk_id, disk_bytes, 0);
+        data.bytes_received = disk_bytes;
+
+        std::ios_base::openmode mode = std::ios::binary | std::ios::out;
+        if (disk_bytes > 0) {
+            mode |= std::ios::app;
+        } else {
+            mode |= std::ios::trunc;
+        }
+
+        data.file.open(chunk.temp_filepath, mode);
+        if (!data.file.is_open()) {
+            chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::FAILED);
+            break;
+        }
+        data.file.rdbuf()->pubsetbuf(file_buf.data(), file_buf.size());
+
+        chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::DOWNLOADING);
+
+        int64_t start_pos = chunk.start_offset + disk_bytes;
+        if (supports_ranges_.load() && chunk.end_offset >= chunk.start_offset && start_pos > chunk.end_offset) {
+            data.file.close();
+            chunk_manager_.mark_chunk_completed(chunk_id);
+        } else {
+            CURLcode res = CURLE_OK;
+            long http_code = 0;
+            int retry_count = 0;
+
+            while (!stop_requested_ && !pause_requested_) {
+                Chunk cur_chunk;
+                if (!chunk_manager_.get_chunk(chunk_id, cur_chunk)) break;
+
+                int64_t cur_start = cur_chunk.start_offset + data.bytes_received;
+                int64_t cur_end = cur_chunk.end_offset;
+                if (supports_ranges_.load() && cur_end >= cur_chunk.start_offset && cur_start > cur_end) {
+                    res = CURLE_OK;
+                    http_code = 206;
+                    break;
+                }
+
+                if (supports_ranges_.load() && cur_end >= 0) {
+                    int64_t seg_end = is_yt ? std::min<int64_t>(cur_start + YT_SEGMENT_SIZE - 1, cur_end) : cur_end;
+                    std::string range_header = std::to_string(cur_start) + "-" + std::to_string(seg_end);
+                    curl_easy_setopt(curl, CURLOPT_RANGE, range_header.c_str());
+                } else {
+                    curl_easy_setopt(curl, CURLOPT_RANGE, nullptr);
+                }
+
+                int64_t bytes_before_attempt = data.bytes_received;
+                res = curl_easy_perform(curl);
+                curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+                if (stop_requested_ || pause_requested_) {
+                    break;
+                }
+
+                Chunk after_chunk;
+                bool has_after = chunk_manager_.get_chunk(chunk_id, after_chunk);
+                bool hit_split_bound = has_after && (after_chunk.end_offset >= after_chunk.start_offset) &&
+                    (after_chunk.downloaded_bytes >= (after_chunk.end_offset - after_chunk.start_offset + 1));
+
+                if (hit_split_bound) {
+                    res = CURLE_OK;
+                    http_code = 206;
+                    break;
+                }
+
+                // Non-ranged stream finishes in a single request
+                if (!supports_ranges_.load() || cur_end < 0) {
+                    break;
+                }
+
+                // In YouTube segmented mode, immediately advance to next 8 MB segment on success
+                if (is_yt && res == CURLE_OK && (http_code == 206 || (cur_start == 0 && http_code == 200))) {
+                    retry_count = 0;
+                    continue;
+                }
+
+                // If connection dropped or errored before reaching cur_end, retry from updated offset
+                if (data.bytes_received > bytes_before_attempt) {
+                    retry_count = 0;
+                } else {
+                    retry_count++;
+                }
+
+                if (using_effective_url && (http_code == 400 || http_code == 403 || http_code == 404 || http_code == 410)) {
+                    using_effective_url = false;
+                    curl_easy_setopt(curl, CURLOPT_URL, url_.c_str());
+                }
+
+                if (retry_count > MAX_CHUNK_RETRIES) {
+                    break;
+                }
+
+                data.file.flush();
+                for (int w = 0; w < retry_count * 10 && !stop_requested_ && !pause_requested_; ++w) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+            }
+
+            data.file.flush();
+            bool file_ok = !data.file.fail();
+            data.file.close();
+
+            if (stop_requested_ || pause_requested_) {
+                Chunk cur_c;
+                if (chunk_manager_.get_chunk(chunk_id, cur_c) && cur_c.status != ChunkStatus::COMPLETED) {
+                    chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::PENDING);
+                }
                 break;
             }
 
-            int64_t seg_end = std::min<int64_t>(cur_start + YT_SEGMENT_SIZE - 1, cur_end);
-            std::string range_header = std::to_string(cur_start) + "-" + std::to_string(seg_end);
-            curl_easy_setopt(curl, CURLOPT_RANGE, range_header.c_str());
+            Chunk latest_chunk;
+            bool has_c = chunk_manager_.get_chunk(chunk_id, latest_chunk);
+            bool reached_boundary = has_c && (latest_chunk.end_offset >= latest_chunk.start_offset) &&
+                                    (latest_chunk.downloaded_bytes >= (latest_chunk.end_offset - latest_chunk.start_offset + 1));
+            bool stream_completed = has_c && (latest_chunk.end_offset < 0) && (res == CURLE_OK);
 
-            res = curl_easy_perform(curl);
-            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+            chunk_manager_.update_chunk_progress(chunk_id, has_c ? latest_chunk.downloaded_bytes : 0, 0);
 
-            Chunk after_chunk;
-            bool has_after = chunk_manager_.get_chunk(chunk_id, after_chunk);
-            bool hit_split_bound = has_after &&
-                (after_chunk.downloaded_bytes >= (after_chunk.end_offset - after_chunk.start_offset + 1));
-
-            if (hit_split_bound) {
-                res = CURLE_OK;
-                http_code = 206;
-                break;
-            }
-            if (res != CURLE_OK || (http_code != 206 && !(cur_start == 0 && http_code == 200))) {
+            bool range_honored = (start_pos == 0) ? (http_code == 200 || http_code == 206) : (http_code == 206);
+            if (file_ok && range_honored && (reached_boundary || stream_completed)) {
+                chunk_manager_.mark_chunk_completed(chunk_id);
+            } else {
+                std::cerr << "OpenDM Worker " << chunk_id << " failed: HTTP " << http_code
+                          << ", curl_res: " << curl_easy_strerror(res) << std::endl;
+                chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::FAILED);
                 break;
             }
         }
-    } else {
-        if (supports_ranges_.load() && chunk.end_offset >= 0) {
-            std::string range_header = std::to_string(start_pos) + "-" + std::to_string(chunk.end_offset);
-            curl_easy_setopt(curl, CURLOPT_RANGE, range_header.c_str());
+
+        // Work-stealing on warm CURL* connection: when this chunk finishes, immediately split
+        // the largest remaining chunk and continue downloading without tearing down the socket!
+        int next_chunk_id = -1;
+        if (!stop_requested_ && !pause_requested_ && supports_ranges_.load()) {
+            std::lock_guard<std::mutex> slock(split_mutex_);
+            size_t max_conns = max_connections_.load(std::memory_order_relaxed);
+            size_t eff_max = is_yt ? std::min<size_t>(max_conns, 6) : std::min<size_t>(max_conns, 32);
+            size_t other_active = active_workers_count_.load(std::memory_order_relaxed);
+            if (other_active > 0) other_active--;
+            if (other_active < eff_max && chunk_manager_.need_new_connection(other_active, eff_max)) {
+                int target_chunk = chunk_manager_.find_max_free_chunk();
+                if (target_chunk != -1) {
+                    next_chunk_id = chunk_manager_.split_chunk(target_chunk, temp_dir_, id_);
+                    if (next_chunk_id != -1) {
+                        chunk_manager_.set_chunk_status(next_chunk_id, ChunkStatus::DOWNLOADING);
+                    }
+                }
+            }
         }
-        res = curl_easy_perform(curl);
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        chunk_id = next_chunk_id;
     }
 
     if (header_list) {
         curl_slist_free_all(header_list);
     }
     curl_easy_cleanup(curl);
-
-    data.file.flush();
-    bool file_ok = !data.file.fail();
-    data.file.close();
-
-    if (stop_requested_ || pause_requested_) {
-        if (chunk.status != ChunkStatus::COMPLETED) {
-            chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::PENDING);
-        }
-        return;
-    }
-
-    Chunk latest_chunk;
-    bool has_c = chunk_manager_.get_chunk(chunk_id, latest_chunk);
-    bool reached_boundary = has_c && (latest_chunk.end_offset >= latest_chunk.start_offset) &&
-                            (latest_chunk.downloaded_bytes >= (latest_chunk.end_offset - latest_chunk.start_offset + 1));
-
-    chunk_manager_.update_chunk_progress(chunk_id, has_c ? latest_chunk.downloaded_bytes : 0, 0);
-
-    // Reject HTTP 200 if we requested a non-zero offset (prevents appending full file from byte 0)
-    bool range_honored = (start_pos == 0) ? (http_code == 200 || http_code == 206) : (http_code == 206);
-    if (file_ok && range_honored &&
-        (res == CURLE_OK || (res == CURLE_PARTIAL_FILE && http_code == 206) ||
-         (res == CURLE_WRITE_ERROR && reached_boundary))) {
-        chunk_manager_.mark_chunk_completed(chunk_id);
-    } else {
-        std::cerr << "OpenDM Worker " << chunk_id << " failed: HTTP " << http_code
-                  << ", curl_res: " << curl_easy_strerror(res) << std::endl;
-        chunk_manager_.set_chunk_status(chunk_id, ChunkStatus::FAILED);
-    }
 }
 
 void DownloadSession::dynamic_split_loop() {
@@ -906,32 +1061,31 @@ void DownloadSession::dynamic_split_loop() {
             break;
         }
 
-        // Count active workers
-        size_t active_workers = 0;
-        auto snapshot = chunk_manager_.get_chunks_snapshot();
-        for (const auto& c : snapshot) {
-            if (c.status == ChunkStatus::DOWNLOADING) {
-                active_workers++;
-            }
-        }
+        // Spawn any additional connections needed up to effective_max_conns immediately
+        if (supports_ranges_.load()) {
+            std::lock_guard<std::mutex> slock(split_mutex_);
+            size_t max_conns = max_connections_.load(std::memory_order_relaxed);
+            size_t effective_max_conns = is_googlevideo_url(url_)
+                ? std::min<size_t>(max_conns, 6)
+                : std::min<size_t>(max_conns, 32);
 
-        // Allow up to 6 concurrent segmented connections on Google Video (instead of 2)
-        size_t effective_max_conns = max_connections_;
-        if (is_googlevideo_url(url_)) {
-            effective_max_conns = std::min<size_t>(max_connections_, 6);
-        }
-
-        // Check IDM condition: NeedNewConnection()
-        if (supports_ranges_.load() && chunk_manager_.need_new_connection(active_workers, effective_max_conns)) {
-            int target_chunk = chunk_manager_.find_max_free_chunk();
-            if (target_chunk != -1) {
+            while (!stop_requested_ && !pause_requested_ &&
+                   chunk_manager_.need_new_connection(active_workers_count_.load(std::memory_order_relaxed), effective_max_conns)) {
+                int target_chunk = chunk_manager_.find_max_free_chunk();
+                if (target_chunk == -1) break;
                 int new_id = chunk_manager_.split_chunk(target_chunk, temp_dir_, id_);
-                if (new_id != -1) {
-                    chunk_manager_.set_chunk_status(new_id, ChunkStatus::DOWNLOADING);
-                    std::lock_guard<std::mutex> lock(workers_mutex_);
-                    worker_threads_.emplace_back(&DownloadSession::download_chunk_worker, this, new_id);
-                }
+                if (new_id == -1) break;
+                chunk_manager_.set_chunk_status(new_id, ChunkStatus::DOWNLOADING);
+                active_workers_count_.fetch_add(1, std::memory_order_relaxed);
+                std::lock_guard<std::mutex> lock(workers_mutex_);
+                worker_threads_.emplace_back(&DownloadSession::download_chunk_worker, this, new_id);
             }
+        }
+
+        // If all workers have exited and chunks are not all completed (e.g. unrecoverable error),
+        // exit coordinator loop instead of spinning forever.
+        if (active_workers_count_.load(std::memory_order_relaxed) == 0 && !chunk_manager_.all_chunks_completed()) {
+            break;
         }
 
         // Fast sleep in 10ms intervals for rapid pause/cancel response
@@ -1289,7 +1443,7 @@ std::string DownloadSession::serialize() const {
     ss << "  \"last_modified\": \"" << lm << "\",\n";
     ss << "  \"etag\": \"" << et << "\",\n";
     ss << "  \"status\": " << static_cast<int>(status_.load()) << ",\n";
-    ss << "  \"max_connections\": " << max_connections_ << ",\n";
+    ss << "  \"max_connections\": " << max_connections_.load(std::memory_order_relaxed) << ",\n";
     ss << "  \"supports_ranges\": " << (supports_ranges_.load() ? "true" : "false") << ",\n";
     ss << "  \"total_size\": " << total_size_.load() << ",\n";
     ss << "  \"chunk_manager\": " << chunk_manager_.serialize_state() << "\n";
@@ -1344,6 +1498,14 @@ std::shared_ptr<DownloadSession> DownloadSession::deserialize(const std::string&
     if (sz_pos != std::string::npos) {
         try {
             session->total_size_ = std::stoll(json_str.substr(sz_pos + 13));
+        } catch (...) {}
+    }
+
+    size_t mc_pos = json_str.find("\"max_connections\":");
+    if (mc_pos != std::string::npos) {
+        try {
+            size_t mc_val = static_cast<size_t>(std::stoul(json_str.substr(mc_pos + 18)));
+            session->set_max_connections(mc_val);
         } catch (...) {}
     }
 

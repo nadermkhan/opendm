@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <chrono>
 #include <mutex>
@@ -28,8 +29,8 @@ public:
 
 private:
     mutable std::mutex mutex_;
-    bool enabled_{false};
-    uint64_t limit_bytes_per_sec_{0};
+    std::atomic<bool> enabled_{false};
+    std::atomic<uint64_t> limit_bytes_per_sec_{0};
     uint64_t bytes_in_current_window_{0};
     std::chrono::steady_clock::time_point window_start_;
 };

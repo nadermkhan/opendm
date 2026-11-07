@@ -31,12 +31,30 @@ static const char* kCategories[] = {
     nullptr
 };
 
+std::wstring utf8_to_wide(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
+    if (needed <= 0) return std::wstring(str.begin(), str.end());
+    std::wstring out(needed, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), out.data(), needed);
+    return out;
+}
+
+std::string wide_to_utf8(const std::wstring& wstr) {
+    if (wstr.empty()) return std::string();
+    int needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) return std::string(wstr.begin(), wstr.end());
+    std::string out(needed, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), out.data(), needed, nullptr, nullptr);
+    return out;
+}
+
 std::string get_default_downloads_dir() {
     PWSTR pPath = nullptr;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &pPath))) {
         std::wstring ws(pPath);
         CoTaskMemFree(pPath);
-        return std::string(ws.begin(), ws.end());
+        return wide_to_utf8(ws);
     }
     const char* userprofile = getenv("USERPROFILE");
     if (userprofile) {
@@ -127,23 +145,24 @@ LRESULT CALLBACK DownloadInfoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                     std::wstring cur_ws(cur_buf);
                     if (!cur_ws.empty()) {
                         fs::path cur_p(cur_ws);
-                        if (!cur_p.filename().string().empty()) {
-                            state->result.info.filename = cur_p.filename().string();
+                        if (!cur_p.filename().wstring().empty()) {
+                            state->result.info.filename = wide_to_utf8(cur_p.filename().wstring());
                         }
                     }
 
                     std::string root = get_default_downloads_dir();
-                    std::string new_dir = (state->result.info.category == "General") ? root : (fs::path(root) / state->result.info.category).string();
+                    std::string new_dir = (state->result.info.category == "General") ? root : (fs::path(utf8_to_wide(root)) / utf8_to_wide(state->result.info.category)).string();
                     state->result.info.destination_dir = new_dir;
-                    state->result.info.save_as_path = (fs::path(new_dir) / state->result.info.filename).string();
-                    std::wstring ws(state->result.info.save_as_path.begin(), state->result.info.save_as_path.end());
+                    fs::path full_p = fs::path(utf8_to_wide(new_dir)) / utf8_to_wide(state->result.info.filename);
+                    state->result.info.save_as_path = wide_to_utf8(full_p.wstring());
+                    std::wstring ws = utf8_to_wide(state->result.info.save_as_path);
                     SetWindowTextW(state->hEditSaveAs, ws.c_str());
                 }
                 return 0;
             }
             if (id == 202) { // Browse button
                 wchar_t szFile[MAX_PATH] = {0};
-                std::wstring ws(state->result.info.save_as_path.begin(), state->result.info.save_as_path.end());
+                std::wstring ws = utf8_to_wide(state->result.info.save_as_path);
                 wcsncpy(szFile, ws.c_str(), MAX_PATH - 1);
 
                 OPENFILENAMEW ofn = {sizeof(OPENFILENAMEW)};
@@ -156,10 +175,10 @@ LRESULT CALLBACK DownloadInfoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
 
                 if (GetSaveFileNameW(&ofn)) {
                     std::wstring chosen(szFile);
-                    state->result.info.save_as_path.assign(chosen.begin(), chosen.end());
-                    fs::path cp(state->result.info.save_as_path);
-                    state->result.info.destination_dir = cp.parent_path().string();
-                    state->result.info.filename = cp.filename().string();
+                    state->result.info.save_as_path = wide_to_utf8(chosen);
+                    fs::path cp(chosen);
+                    state->result.info.destination_dir = wide_to_utf8(cp.parent_path().wstring());
+                    state->result.info.filename = wide_to_utf8(cp.filename().wstring());
                     SetWindowTextW(state->hEditSaveAs, chosen.c_str());
                 }
                 return 0;
@@ -169,10 +188,10 @@ LRESULT CALLBACK DownloadInfoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 GetWindowTextW(state->hEditSaveAs, buf, 2048);
                 std::wstring ws(buf);
                 if (!ws.empty()) {
-                    state->result.info.save_as_path.assign(ws.begin(), ws.end());
-                    fs::path cp(state->result.info.save_as_path);
-                    state->result.info.destination_dir = cp.parent_path().string();
-                    state->result.info.filename = cp.filename().string();
+                    state->result.info.save_as_path = wide_to_utf8(ws);
+                    fs::path cp(ws);
+                    state->result.info.destination_dir = wide_to_utf8(cp.parent_path().wstring());
+                    state->result.info.filename = wide_to_utf8(cp.filename().wstring());
                 }
                 state->result.action = DownloadInfoAction::START_NOW;
                 state->done = true;
@@ -184,10 +203,10 @@ LRESULT CALLBACK DownloadInfoWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM 
                 GetWindowTextW(state->hEditSaveAs, buf, 2048);
                 std::wstring ws(buf);
                 if (!ws.empty()) {
-                    state->result.info.save_as_path.assign(ws.begin(), ws.end());
-                    fs::path cp(state->result.info.save_as_path);
-                    state->result.info.destination_dir = cp.parent_path().string();
-                    state->result.info.filename = cp.filename().string();
+                    state->result.info.save_as_path = wide_to_utf8(ws);
+                    fs::path cp(ws);
+                    state->result.info.destination_dir = wide_to_utf8(cp.parent_path().wstring());
+                    state->result.info.filename = wide_to_utf8(cp.filename().wstring());
                 }
                 state->result.action = DownloadInfoAction::DOWNLOAD_LATER;
                 state->done = true;
@@ -238,10 +257,12 @@ DownloadInfoResult Win32DownloadInfoDialog::show(HWND parent, const DownloadProm
     }
     if (state.result.info.destination_dir.empty()) {
         std::string root = get_default_downloads_dir();
-        state.result.info.destination_dir = (state.result.info.category == "General") ? root : (fs::path(root) / state.result.info.category).string();
+        fs::path dp = (state.result.info.category == "General") ? fs::path(utf8_to_wide(root)) : (fs::path(utf8_to_wide(root)) / utf8_to_wide(state.result.info.category));
+        state.result.info.destination_dir = wide_to_utf8(dp.wstring());
     }
     if (state.result.info.save_as_path.empty()) {
-        state.result.info.save_as_path = (fs::path(state.result.info.destination_dir) / state.result.info.filename).string();
+        fs::path sp = fs::path(utf8_to_wide(state.result.info.destination_dir)) / utf8_to_wide(state.result.info.filename);
+        state.result.info.save_as_path = wide_to_utf8(sp.wstring());
     }
 
     // Check if archive
@@ -307,7 +328,7 @@ DownloadInfoResult Win32DownloadInfoDialog::show(HWND parent, const DownloadProm
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY,
         input_x, cur_y, input_w, row_h, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(state.hEditUrl, WM_SETFONT, (WPARAM)state.hFont, TRUE);
-    std::wstring wurl(state.result.info.url.begin(), state.result.info.url.end());
+    std::wstring wurl = utf8_to_wide(state.result.info.url);
     SetWindowTextW(state.hEditUrl, wurl.c_str());
 
     cur_y += DpiHelper::scale(32, dpi);
@@ -344,7 +365,7 @@ DownloadInfoResult Win32DownloadInfoDialog::show(HWND parent, const DownloadProm
         input_x, cur_y, input_w - browse_btn_w - DpiHelper::scale(6, dpi), row_h,
         hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(state.hEditSaveAs, WM_SETFONT, (WPARAM)state.hFont, TRUE);
-    std::wstring wsa(state.result.info.save_as_path.begin(), state.result.info.save_as_path.end());
+    std::wstring wsa = utf8_to_wide(state.result.info.save_as_path);
     SetWindowTextW(state.hEditSaveAs, wsa.c_str());
 
     state.hBtnBrowse = CreateWindowExW(0, L"BUTTON", L"...",
@@ -477,10 +498,12 @@ bool Win32DownloadInfoDialog::save_snapshot(HWND parent, const DownloadPromptInf
     }
     if (state.result.info.destination_dir.empty()) {
         std::string root = get_default_downloads_dir();
-        state.result.info.destination_dir = (state.result.info.category == "General") ? root : (fs::path(root) / state.result.info.category).string();
+        fs::path dp = (state.result.info.category == "General") ? fs::path(utf8_to_wide(root)) : (fs::path(utf8_to_wide(root)) / utf8_to_wide(state.result.info.category));
+        state.result.info.destination_dir = wide_to_utf8(dp.wstring());
     }
     if (state.result.info.save_as_path.empty()) {
-        state.result.info.save_as_path = (fs::path(state.result.info.destination_dir) / state.result.info.filename).string();
+        fs::path sp = fs::path(utf8_to_wide(state.result.info.destination_dir)) / utf8_to_wide(state.result.info.filename);
+        state.result.info.save_as_path = wide_to_utf8(sp.wstring());
     }
 
     std::string ext = "";
@@ -533,7 +556,7 @@ bool Win32DownloadInfoDialog::save_snapshot(HWND parent, const DownloadPromptInf
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY,
         input_x, cur_y, input_w, row_h, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(state.hEditUrl, WM_SETFONT, (WPARAM)state.hFont, TRUE);
-    std::wstring wurl(state.result.info.url.begin(), state.result.info.url.end());
+    std::wstring wurl = utf8_to_wide(state.result.info.url);
     SetWindowTextW(state.hEditUrl, wurl.c_str());
 
     cur_y += DpiHelper::scale(32, dpi);
@@ -568,7 +591,7 @@ bool Win32DownloadInfoDialog::save_snapshot(HWND parent, const DownloadPromptInf
         input_x, cur_y, input_w - browse_btn_w - DpiHelper::scale(6, dpi), row_h,
         hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(state.hEditSaveAs, WM_SETFONT, (WPARAM)state.hFont, TRUE);
-    std::wstring wsa(state.result.info.save_as_path.begin(), state.result.info.save_as_path.end());
+    std::wstring wsa = utf8_to_wide(state.result.info.save_as_path);
     SetWindowTextW(state.hEditSaveAs, wsa.c_str());
 
     state.hBtnBrowse = CreateWindowExW(0, L"BUTTON", L"...",

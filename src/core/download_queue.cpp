@@ -475,6 +475,26 @@ uint64_t QueueManager::get_global_speed_limit() const {
     return global_limit_bytes_per_sec_;
 }
 
+void QueueManager::set_default_max_connections(size_t max_conns) {
+    size_t clamped = std::clamp<size_t>(max_conns, 1, 32);
+    default_max_connections_.store(clamped, std::memory_order_relaxed);
+    std::vector<std::shared_ptr<DownloadQueue>> queues_copy;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queues_copy = queues_;
+    }
+    for (auto& q : queues_copy) {
+        if (!q) continue;
+        for (auto& s : q->get_all_sessions()) {
+            if (s) s->set_max_connections(clamped);
+        }
+    }
+}
+
+size_t QueueManager::get_default_max_connections() const {
+    return default_max_connections_.load(std::memory_order_relaxed);
+}
+
 std::string QueueManager::get_default_storage_path() {
 #ifdef _WIN32
     const char* appdata = getenv("APPDATA");
@@ -532,6 +552,7 @@ bool QueueManager::save_to_file(const std::string& filepath) const {
     std::ostringstream ss;
     ss << "{\n";
     ss << "  \"version\": 1,\n";
+    ss << "  \"default_max_connections\": " << default_max_connections_.load(std::memory_order_relaxed) << ",\n";
     ss << "  \"queues\": [\n";
 
     std::vector<std::shared_ptr<DownloadQueue>> queues_copy;
@@ -565,6 +586,8 @@ bool QueueManager::save_to_file(const std::string& filepath) const {
     out << ss.str();
     out.close();
 
+    std::filesystem::remove(target, ec);
+    ec.clear();
     std::filesystem::rename(tmp_file, target, ec);
     return !ec;
 }
@@ -587,6 +610,14 @@ bool QueueManager::load_from_file(const std::string& filepath) {
     in.close();
 
     if (content.empty()) return true;
+
+    size_t dmc_pos = content.find("\"default_max_connections\":");
+    if (dmc_pos != std::string::npos) {
+        try {
+            size_t val = static_cast<size_t>(std::stoul(content.substr(dmc_pos + 26)));
+            default_max_connections_.store(std::clamp<size_t>(val, 1, 32), std::memory_order_relaxed);
+        } catch (...) {}
+    }
 
     // Scan for session objects: each has '"id": "'
     size_t cursor = 0;

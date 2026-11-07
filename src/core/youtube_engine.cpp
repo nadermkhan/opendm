@@ -122,6 +122,37 @@ std::vector<YouTubeEngine::InnerTubeClient> YouTubeEngine::get_client_hierarchy(
         clients.push_back(c);
     }
 
+    // 4. ANDROID_KIDS: Unlocks 1080p/4K adaptive streams on "Made for Kids" videos where VR/VisionOS/TestSuite return UNPLAYABLE.
+    {
+        InnerTubeClient c;
+        c.name = "ANDROID_KIDS";
+        c.client_name = "ANDROID_KIDS";
+        c.client_version = "9.40.2";
+        c.client_id = "18";
+        c.android_sdk_version = 34;
+        c.os_name = "Android";
+        c.os_version = "14";
+        c.platform = "MOBILE";
+        c.user_agent = "com.google.android.apps.youtube.kids/9.40.2 (Linux; U; Android 14) gzip";
+        clients.push_back(c);
+    }
+
+    // 5. IOS_KIDS: Secondary Kids client delivering direct 1080p adaptive streams without PO token.
+    {
+        InnerTubeClient c;
+        c.name = "IOS_KIDS";
+        c.client_name = "IOS_KIDS";
+        c.client_version = "9.40.2";
+        c.client_id = "19";
+        c.device_make = "Apple";
+        c.device_model = "iPhone16,2";
+        c.os_name = "iPhone";
+        c.os_version = "18.1.0.22B83";
+        c.platform = "MOBILE";
+        c.user_agent = "com.google.ios.youtubekids/9.40.2 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)";
+        clients.push_back(c);
+    }
+
     // 4. TVHTML5 (Cobalt 25.lts): Returns clean direct streams for 4K VP9 TV playback.
     {
         InnerTubeClient c;
@@ -387,7 +418,7 @@ bool YouTubeEngine::query_innertube_client(
 
     // FIX: Only send html5Preference to HTML5/Web/TV clients, NEVER to native Android/iOS/VR apps
     bool is_native_mobile = (client.client_name.find("ANDROID") != std::string::npos ||
-                             client.client_name == "IOS");
+                             client.client_name.find("IOS") != std::string::npos);
     if (!is_native_mobile) {
         req["playbackContext"] = {
             {"contentPlaybackContext", {
@@ -799,8 +830,8 @@ bool YouTubeEngine::extract_video_info(
                 clients_used.push_back(client.name);
             }
 
-            // FIX 2: Only break early once 4K (2160p) is obtained, OR after trying
-            // the primary 4K-capable clients (ANDROID_VR + VISIONOS + ANDROID_TESTSUITE)
+            // FIX 2: Break early once 4K (2160p) is obtained, OR once we have adaptive HD (>= 720p)
+            // from any of our primary direct-stream clients (including ANDROID_KIDS / IOS_KIDS)
             bool has_4k = false;
             for (const auto& vf : merged_info.video_formats) {
                 if (vf.height >= 2160) {
@@ -809,6 +840,10 @@ bool YouTubeEngine::extract_video_info(
                 }
             }
             if (has_4k && !merged_info.audio_formats.empty()) {
+                break;
+            }
+            if (has_adaptive_hd(merged_info) &&
+                (client.name == "ANDROID_TESTSUITE" || client.name == "ANDROID_KIDS" || client.name == "IOS_KIDS")) {
                 break;
             }
         }

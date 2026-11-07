@@ -8,6 +8,15 @@ namespace win32 {
 
 namespace {
 
+std::wstring utf8_to_wide(const std::string& str) {
+    if (str.empty()) return std::wstring();
+    int needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
+    if (needed <= 0) return std::wstring(str.begin(), str.end());
+    std::wstring out(needed, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), out.data(), needed);
+    return out;
+}
+
 struct YtDialogState {
     HWND hwnd{nullptr};
     HWND hListView{nullptr};
@@ -20,6 +29,7 @@ struct YtDialogState {
     HFONT hFontTitle{nullptr};
 
     YouTubeVideoInfo info;
+    std::vector<YouTubeFormat> displayed_formats;
     YoutubeFormatResult result;
     bool done{false};
 };
@@ -60,15 +70,15 @@ LRESULT CALLBACK YtWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             int id = LOWORD(wParam);
             if (id == 801) { // Download Selected Format
                 int sel = ListView_GetNextItem(state->hListView, -1, LVNI_SELECTED);
-                if (sel < 0 && !state->info.video_formats.empty()) {
+                if (sel < 0 && !state->displayed_formats.empty()) {
                     sel = 0; // Default to first format if none highlighted
                 }
-                if (sel >= 0 && sel < static_cast<int>(state->info.video_formats.size())) {
-                    const auto& vfmt = state->info.video_formats[sel];
+                if (sel >= 0 && sel < static_cast<int>(state->displayed_formats.size())) {
+                    const auto& vfmt = state->displayed_formats[sel];
                     state->result.video_url = vfmt.url;
                     state->result.user_agent = vfmt.user_agent;
                     state->result.filename = sanitize_fname(state->info.title, vfmt.container == "MP4" ? "mp4" : "mkv");
-                    if (!state->info.audio_formats.empty()) {
+                    if (!vfmt.is_progressive && !state->info.audio_formats.empty()) {
                         YouTubeFormat chosen_audio = state->info.best_audio;
                         for (const auto& af : state->info.audio_formats) {
                             if (vfmt.container == "WEBM" && af.container == "WEBM") {
@@ -173,7 +183,7 @@ YoutubeFormatResult Win32YoutubeFormatDialog::show(HWND parent, const YouTubeVid
     int content_w = dlg_w - margin_x * 2 - DpiHelper::scale(16, dpi);
 
     // Title label
-    std::wstring wtitle(info.title.begin(), info.title.end());
+    std::wstring wtitle = utf8_to_wide(info.title);
     HWND hTitle = CreateWindowExW(0, L"STATIC", wtitle.c_str(),
         WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
         margin_x, cur_y, content_w, DpiHelper::scale(22, dpi),
@@ -184,7 +194,7 @@ YoutubeFormatResult Win32YoutubeFormatDialog::show(HWND parent, const YouTubeVid
 
     // Author & Duration
     std::string sub = "Author: " + info.author + "   Duration: " + YouTubeEngine::format_duration(info.duration_seconds);
-    std::wstring wsub(sub.begin(), sub.end());
+    std::wstring wsub = utf8_to_wide(sub);
     HWND hSub = CreateWindowExW(0, L"STATIC", wsub.c_str(),
         WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
         margin_x, cur_y, content_w, DpiHelper::scale(18, dpi),
@@ -221,13 +231,17 @@ YoutubeFormatResult Win32YoutubeFormatDialog::show(HWND parent, const YouTubeVid
     lvc.pszText = (LPWSTR)L"Audio Track";
     ListView_InsertColumn(state.hListView, 3, &lvc);
 
-    for (size_t i = 0; i < info.video_formats.size(); ++i) {
-        const auto& f = info.video_formats[i];
-        std::wstring wq(f.quality_label.begin(), f.quality_label.end());
-        std::wstring wc(f.container.begin(), f.container.end());
+    state.displayed_formats = !info.video_formats.empty() ? info.video_formats : info.progressive_formats;
+
+    for (size_t i = 0; i < state.displayed_formats.size(); ++i) {
+        const auto& f = state.displayed_formats[i];
+        std::wstring wq = utf8_to_wide(f.quality_label);
+        std::wstring wc = utf8_to_wide(f.container);
         std::string br = YouTubeEngine::format_bitrate(f.bitrate);
-        std::wstring wbr(br.begin(), br.end());
-        std::wstring wa = L"Auto-Mux Audio (" + std::to_wstring(info.best_audio.bitrate / 1000) + L" kbps)";
+        std::wstring wbr = utf8_to_wide(br);
+        std::wstring wa = f.is_progressive
+            ? L"Included (Progressive)"
+            : (L"Auto-Mux Audio (" + std::to_wstring(info.best_audio.bitrate / 1000) + L" kbps)");
 
         LVITEMW lvi = {LVIF_TEXT};
         lvi.iItem = static_cast<int>(i);
@@ -238,7 +252,7 @@ YoutubeFormatResult Win32YoutubeFormatDialog::show(HWND parent, const YouTubeVid
         ListView_SetItemText(state.hListView, static_cast<int>(i), 3, (LPWSTR)wa.c_str());
     }
 
-    if (!info.video_formats.empty()) {
+    if (!state.displayed_formats.empty()) {
         ListView_SetItemState(state.hListView, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
     }
 

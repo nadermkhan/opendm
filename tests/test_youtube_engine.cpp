@@ -83,6 +83,26 @@ int main() {
         }
     }
 
+    // 4. Test Made-for-Kids Video Extraction (BstW5GDKVMU) -> Must extract 1080p adaptive streams
+    std::cout << "[Test 4] Testing Made-for-Kids InnerTube extraction on video BstW5GDKVMU..." << std::endl;
+    {
+        opendm::YouTubeVideoInfo info;
+        std::string err;
+        bool ok = opendm::YouTubeEngine::extract_video_info("https://www.youtube.com/watch?v=BstW5GDKVMU", info, &err);
+        if (!ok) {
+            std::cerr << "Extraction failed on BstW5GDKVMU: " << err << std::endl;
+            return 1;
+        }
+        assert(ok);
+        assert(!info.video_formats.empty());
+        assert(!info.audio_formats.empty());
+        assert(info.best_video.height >= 1080);
+        std::cout << "  Title: " << info.title << std::endl;
+        std::cout << "  Client used: " << info.client_used << std::endl;
+        std::cout << "  Adaptive video formats: " << info.video_formats.size() << " (Best: "
+                  << info.best_video.quality_label << ", itag " << info.best_video.itag << ")" << std::endl;
+    }
+
     std::cout << "=== All OpenDM Native YouTube Processing Engine Tests Passed 100% ===" << std::endl;
     return 0;
 }
