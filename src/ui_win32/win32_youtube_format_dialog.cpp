@@ -1,5 +1,9 @@
 #include "win32_youtube_format_dialog.hpp"
+#include "win32_dialogs_common.hpp"
 #include "dpi_helper.hpp"
+#include "../core/win32_unicode.hpp"
+#include "../core/media_muxer.hpp"
+#include "../core/download_session.hpp"
 #include <commctrl.h>
 #include <vector>
 
@@ -7,15 +11,6 @@ namespace opendm {
 namespace win32 {
 
 namespace {
-
-std::wstring utf8_to_wide(const std::string& str) {
-    if (str.empty()) return std::wstring();
-    int needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
-    if (needed <= 0) return std::wstring(str.begin(), str.end());
-    std::wstring out(needed, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), out.data(), needed);
-    return out;
-}
 
 struct YtDialogState {
     HWND hwnd{nullptr};
@@ -31,20 +26,28 @@ struct YtDialogState {
     YouTubeVideoInfo info;
     std::vector<YouTubeFormat> displayed_formats;
     YoutubeFormatResult result;
+    bool has_ffmpeg{false};
     bool done{false};
 };
 
 std::string sanitize_fname(const std::string& title, const std::string& ext) {
-    std::string clean;
-    for (char c : title) {
-        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') {
-            clean += '_';
-        } else if (static_cast<unsigned char>(c) >= 32) {
-            clean += c;
+    std::string base = DownloadSession::sanitize_filename(title);
+    if (base.empty() || base == "download.bin") base = "youtube_video";
+    if (!ext.empty()) {
+        std::string lower_ext = sys::ascii_tolower(ext);
+        std::string tail = "." + lower_ext;
+        if (base.size() < tail.size() ||
+            sys::ascii_tolower(base.substr(base.size() - tail.size())) != tail) {
+            base += tail;
         }
     }
-    if (clean.empty()) clean = "youtube_video";
-    return clean + "." + ext;
+    return base;
+}
+
+std::string ext_for_container(const std::string& container, const std::string& def) {
+    std::string lc = sys::ascii_tolower(container);
+    if (lc == "mp4" || lc == "m4a" || lc == "webm" || lc == "mkv") return lc;
+    return def;
 }
 
 LRESULT CALLBACK YtWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -75,9 +78,21 @@ LRESULT CALLBACK YtWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
                 if (sel >= 0 && sel < static_cast<int>(state->displayed_formats.size())) {
                     const auto& vfmt = state->displayed_formats[sel];
+                    if (!vfmt.is_progressive && !state->info.audio_formats.empty() &&
+                        vfmt.container != "MP4" && !state->has_ffmpeg) {
+                        MessageBoxW(
+                            hwnd,
+                            L"This WebM video requires FFmpeg in PATH or the application directory to mux with audio.\n"
+                            L"Please select an MP4 format or Download Audio Only.",
+                            L"FFmpeg Required for WebM Muxing",
+                            MB_OK | MB_ICONWARNING
+                        );
+                        return 0;
+                    }
                     state->result.video_url = vfmt.url;
                     state->result.user_agent = vfmt.user_agent;
-                    state->result.filename = sanitize_fname(state->info.title, vfmt.container == "MP4" ? "mp4" : "mkv");
+                    std::string out_ext = (vfmt.container == "MP4") ? "mp4" : "mkv";
+                    state->result.filename = sanitize_fname(state->info.title, out_ext);
                     if (!vfmt.is_progressive && !state->info.audio_formats.empty()) {
                         YouTubeFormat chosen_audio = state->info.best_audio;
                         for (const auto& af : state->info.audio_formats) {
@@ -97,7 +112,7 @@ LRESULT CALLBACK YtWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     const auto& pfmt = state->info.progressive_formats.front();
                     state->result.video_url = pfmt.url;
                     state->result.user_agent = pfmt.user_agent;
-                    state->result.filename = sanitize_fname(state->info.title, "mp4");
+                    state->result.filename = sanitize_fname(state->info.title, ext_for_container(pfmt.container, "mp4"));
                     state->result.accepted = true;
                 }
                 state->done = true;
@@ -109,7 +124,7 @@ LRESULT CALLBACK YtWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     const auto& afmt = state->info.best_audio;
                     state->result.video_url = afmt.url;
                     state->result.user_agent = afmt.user_agent;
-                    state->result.filename = sanitize_fname(state->info.title, "m4a");
+                    state->result.filename = sanitize_fname(state->info.title, ext_for_container(afmt.container, "m4a"));
                     state->result.accepted = true;
                 }
                 state->done = true;
@@ -139,6 +154,7 @@ LRESULT CALLBACK YtWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 YoutubeFormatResult Win32YoutubeFormatDialog::show(HWND parent, const YouTubeVideoInfo& info) {
     YtDialogState state;
     state.info = info;
+    state.has_ffmpeg = !MediaMuxer::find_ffmpeg().empty();
 
     UINT dpi = DpiHelper::get_dpi(parent);
     state.hFont = DpiHelper::create_font(9, FW_NORMAL, false, dpi);
@@ -161,17 +177,11 @@ YoutubeFormatResult Win32YoutubeFormatDialog::show(HWND parent, const YouTubeVid
     int dlg_w = DpiHelper::scale(600, dpi);
     int dlg_h = DpiHelper::scale(400, dpi);
 
-    RECT rcParent;
-    if (parent && GetWindowRect(parent, &rcParent)) {
-        // center
-    } else {
-        GetWindowRect(GetDesktopWindow(), &rcParent);
-    }
-    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlg_w) / 2;
-    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlg_h) / 2;
+    int x = 0, y = 0;
+    compute_centered_pos(parent, dlg_w, dlg_h, x, y);
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        WS_EX_DLGMODALFRAME,
         className, L"YouTube Video Stream Options",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         x, y, dlg_w, dlg_h,
@@ -183,7 +193,7 @@ YoutubeFormatResult Win32YoutubeFormatDialog::show(HWND parent, const YouTubeVid
     int content_w = dlg_w - margin_x * 2 - DpiHelper::scale(16, dpi);
 
     // Title label
-    std::wstring wtitle = utf8_to_wide(info.title);
+    std::wstring wtitle = sys::utf8_to_wide(info.title);
     HWND hTitle = CreateWindowExW(0, L"STATIC", wtitle.c_str(),
         WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
         margin_x, cur_y, content_w, DpiHelper::scale(22, dpi),
@@ -194,7 +204,7 @@ YoutubeFormatResult Win32YoutubeFormatDialog::show(HWND parent, const YouTubeVid
 
     // Author & Duration
     std::string sub = "Author: " + info.author + "   Duration: " + YouTubeEngine::format_duration(info.duration_seconds);
-    std::wstring wsub = utf8_to_wide(sub);
+    std::wstring wsub = sys::utf8_to_wide(sub);
     HWND hSub = CreateWindowExW(0, L"STATIC", wsub.c_str(),
         WS_CHILD | WS_VISIBLE | SS_NOPREFIX,
         margin_x, cur_y, content_w, DpiHelper::scale(18, dpi),
@@ -235,13 +245,15 @@ YoutubeFormatResult Win32YoutubeFormatDialog::show(HWND parent, const YouTubeVid
 
     for (size_t i = 0; i < state.displayed_formats.size(); ++i) {
         const auto& f = state.displayed_formats[i];
-        std::wstring wq = utf8_to_wide(f.quality_label);
-        std::wstring wc = utf8_to_wide(f.container);
+        std::wstring wq = sys::utf8_to_wide(f.quality_label);
+        std::wstring wc = sys::utf8_to_wide(f.container);
         std::string br = YouTubeEngine::format_bitrate(f.bitrate);
-        std::wstring wbr = utf8_to_wide(br);
+        std::wstring wbr = sys::utf8_to_wide(br);
         std::wstring wa = f.is_progressive
             ? L"Included (Progressive)"
-            : (L"Auto-Mux Audio (" + std::to_wstring(info.best_audio.bitrate / 1000) + L" kbps)");
+            : ((!state.has_ffmpeg && f.container != "MP4")
+                ? L"Requires FFmpeg (WebM Mux)"
+                : (L"Auto-Mux Audio (" + std::to_wstring(info.best_audio.bitrate / 1000) + L" kbps)"));
 
         LVITEMW lvi = {LVIF_TEXT};
         lvi.iItem = static_cast<int>(i);
@@ -283,20 +295,7 @@ YoutubeFormatResult Win32YoutubeFormatDialog::show(HWND parent, const YouTubeVid
 
     SetFocus(state.hBtnDownload);
 
-    if (parent) EnableWindow(parent, FALSE);
-
-    MSG msg;
-    while (!state.done && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (!IsDialogMessageW(hwnd, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    if (parent) {
-        EnableWindow(parent, TRUE);
-        SetForegroundWindow(parent);
-    }
+    run_modal_loop(hwnd, parent, state.done);
 
     if (state.hFont) DeleteObject(state.hFont);
     if (state.hFontBold) DeleteObject(state.hFontBold);

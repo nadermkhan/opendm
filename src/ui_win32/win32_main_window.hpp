@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <deque>
+#include <unordered_set>
 #include "../ipc/ipc_server.hpp"
 #include "../core/download_queue.hpp"
 #include "win32_progress_dialog.hpp"
@@ -65,6 +67,8 @@ private:
     void refresh_downloads_list();
     void update_toolbar_sensitivity();
     void apply_dpi_scaling(UINT new_dpi);
+    void drain_completed_notices();
+    bool extract_youtube_with_progress(const std::string& url, struct YouTubeVideoInfo& out_info, std::string& out_err);
 
     HINSTANCE hInstance_{nullptr};
     HWND hwnd_{nullptr};
@@ -98,6 +102,10 @@ private:
     // Re-entrancy guards (modal MessageBox loops keep dispatching WM_TIMER / keys)
     bool delete_in_progress_{false};
     bool refreshing_list_{false};
+    bool completion_modal_active_{false};
+    bool closing_{false};
+    std::deque<std::pair<std::string, uint64_t>> completed_notices_;
+    std::unordered_set<std::string> completed_notified_ids_;
     // Last text rendered per row/column, to avoid redundant ListView updates
     std::vector<std::vector<std::wstring>> row_cache_;
     std::vector<int> row_icon_cache_;

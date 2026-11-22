@@ -3,13 +3,14 @@
 #include "chunk_manager.hpp"
 #include "speed_limiter.hpp"
 #include <array>
-#include <string>
-#include <memory>
-#include <thread>
 #include <atomic>
-#include <vector>
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
 #ifdef ERROR
 #undef ERROR
@@ -57,6 +58,10 @@ public:
     void enable_speed_limit(bool enable);
     bool is_speed_limit_enabled() const { return speed_limiter_.is_enabled(); }
     uint64_t get_speed_limit() const { return speed_limiter_.get_limit_bytes_per_sec(); }
+    void set_global_speed_limiter(SpeedLimiter* global_limiter) {
+        global_speed_limiter_.store(global_limiter, std::memory_order_relaxed);
+    }
+
     void set_audio_stream_url(const std::string& audio_url) {
         std::lock_guard<std::mutex> lock(meta_mutex_);
         audio_stream_url_ = audio_url;
@@ -73,10 +78,13 @@ public:
     void cancel();
     bool redownload();
 
+    // Force-resets an interrupted ASSEMBLING state cleanly on startup load
+    void reset_interrupted_assembling();
+
     // Non-blocking: signal all threads to abort without joining them.
-    // If `permanent` is true the session can never be started again (used when
-    // the session is being removed from the list).
     void request_stop(bool permanent = false);
+    // Blocks until coordinator and worker threads exit cleanly
+    void wait_for_stop();
     bool is_disposed() const { return disposed_.load(); }
 
     // Query status
@@ -93,8 +101,9 @@ public:
     bool is_pause_requested() const { return pause_requested_.load(); }
     bool is_stop_requested() const { return stop_requested_.load(); }
 
-    // Listeners
+    // Listeners & dirty persistence hook
     void set_progress_callback(ProgressCallback cb);
+    void set_dirty_callback(std::function<void()> cb);
 
     // State persistence
     std::string serialize() const;
@@ -112,23 +121,24 @@ public:
     int64_t get_total_size() const { return total_size_.load(); }
     bool supports_ranges() const { return supports_ranges_.load(); }
 
-    // Progress & Throttling
+    // Progress & Throttling (called from worker callbacks)
     void set_chunk_progress(int chunk_id, int64_t bytes, uint64_t speed);
     void apply_throttle(size_t bytes);
     bool get_chunk_bounds(int chunk_id, int64_t& start_offset, int64_t& end_offset) const;
     size_t clamp_and_update_chunk(
         int chunk_id, int64_t current_bytes_received, size_t incoming_bytes,
         uint64_t speed, bool& out_reached_boundary);
+    void rollback_chunk_write(int chunk_id, int64_t committed_bytes);
 
 private:
     void run_session();
-    bool probe_resource();
+    bool probe_resource(bool* out_identity_changed = nullptr);
     void download_chunk_worker(int chunk_id);
     void dynamic_split_loop();
     void assemble_file();
     void update_speed_and_eta();
-    // Signals stop and joins all threads (caller must hold lifecycle_mutex_).
     void stop_and_join_locked();
+    void notify_dirty();
 
     std::string resolve_user_agent_for_url(const std::string& target_url) const;
     static bool is_googlevideo_url(const std::string& target_url);
@@ -137,9 +147,11 @@ private:
     std::string id_;
     std::string url_;
     std::string temp_dir_;
-    std::map<std::string, std::string> custom_headers_;
 
+    // Protected by meta_mutex_ (Lock rank 7, after ChunkManager::mutex_ rank 6)
     mutable std::mutex meta_mutex_;
+    std::map<std::string, std::string> custom_headers_;
+    std::string auth_userpwd_;
     std::string effective_url_;
     std::string destination_path_;
     std::string filename_;
@@ -149,8 +161,8 @@ private:
     std::string last_modified_;
     bool custom_filename_set_{false};
     std::string audio_stream_url_;
-    std::atomic<bool> audio_download_complete_{false};
 
+    std::atomic<bool> audio_download_complete_{false};
     std::atomic<SessionStatus> status_{SessionStatus::IDLE};
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> pause_requested_{false};
@@ -161,9 +173,9 @@ private:
     std::atomic<bool> supports_ranges_{false};
     std::atomic<int64_t> total_size_{-1};
 
-    std::string auth_userpwd_;
     ChunkManager chunk_manager_;
     SpeedLimiter speed_limiter_;
+    std::atomic<SpeedLimiter*> global_speed_limiter_{nullptr};
 
     void* curl_share_{nullptr};
     std::array<std::mutex, 8> share_mutexes_;
@@ -175,6 +187,7 @@ private:
 
     mutable std::mutex callback_mutex_;
     ProgressCallback progress_callback_;
+    std::function<void()> dirty_callback_;
 
     // Speed calculation
     std::atomic<uint64_t> current_speed_{0};

@@ -1,27 +1,35 @@
 #include "media_muxer.hpp"
-#include <iostream>
-#include <fstream>
-#include <vector>
-#include <cstring>
+#include "win32_unicode.hpp"
+
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <map>
 #include <mutex>
 #include <sstream>
+#include <vector>
+
 #ifdef _WIN32
 #include <windows.h>
 #include <shlwapi.h>
+#ifdef ERROR
+#undef ERROR
+#endif
 #else
 #include <unistd.h>
-#include <sys/wait.h>
 #endif
+
+namespace fs = std::filesystem;
 
 namespace opendm {
 
 namespace {
 
 inline uint16_t read_be16(const uint8_t* p) {
-    return (static_cast<uint16_t>(p[0]) << 8) | static_cast<uint16_t>(p[1]);
+    return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | static_cast<uint16_t>(p[1]));
 }
 
 inline uint32_t read_be32(const uint8_t* p) {
@@ -52,32 +60,6 @@ inline void write_be64(uint8_t* p, uint64_t v) {
     write_be32(p + 4, static_cast<uint32_t>(v & 0xFFFFFFFF));
 }
 
-static std::string escape_shell_arg(const std::string& arg) {
-#ifdef _WIN32
-    std::string escaped = "\"";
-    for (char c : arg) {
-        if (c == '"') {
-            escaped += "\\\"";
-        } else {
-            escaped += c;
-        }
-    }
-    escaped += "\"";
-    return escaped;
-#else
-    std::string escaped = "'";
-    for (char c : arg) {
-        if (c == '\'') {
-            escaped += "'\\''";
-        } else {
-            escaped += c;
-        }
-    }
-    escaped += "'";
-    return escaped;
-#endif
-}
-
 struct ChildBox {
     std::string type;
     size_t offset;
@@ -86,7 +68,7 @@ struct ChildBox {
     size_t payload_size;
 };
 
-static std::vector<ChildBox> parse_children(const uint8_t* data, size_t start, size_t end) {
+std::vector<ChildBox> parse_children(const uint8_t* data, size_t start, size_t end) {
     std::vector<ChildBox> res;
     size_t cur = start;
     while (cur + 8 <= end) {
@@ -100,14 +82,14 @@ static std::vector<ChildBox> parse_children(const uint8_t* data, size_t start, s
         } else if (sz == 0) {
             sz = end - cur;
         }
-        if (sz < hdr || cur + sz > end) break;
+        if (sz < hdr || sz > (end - cur)) break;
         res.push_back({type, cur, static_cast<size_t>(sz), cur + hdr, static_cast<size_t>(sz - hdr)});
         cur += static_cast<size_t>(sz);
     }
     return res;
 }
 
-static void append_box(std::vector<uint8_t>& out, const char type[4], const std::vector<uint8_t>& payload) {
+void append_box(std::vector<uint8_t>& out, const char type[4], const std::vector<uint8_t>& payload) {
     size_t start = out.size();
     out.resize(start + 8 + payload.size());
     write_be32(&out[start], static_cast<uint32_t>(8 + payload.size()));
@@ -115,6 +97,32 @@ static void append_box(std::vector<uint8_t>& out, const char type[4], const std:
     if (!payload.empty()) {
         std::memcpy(&out[start + 8], payload.data(), payload.size());
     }
+}
+
+uint32_t get_tkhd_track_id(const uint8_t* data, size_t start, size_t end) {
+    for (const auto& c : parse_children(data, start, end)) {
+        if (c.type == "tkhd" && c.payload_size >= 16) {
+            uint8_t ver = data[c.payload_offset];
+            size_t id_off = (ver == 0) ? (c.payload_offset + 12) : (c.payload_offset + 20);
+            if (id_off + 4 <= c.offset + c.size) {
+                return read_be32(data + id_off);
+            }
+        }
+    }
+    return 0;
+}
+
+uint32_t get_mdhd_timescale(const uint8_t* data, size_t start, size_t end) {
+    for (const auto& c : parse_children(data, start, end)) {
+        if (c.type == "mdhd" && c.payload_size >= 16) {
+            uint8_t ver = data[c.payload_offset];
+            size_t ts_off = (ver == 0) ? (c.payload_offset + 12) : (c.payload_offset + 20);
+            if (ts_off + 4 <= c.offset + c.size) {
+                return read_be32(data + ts_off);
+            }
+        }
+    }
+    return 1;
 }
 
 } // namespace
@@ -131,38 +139,35 @@ std::string MediaMuxer::find_ffmpeg() {
     s_checked = true;
 
 #ifdef _WIN32
-    wchar_t exe_path[MAX_PATH];
-    if (GetModuleFileNameW(nullptr, exe_path, MAX_PATH) > 0) {
-        PathRemoveFileSpecW(exe_path);
-        std::wstring p = std::wstring(exe_path) + L"\\ffmpeg.exe";
-        if (GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            s_cached_path = std::string(p.begin(), p.end());
+    std::string exe_dir = sys::get_exe_dir_utf8();
+    if (!exe_dir.empty()) {
+        fs::path local_ff = sys::path_from_utf8(exe_dir) / L"ffmpeg.exe";
+        std::error_code ec;
+        if (fs::exists(local_ff, ec)) {
+            s_cached_path = sys::path_to_utf8(local_ff);
             return s_cached_path;
         }
     }
-    wchar_t sp_buf[MAX_PATH] = {0};
-    if (SearchPathW(nullptr, L"ffmpeg.exe", nullptr, MAX_PATH, sp_buf, nullptr) > 0) {
-        std::wstring ws(sp_buf);
-        s_cached_path = std::string(ws.begin(), ws.end());
-        return s_cached_path;
-    }
-    if (system("where ffmpeg >nul 2>nul") == 0) {
-        s_cached_path = "ffmpeg";
+    std::wstring sp_buf(32768, L'\0');
+    DWORD found = SearchPathW(nullptr, L"ffmpeg.exe", nullptr, static_cast<DWORD>(sp_buf.size()), sp_buf.data(), nullptr);
+    if (found > 0 && found < sp_buf.size()) {
+        sp_buf.resize(found);
+        s_cached_path = sys::wide_to_utf8(sp_buf);
         return s_cached_path;
     }
     return "";
 #else
-    const char* home = getenv("HOME");
+    std::string home = sys::get_env_utf8("HOME");
     std::vector<std::string> search_paths = {
-        home ? std::string(home) + "/.local/bin/ffmpeg" : "",
+        home.empty() ? "" : home + "/.local/bin/ffmpeg",
         "/usr/local/bin/ffmpeg",
         "/usr/bin/ffmpeg",
         "/bin/ffmpeg",
         "/snap/bin/ffmpeg"
     };
 
-    const char* path_env = getenv("PATH");
-    if (path_env) {
+    std::string path_env = sys::get_env_utf8("PATH");
+    if (!path_env.empty()) {
         std::stringstream ss(path_env);
         std::string dir;
         while (std::getline(ss, dir, ':')) {
@@ -184,15 +189,17 @@ std::string MediaMuxer::find_ffmpeg() {
 
 std::vector<MediaMuxer::BoxInfo> MediaMuxer::scan_mp4_boxes(const std::string& file_path) {
     std::vector<BoxInfo> boxes;
-    std::ifstream file(file_path, std::ios::binary | std::ios::ate);
+    std::ifstream file(sys::path_from_utf8(file_path), std::ios::binary | std::ios::ate);
     if (!file.is_open()) return boxes;
 
-    uint64_t file_size = static_cast<uint64_t>(file.tellg());
+    std::streamoff end_pos = file.tellg();
+    if (end_pos <= 0) return boxes;
+    uint64_t file_size = static_cast<uint64_t>(end_pos);
     file.seekg(0, std::ios::beg);
 
     uint64_t current_offset = 0;
     while (current_offset + 8 <= file_size) {
-        file.seekg(current_offset);
+        file.seekg(static_cast<std::streamoff>(current_offset));
         uint8_t header[16];
         file.read(reinterpret_cast<char*>(header), 8);
         if (file.gcount() < 8) break;
@@ -210,7 +217,7 @@ std::vector<MediaMuxer::BoxInfo> MediaMuxer::scan_mp4_boxes(const std::string& f
             box_size = file_size - current_offset;
         }
 
-        if (box_size < header_size || current_offset + box_size > file_size) {
+        if (box_size < header_size || box_size > (file_size - current_offset)) {
             break;
         }
 
@@ -242,7 +249,6 @@ bool MediaMuxer::rewrite_stco_co64(
 
     if (trak_data.size() < 8) return false;
 
-    // Walk trak -> mdia -> minf -> stbl hierarchically
     auto trak_children = parse_children(trak_data.data(), 8, trak_data.size());
     for (const auto& mdia : trak_children) {
         if (mdia.type != "mdia") continue;
@@ -257,23 +263,51 @@ bool MediaMuxer::rewrite_stco_co64(
                     if (box.type == "stco" && box.payload_size >= 8) {
                         uint32_t entry_count = read_be32(&trak_data[box.payload_offset + 4]);
                         size_t table_start = box.payload_offset + 8;
-                        if (table_start + static_cast<size_t>(entry_count) * 4 > box.offset + box.size) return false;
+                        if (entry_count > (box.offset + box.size - table_start) / 4) return false;
 
+                        std::vector<uint64_t> new_offsets(entry_count);
+                        bool need_co64 = false;
                         for (uint32_t e = 0; e < entry_count; ++e) {
                             size_t pos = table_start + e * 4;
                             uint32_t old_off = read_be32(&trak_data[pos]);
                             int64_t delta = static_cast<int64_t>(old_off) - static_cast<int64_t>(old_mdat_payload_offset);
                             uint64_t new_off = static_cast<uint64_t>(static_cast<int64_t>(new_mdat_payload_offset) + delta);
+                            new_offsets[e] = new_off;
                             if (new_off > 0xFFFFFFFFULL) {
-                                return false;
+                                need_co64 = true;
                             }
-                            write_be32(&trak_data[pos], static_cast<uint32_t>(new_off));
                         }
+
+                        if (!need_co64) {
+                            for (uint32_t e = 0; e < entry_count; ++e) {
+                                write_be32(&trak_data[table_start + e * 4], static_cast<uint32_t>(new_offsets[e]));
+                            }
+                            return true;
+                        }
+
+                        // Upgrade stco -> co64: each entry grows by +4 bytes (4 -> 8 bytes).
+                        // Propagate exact byte growth to co64, stbl, minf, mdia, and trak headers.
+                        size_t growth = static_cast<size_t>(entry_count) * 4;
+                        if (trak_data.size() + growth > 0xFFFFFFFFULL) return false;
+
+                        size_t insert_at = box.offset + box.size;
+                        trak_data.insert(trak_data.begin() + static_cast<std::ptrdiff_t>(insert_at), growth, 0);
+
+                        std::memcpy(&trak_data[box.offset + 4], "co64", 4);
+                        for (uint32_t e = 0; e < entry_count; ++e) {
+                            write_be64(&trak_data[table_start + e * 8], new_offsets[e]);
+                        }
+
+                        write_be32(&trak_data[box.offset], static_cast<uint32_t>(box.size + growth));
+                        write_be32(&trak_data[stbl.offset], static_cast<uint32_t>(stbl.size + growth));
+                        write_be32(&trak_data[minf.offset], static_cast<uint32_t>(minf.size + growth));
+                        write_be32(&trak_data[mdia.offset], static_cast<uint32_t>(mdia.size + growth));
+                        write_be32(&trak_data[0], static_cast<uint32_t>(trak_data.size()));
                         return true;
                     } else if (box.type == "co64" && box.payload_size >= 8) {
                         uint32_t entry_count = read_be32(&trak_data[box.payload_offset + 4]);
                         size_t table_start = box.payload_offset + 8;
-                        if (table_start + static_cast<size_t>(entry_count) * 8 > box.offset + box.size) return false;
+                        if (entry_count > (box.offset + box.size - table_start) / 8) return false;
 
                         for (uint32_t e = 0; e < entry_count; ++e) {
                             size_t pos = table_start + e * 8;
@@ -315,31 +349,44 @@ bool MediaMuxer::defragment_mp4_if_needed(
         return false;
     }
 
-    std::ifstream in(input_file, std::ios::binary);
+    std::ifstream in(sys::path_from_utf8(input_file), std::ios::binary);
     if (!in.is_open()) return false;
 
     std::vector<uint8_t> ftyp_data(ftyp_box->size);
-    in.seekg(ftyp_box->offset);
-    in.read(reinterpret_cast<char*>(ftyp_data.data()), ftyp_box->size);
+    in.seekg(static_cast<std::streamoff>(ftyp_box->offset));
+    in.read(reinterpret_cast<char*>(ftyp_data.data()), static_cast<std::streamsize>(ftyp_box->size));
 
     std::vector<uint8_t> moov_payload(moov_box->payload_size);
-    in.seekg(moov_box->payload_offset);
-    in.read(reinterpret_cast<char*>(moov_payload.data()), moov_box->payload_size);
+    in.seekg(static_cast<std::streamoff>(moov_box->payload_offset));
+    in.read(reinterpret_cast<char*>(moov_payload.data()), static_cast<std::streamsize>(moov_box->payload_size));
 
-    // Parse default sample values from mvex -> trex if present
-    uint32_t default_sample_duration = 0;
-    uint32_t default_sample_size = 0;
-    uint32_t default_sample_flags = 0;
+    struct TrexDefaults {
+        uint32_t dur{0};
+        uint32_t size{0};
+        uint32_t flags{0};
+    };
+    std::map<uint32_t, TrexDefaults> trex_map;
+    uint32_t mvhd_timescale = 1000;
 
     auto moov_children = parse_children(moov_payload.data(), 0, moov_payload.size());
     for (const auto& c : moov_children) {
-        if (c.type == "mvex") {
+        if (c.type == "mvhd" && c.payload_size >= 20) {
+            uint8_t ver = moov_payload[c.payload_offset];
+            size_t ts_off = (ver == 0) ? (c.payload_offset + 12) : (c.payload_offset + 20);
+            if (ts_off + 4 <= c.offset + c.size) {
+                uint32_t ts = read_be32(&moov_payload[ts_off]);
+                if (ts > 0) mvhd_timescale = ts;
+            }
+        } else if (c.type == "mvex") {
             auto mvex_children = parse_children(moov_payload.data(), c.payload_offset, c.offset + c.size);
             for (const auto& mc : mvex_children) {
                 if (mc.type == "trex" && mc.payload_size >= 24) {
-                    default_sample_duration = read_be32(&moov_payload[mc.payload_offset + 12]);
-                    default_sample_size = read_be32(&moov_payload[mc.payload_offset + 16]);
-                    default_sample_flags = read_be32(&moov_payload[mc.payload_offset + 20]);
+                    uint32_t tid = read_be32(&moov_payload[mc.payload_offset + 4]);
+                    trex_map[tid] = {
+                        read_be32(&moov_payload[mc.payload_offset + 12]),
+                        read_be32(&moov_payload[mc.payload_offset + 16]),
+                        read_be32(&moov_payload[mc.payload_offset + 20])
+                    };
                 }
             }
         }
@@ -351,12 +398,15 @@ bool MediaMuxer::defragment_mp4_if_needed(
         uint32_t flags;
         int32_t cts_offset;
     };
-    std::vector<SampleRec> samples;
-    std::vector<std::pair<uint64_t, uint64_t>> mdat_slices; // (file_offset, size)
+    struct TrackRunState {
+        std::vector<SampleRec> samples;
+        std::vector<std::pair<uint64_t, uint64_t>> mdat_chunks; // (chunk_file_offset, chunk_bytes)
+        bool has_cts{false};
+    };
+    std::map<uint32_t, TrackRunState> track_states;
+    std::vector<std::pair<uint64_t, uint64_t>> all_mdat_slices;
     uint64_t total_mdat_payload = 0;
-    bool has_cts = false;
 
-    // Walk all moof + mdat pairs in sequence
     for (size_t bi = 0; bi < boxes.size(); ++bi) {
         if (boxes[bi].type != "moof") continue;
         const BoxInfo& moof = boxes[bi];
@@ -371,50 +421,58 @@ bool MediaMuxer::defragment_mp4_if_needed(
         if (!mdat) continue;
 
         std::vector<uint8_t> moof_buf(moof.payload_size);
-        in.seekg(moof.payload_offset);
-        in.read(reinterpret_cast<char*>(moof_buf.data()), moof.payload_size);
-
-        uint32_t tfhd_dur = default_sample_duration;
-        uint32_t tfhd_sz = default_sample_size;
-        uint32_t tfhd_flags_val = default_sample_flags;
+        in.seekg(static_cast<std::streamoff>(moof.payload_offset));
+        in.read(reinterpret_cast<char*>(moof_buf.data()), static_cast<std::streamsize>(moof.payload_size));
 
         auto moof_ch = parse_children(moof_buf.data(), 0, moof_buf.size());
+        uint64_t mdat_cursor = 0;
+
         for (const auto& traf : moof_ch) {
             if (traf.type != "traf") continue;
+            uint32_t track_id = 1;
+            TrexDefaults def{};
+            if (!trex_map.empty()) def = trex_map.begin()->second;
+
             auto traf_ch = parse_children(moof_buf.data(), traf.payload_offset, traf.offset + traf.size);
             for (const auto& tc : traf_ch) {
                 if (tc.type == "tfhd" && tc.payload_size >= 8) {
                     uint32_t tf_flags = read_be32(&moof_buf[tc.payload_offset]) & 0x00FFFFFF;
+                    track_id = read_be32(&moof_buf[tc.payload_offset + 4]);
+                    if (trex_map.count(track_id)) def = trex_map[track_id];
+
                     size_t pos = tc.payload_offset + 8;
-                    if (tf_flags & 0x000001) pos += 8; // base-data-offset
-                    if (tf_flags & 0x000002) pos += 4; // sample-description-index
+                    if (tf_flags & 0x000001) pos += 8;
+                    if (tf_flags & 0x000002) pos += 4;
                     if ((tf_flags & 0x000008) && pos + 4 <= tc.offset + tc.size) {
-                        tfhd_dur = read_be32(&moof_buf[pos]);
+                        def.dur = read_be32(&moof_buf[pos]);
                         pos += 4;
                     }
                     if ((tf_flags & 0x000010) && pos + 4 <= tc.offset + tc.size) {
-                        tfhd_sz = read_be32(&moof_buf[pos]);
+                        def.size = read_be32(&moof_buf[pos]);
                         pos += 4;
                     }
                     if ((tf_flags & 0x000020) && pos + 4 <= tc.offset + tc.size) {
-                        tfhd_flags_val = read_be32(&moof_buf[pos]);
+                        def.flags = read_be32(&moof_buf[pos]);
                         pos += 4;
                     }
                 } else if (tc.type == "trun" && tc.payload_size >= 8) {
+                    auto& tr = track_states[track_id];
                     uint8_t tr_ver = moof_buf[tc.payload_offset];
+                    (void)tr_ver;
                     uint32_t tr_flags = read_be32(&moof_buf[tc.payload_offset]) & 0x00FFFFFF;
                     uint32_t sample_count = read_be32(&moof_buf[tc.payload_offset + 4]);
                     size_t pos = tc.payload_offset + 8;
-                    if (tr_flags & 0x000001) pos += 4; // data-offset
-                    uint32_t first_sample_flags = tfhd_flags_val;
+                    if (tr_flags & 0x000001) pos += 4;
+                    uint32_t first_sample_flags = def.flags;
                     bool has_first_flags = (tr_flags & 0x000004) != 0;
                     if (has_first_flags && pos + 4 <= tc.offset + tc.size) {
                         first_sample_flags = read_be32(&moof_buf[pos]);
                         pos += 4;
                     }
 
+                    uint64_t trun_bytes = 0;
                     for (uint32_t s = 0; s < sample_count; ++s) {
-                        SampleRec rec{tfhd_dur, tfhd_sz, (s == 0 && has_first_flags) ? first_sample_flags : tfhd_flags_val, 0};
+                        SampleRec rec{def.dur, def.size, (s == 0 && has_first_flags) ? first_sample_flags : def.flags, 0};
                         if ((tr_flags & 0x000100) && pos + 4 <= tc.offset + tc.size) {
                             rec.duration = read_be32(&moof_buf[pos]);
                             pos += 4;
@@ -428,99 +486,133 @@ bool MediaMuxer::defragment_mp4_if_needed(
                             pos += 4;
                         }
                         if ((tr_flags & 0x000800) && pos + 4 <= tc.offset + tc.size) {
-                            uint32_t raw_cts = read_be32(&moof_buf[pos]);
-                            rec.cts_offset = (tr_ver == 0) ? static_cast<int32_t>(raw_cts) : static_cast<int32_t>(raw_cts);
-                            if (rec.cts_offset != 0) has_cts = true;
+                            rec.cts_offset = static_cast<int32_t>(read_be32(&moof_buf[pos]));
+                            if (rec.cts_offset != 0) tr.has_cts = true;
                             pos += 4;
                         }
-                        samples.push_back(rec);
+                        trun_bytes += rec.size;
+                        tr.samples.push_back(rec);
+                    }
+                    if (trun_bytes > 0 && mdat_cursor + trun_bytes <= mdat->payload_size) {
+                        tr.mdat_chunks.push_back({mdat->payload_offset + mdat_cursor, trun_bytes});
+                        mdat_cursor += trun_bytes;
                     }
                 }
             }
         }
 
-        mdat_slices.push_back({mdat->payload_offset, mdat->payload_size});
+        all_mdat_slices.push_back({mdat->payload_offset, mdat->payload_size});
         total_mdat_payload += mdat->payload_size;
     }
 
-    if (samples.empty() || mdat_slices.empty()) {
+    if (track_states.empty() || all_mdat_slices.empty()) {
         return false;
     }
 
-    // Build stts payload
-    std::vector<std::pair<uint32_t, uint32_t>> stts_runs;
-    uint64_t total_media_ticks = 0;
-    for (const auto& s : samples) {
-        total_media_ticks += s.duration;
-        if (!stts_runs.empty() && stts_runs.back().second == s.duration) {
-            stts_runs.back().first++;
-        } else {
-            stts_runs.push_back({1, s.duration});
-        }
-    }
-    std::vector<uint8_t> stts_payload(8 + stts_runs.size() * 8, 0);
-    write_be32(&stts_payload[4], static_cast<uint32_t>(stts_runs.size()));
-    for (size_t i = 0; i < stts_runs.size(); ++i) {
-        write_be32(&stts_payload[8 + i * 8], stts_runs[i].first);
-        write_be32(&stts_payload[12 + i * 8], stts_runs[i].second);
-    }
-
-    // Build stsz payload
-    std::vector<uint8_t> stsz_payload(12 + samples.size() * 4, 0);
-    write_be32(&stsz_payload[8], static_cast<uint32_t>(samples.size()));
-    for (size_t i = 0; i < samples.size(); ++i) {
-        write_be32(&stsz_payload[12 + i * 4], samples[i].size);
-    }
-
-    // Build stsc payload (1 single chunk containing all samples)
-    std::vector<uint8_t> stsc_payload(20, 0);
-    write_be32(&stsc_payload[4], 1);
-    write_be32(&stsc_payload[8], 1);
-    write_be32(&stsc_payload[12], static_cast<uint32_t>(samples.size()));
-    write_be32(&stsc_payload[16], 1);
-
-    // Build stss (sync sample table) if non-all-sync
-    std::vector<uint32_t> sync_samples;
-    for (size_t i = 0; i < samples.size(); ++i) {
-        bool is_non_sync = ((samples[i].flags & 0x00010000) != 0) ||
-                           (((samples[i].flags >> 24) & 0x03) == 1);
-        if (!is_non_sync) {
-            sync_samples.push_back(static_cast<uint32_t>(i + 1));
-        }
-    }
-
-    // Build ctts payload if composition offsets exist
-    std::vector<uint8_t> ctts_payload;
-    if (has_cts) {
-        std::vector<std::pair<uint32_t, int32_t>> ctts_runs;
-        for (const auto& s : samples) {
-            if (!ctts_runs.empty() && ctts_runs.back().second == s.cts_offset) {
-                ctts_runs.back().first++;
-            } else {
-                ctts_runs.push_back({1, s.cts_offset});
+    // Reorder mdat sequentially only for tracks > 1 when multiple tracks exist; single-track preserves slice sequence.
+    bool multi_track = (track_states.size() > 1);
+    std::vector<std::pair<uint64_t, uint64_t>> write_slices;
+    std::map<uint32_t, std::vector<uint64_t>> track_rel_chunk_offsets;
+    if (!multi_track) {
+        write_slices = all_mdat_slices;
+        uint32_t tid = track_states.begin()->first;
+        track_rel_chunk_offsets[tid].push_back(0);
+    } else {
+        uint64_t rel_cursor = 0;
+        for (const auto& [tid, tr] : track_states) {
+            if (tr.mdat_chunks.empty()) continue;
+            track_rel_chunk_offsets[tid].push_back(rel_cursor);
+            for (const auto& mc : tr.mdat_chunks) {
+                write_slices.push_back(mc);
+                rel_cursor += mc.second;
             }
         }
-        ctts_payload.assign(8 + ctts_runs.size() * 8, 0);
-        ctts_payload[0] = 1; // version 1 for signed offsets
-        write_be32(&ctts_payload[4], static_cast<uint32_t>(ctts_runs.size()));
-        for (size_t i = 0; i < ctts_runs.size(); ++i) {
-            write_be32(&ctts_payload[8 + i * 8], ctts_runs[i].first);
-            write_be32(&ctts_payload[12 + i * 8], static_cast<uint32_t>(ctts_runs[i].second));
-        }
+        total_mdat_payload = rel_cursor;
     }
 
-    // Build placeholder stco (1 entry, filled once moov size is known)
-    std::vector<uint8_t> stco_payload(12, 0);
-    write_be32(&stco_payload[4], 1);
+    // Build per-track updated traks (initially with stco 1-entry 32-bit placeholder)
+    std::vector<uint8_t> mvhd_box_bytes;
+    std::vector<std::pair<uint32_t, std::vector<uint8_t>>> rebuilt_traks;
+    uint64_t max_mvhd_ticks = 0;
 
-    // Reconstruct moov (keep mvhd and trak with updated stbl; strip mvex)
-    std::vector<uint8_t> new_moov_payload;
     for (const auto& c : moov_children) {
         if (c.type == "mvhd") {
-            new_moov_payload.insert(new_moov_payload.end(),
-                                    moov_payload.data() + c.offset,
-                                    moov_payload.data() + c.offset + c.size);
+            mvhd_box_bytes.assign(moov_payload.data() + c.offset, moov_payload.data() + c.offset + c.size);
         } else if (c.type == "trak") {
+            uint32_t tid = get_tkhd_track_id(moov_payload.data(), c.payload_offset, c.offset + c.size);
+            auto tr_it = track_states.find(tid);
+            if (tr_it == track_states.end() && track_states.size() == 1) {
+                tr_it = track_states.begin();
+            }
+            if (tr_it == track_states.end() || tr_it->second.samples.empty()) {
+                continue;
+            }
+            const auto& tr = tr_it->second;
+            uint32_t md_ts = get_mdhd_timescale(moov_payload.data(), c.payload_offset, c.offset + c.size);
+
+            std::vector<std::pair<uint32_t, uint32_t>> stts_runs;
+            uint64_t total_media_ticks = 0;
+            for (const auto& s : tr.samples) {
+                total_media_ticks += s.duration;
+                if (!stts_runs.empty() && stts_runs.back().second == s.duration) {
+                    stts_runs.back().first++;
+                } else {
+                    stts_runs.push_back({1, s.duration});
+                }
+            }
+            uint64_t scaled_mvhd = (md_ts > 0) ? ((total_media_ticks * mvhd_timescale) / md_ts) : total_media_ticks;
+            if (scaled_mvhd > max_mvhd_ticks) max_mvhd_ticks = scaled_mvhd;
+
+            std::vector<uint8_t> stts_payload(8 + stts_runs.size() * 8, 0);
+            write_be32(&stts_payload[4], static_cast<uint32_t>(stts_runs.size()));
+            for (size_t i = 0; i < stts_runs.size(); ++i) {
+                write_be32(&stts_payload[8 + i * 8], stts_runs[i].first);
+                write_be32(&stts_payload[12 + i * 8], stts_runs[i].second);
+            }
+
+            std::vector<uint8_t> stsz_payload(12 + tr.samples.size() * 4, 0);
+            write_be32(&stsz_payload[8], static_cast<uint32_t>(tr.samples.size()));
+            for (size_t i = 0; i < tr.samples.size(); ++i) {
+                write_be32(&stsz_payload[12 + i * 4], tr.samples[i].size);
+            }
+
+            std::vector<uint8_t> stsc_payload(20, 0);
+            write_be32(&stsc_payload[4], 1);
+            write_be32(&stsc_payload[8], 1);
+            write_be32(&stsc_payload[12], static_cast<uint32_t>(tr.samples.size()));
+            write_be32(&stsc_payload[16], 1);
+
+            std::vector<uint32_t> sync_samples;
+            for (size_t i = 0; i < tr.samples.size(); ++i) {
+                bool is_non_sync = ((tr.samples[i].flags & 0x00010000) != 0) ||
+                                   (((tr.samples[i].flags >> 24) & 0x03) == 1);
+                if (!is_non_sync) {
+                    sync_samples.push_back(static_cast<uint32_t>(i + 1));
+                }
+            }
+
+            std::vector<uint8_t> ctts_payload;
+            if (tr.has_cts) {
+                std::vector<std::pair<uint32_t, int32_t>> ctts_runs;
+                for (const auto& s : tr.samples) {
+                    if (!ctts_runs.empty() && ctts_runs.back().second == s.cts_offset) {
+                        ctts_runs.back().first++;
+                    } else {
+                        ctts_runs.push_back({1, s.cts_offset});
+                    }
+                }
+                ctts_payload.assign(8 + ctts_runs.size() * 8, 0);
+                ctts_payload[0] = 1;
+                write_be32(&ctts_payload[4], static_cast<uint32_t>(ctts_runs.size()));
+                for (size_t i = 0; i < ctts_runs.size(); ++i) {
+                    write_be32(&ctts_payload[8 + i * 8], ctts_runs[i].first);
+                    write_be32(&ctts_payload[12 + i * 8], static_cast<uint32_t>(ctts_runs[i].second));
+                }
+            }
+
+            std::vector<uint8_t> stco_payload(12, 0);
+            write_be32(&stco_payload[4], 1);
+
             std::vector<uint8_t> trak_payload;
             auto trak_ch = parse_children(moov_payload.data(), c.payload_offset, c.offset + c.size);
             for (const auto& tc : trak_ch) {
@@ -569,10 +661,8 @@ bool MediaMuxer::defragment_mp4_if_needed(
                             }
                         }
                         append_box(stbl_payload, "stts", stts_payload);
-                        if (!ctts_payload.empty()) {
-                            append_box(stbl_payload, "ctts", ctts_payload);
-                        }
-                        if (!sync_samples.empty() && sync_samples.size() < samples.size()) {
+                        if (!ctts_payload.empty()) append_box(stbl_payload, "ctts", ctts_payload);
+                        if (!sync_samples.empty() && sync_samples.size() < tr.samples.size()) {
                             std::vector<uint8_t> stss_payload(8 + sync_samples.size() * 4, 0);
                             write_be32(&stss_payload[4], static_cast<uint32_t>(sync_samples.size()));
                             for (size_t si = 0; si < sync_samples.size(); ++si) {
@@ -589,32 +679,63 @@ bool MediaMuxer::defragment_mp4_if_needed(
                 }
                 append_box(trak_payload, "mdia", mdia_payload);
             }
-            append_box(new_moov_payload, "trak", trak_payload);
+
+            std::vector<uint8_t> trak_box;
+            append_box(trak_box, "trak", trak_payload);
+            rebuilt_traks.emplace_back(tr_it->first, std::move(trak_box));
         }
     }
 
-    std::vector<uint8_t> new_moov;
-    append_box(new_moov, "moov", new_moov_payload);
+    if (rebuilt_traks.empty() || mvhd_box_bytes.empty()) {
+        return false;
+    }
+
+    // Patch mvhd total movie duration
+    if (mvhd_box_bytes.size() >= 28 && max_mvhd_ticks > 0) {
+        uint8_t ver = mvhd_box_bytes[8];
+        if (ver == 0 && mvhd_box_bytes.size() >= 28) {
+            write_be32(&mvhd_box_bytes[24], static_cast<uint32_t>(max_mvhd_ticks));
+        } else if (ver == 1 && mvhd_box_bytes.size() >= 36) {
+            write_be64(&mvhd_box_bytes[28], max_mvhd_ticks);
+        }
+    }
 
     bool ext_mdat = (total_mdat_payload + 8 > 0xFFFFFFFFULL);
     uint64_t mdat_hdr_sz = ext_mdat ? 16 : 8;
-    uint64_t mdat_payload_offset = ftyp_data.size() + new_moov.size() + mdat_hdr_sz;
 
-    // Update stco inside new_moov with the actual mdat_payload_offset
-    auto top_ch = parse_children(new_moov.data(), 8, new_moov.size());
-    for (const auto& tc : top_ch) {
-        if (tc.type == "trak") {
-            std::vector<uint8_t> trak_vec(new_moov.data() + tc.offset, new_moov.data() + tc.offset + tc.size);
-            rewrite_stco_co64(trak_vec, 0, mdat_payload_offset);
-            std::memcpy(&new_moov[tc.offset], trak_vec.data(), trak_vec.size());
+    // Two-pass fixed point so any stco -> co64 size expansion happens BEFORE final offset & moov layout
+    uint64_t prev_offsets_base = 0;
+    uint64_t final_mdat_payload_offset = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        size_t moov_total = 8 + mvhd_box_bytes.size();
+        for (const auto& [tid, tv] : rebuilt_traks) {
+            moov_total += tv.size();
         }
+        final_mdat_payload_offset = ftyp_data.size() + moov_total + mdat_hdr_sz;
+
+        for (auto& [tid, tv] : rebuilt_traks) {
+            uint64_t rel = (!track_rel_chunk_offsets[tid].empty()) ? track_rel_chunk_offsets[tid][0] : 0;
+            uint64_t old_base = (pass == 0) ? 0 : (prev_offsets_base + rel);
+            uint64_t new_base = final_mdat_payload_offset + rel;
+            if (!rewrite_stco_co64(tv, old_base, new_base)) {
+                return false;
+            }
+        }
+        prev_offsets_base = final_mdat_payload_offset;
     }
 
-    std::ofstream out(temp_defrag_file, std::ios::binary | std::ios::trunc);
+    std::vector<uint8_t> new_moov_payload = mvhd_box_bytes;
+    for (const auto& [tid, tv] : rebuilt_traks) {
+        new_moov_payload.insert(new_moov_payload.end(), tv.begin(), tv.end());
+    }
+    std::vector<uint8_t> new_moov;
+    append_box(new_moov, "moov", new_moov_payload);
+
+    std::ofstream out(sys::path_from_utf8(temp_defrag_file), std::ios::binary | std::ios::trunc);
     if (!out.is_open()) return false;
 
-    out.write(reinterpret_cast<const char*>(ftyp_data.data()), ftyp_data.size());
-    out.write(reinterpret_cast<const char*>(new_moov.data()), new_moov.size());
+    out.write(reinterpret_cast<const char*>(ftyp_data.data()), static_cast<std::streamsize>(ftyp_data.size()));
+    out.write(reinterpret_cast<const char*>(new_moov.data()), static_cast<std::streamsize>(new_moov.size()));
 
     if (ext_mdat) {
         uint8_t hdr[16];
@@ -630,48 +751,41 @@ bool MediaMuxer::defragment_mp4_if_needed(
     }
 
     std::vector<char> copy_buf(2 * 1024 * 1024);
-    for (const auto& [off, sz] : mdat_slices) {
-        in.seekg(off);
+    for (const auto& [off, sz] : write_slices) {
+        in.seekg(static_cast<std::streamoff>(off));
         uint64_t rem = sz;
         while (rem > 0) {
             size_t chunk = static_cast<size_t>(std::min<uint64_t>(copy_buf.size(), rem));
-            in.read(copy_buf.data(), chunk);
+            in.read(copy_buf.data(), static_cast<std::streamsize>(chunk));
             std::streamsize got = in.gcount();
-            if (got <= 0) return false;
+            if (got <= 0) {
+                out.close();
+                std::error_code ec;
+                fs::remove(sys::path_from_utf8(temp_defrag_file), ec);
+                return false;
+            }
             out.write(copy_buf.data(), got);
+            if (!out.good()) {
+                out.close();
+                std::error_code ec;
+                fs::remove(sys::path_from_utf8(temp_defrag_file), ec);
+                return false;
+            }
             rem -= static_cast<uint64_t>(got);
         }
     }
 
     out.flush();
-    if (!out.good()) return false;
+    bool ok = out.good();
+    out.close();
+    if (!ok) {
+        std::error_code ec;
+        fs::remove(sys::path_from_utf8(temp_defrag_file), ec);
+        return false;
+    }
     out_usable_file = temp_defrag_file;
     return true;
 }
-
-#ifdef _WIN32
-static bool run_process_hidden(const std::wstring& cmd_line) {
-    STARTUPINFOW si = {sizeof(si)};
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION pi = {};
-
-    std::vector<wchar_t> cmd_buf(cmd_line.begin(), cmd_line.end());
-    cmd_buf.push_back(L'\0');
-
-    if (!CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
-        return false;
-    }
-
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD exit_code = 1;
-    GetExitCodeProcess(pi.hProcess, &exit_code);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    return (exit_code == 0);
-}
-#endif
 
 bool MediaMuxer::try_external_ffmpeg(
     const std::string& video_file,
@@ -684,90 +798,67 @@ bool MediaMuxer::try_external_ffmpeg(
         return false;
     }
 
-    namespace fs = std::filesystem;
     std::error_code ec;
-    uint64_t total_sz = (fs::exists(video_file, ec) ? fs::file_size(video_file, ec) : 0) +
-                        (fs::exists(audio_file, ec) ? fs::file_size(audio_file, ec) : 0);
+    fs::path v_p = sys::path_from_utf8(video_file);
+    fs::path a_p = sys::path_from_utf8(audio_file);
+    fs::path o_p = sys::path_from_utf8(output_file);
 
-    std::string ext = fs::path(output_file).extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    uint64_t total_sz = (fs::exists(v_p, ec) ? fs::file_size(v_p, ec) : 0) +
+                        (fs::exists(a_p, ec) ? fs::file_size(a_p, ec) : 0);
 
-    // Only apply +faststart second-pass rewrite on MP4/M4V files under 512 MB to avoid doubling disk I/O
-    std::string extra_flags;
-    if ((ext == ".mp4" || ext == ".m4v" || ext == ".mov" || ext.empty()) && total_sz < 512ULL * 1024 * 1024) {
-        extra_flags = " -movflags +faststart";
+    std::string ext = sys::ascii_tolower(sys::path_to_utf8(o_p.extension()));
+    bool small_mp4 = (ext == ".mp4" || ext == ".m4v" || ext == ".mov" || ext.empty()) &&
+                     (total_sz < 512ULL * 1024 * 1024);
+
+    // Attempt 1: lossless stream copy
+    std::vector<std::string> args1 = {
+        "-y", "-loglevel", "error",
+        "-i", video_file,
+        "-i", audio_file,
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c", "copy"
+    };
+    if (small_mp4) {
+        args1.push_back("-movflags");
+        args1.push_back("+faststart");
     }
     if (ext != ".mp4" && ext != ".mkv" && ext != ".webm" && ext != ".mov") {
-        extra_flags += " -f mp4";
+        args1.push_back("-f");
+        args1.push_back("mp4");
     }
+    args1.push_back(output_file);
 
-#ifdef _WIN32
-    auto to_w = [](const std::string& s) { return std::wstring(s.begin(), s.end()); };
-    std::wstring w_ffmpeg = to_w(escape_shell_arg(ffmpeg_bin));
-    std::wstring w_vid = to_w(escape_shell_arg(video_file));
-    std::wstring w_aud = to_w(escape_shell_arg(audio_file));
-    std::wstring w_out = to_w(escape_shell_arg(output_file));
-    std::wstring w_extra = to_w(extra_flags);
-
-    std::wstring wcmd = w_ffmpeg + L" -y -loglevel error -i " +
-                        w_vid + L" -i " + w_aud +
-                        L" -map 0:v:0 -map 1:a:0 -c copy" + w_extra + L" " +
-                        w_out;
-
-    if (run_process_hidden(wcmd) && fs::exists(output_file, ec) && fs::file_size(output_file, ec) > 0) {
+    if (sys::run_hidden_process(ffmpeg_bin, args1) && fs::exists(o_p, ec) && fs::file_size(o_p, ec) > 0) {
         if (progress_cb) progress_cb(100.0);
         return true;
     }
 
-    std::string fallback_flags;
-    if (ext == ".webm") {
-        fallback_flags = "-c:v copy -c:a libopus";
-    } else if (ext == ".mkv") {
-        fallback_flags = "-c:v copy -c:a aac";
-    } else {
-        fallback_flags = "-c:v copy -c:a aac -movflags +faststart";
+    // Attempt 2: transcode only incompatible audio stream while never adding +faststart on >=512 MB files
+    std::vector<std::string> args2 = {
+        "-y", "-loglevel", "error",
+        "-i", video_file,
+        "-i", audio_file,
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-c:v", "copy",
+        "-c:a", (ext == ".webm") ? "libopus" : "aac"
+    };
+    if (ext != ".webm" && ext != ".mkv") {
+        if (small_mp4) {
+            args2.push_back("-movflags");
+            args2.push_back("+faststart");
+        }
+        args2.push_back("-f");
+        args2.push_back("mp4");
     }
+    args2.push_back(output_file);
 
-    std::wstring w_fb = to_w(fallback_flags);
-    std::wstring wcmd2 = w_ffmpeg + L" -y -loglevel error -i " +
-                         w_vid + L" -i " + w_aud +
-                         L" -map 0:v:0 -map 1:a:0 " + w_fb + L" " +
-                         w_out;
-
-    if (run_process_hidden(wcmd2) && fs::exists(output_file, ec) && fs::file_size(output_file, ec) > 0) {
+    if (sys::run_hidden_process(ffmpeg_bin, args2) && fs::exists(o_p, ec) && fs::file_size(o_p, ec) > 0) {
         if (progress_cb) progress_cb(100.0);
         return true;
     }
 
+    fs::remove(o_p, ec);
     return false;
-#else
-    // Attempt 1: Pure lossless stream copy of both video and audio
-    std::string null_dev = " >/dev/null 2>&1";
-    std::string cmd = escape_shell_arg(ffmpeg_bin) + " -y -loglevel error -i " +
-                      escape_shell_arg(video_file) + " -i " + escape_shell_arg(audio_file) +
-                      " -map 0:v:0 -map 1:a:0 -c copy" + extra_flags + " " +
-                      escape_shell_arg(output_file) + null_dev;
-
-    if (system(cmd.c_str()) == 0 && fs::exists(output_file, ec) && fs::file_size(output_file, ec) > 0) {
-        if (progress_cb) progress_cb(100.0);
-        return true;
-    }
-
-    // Attempt 2: If container rejected audio codec (e.g. AAC audio into .webm or Opus into strict MP4),
-    // copy video losslessly and transcode only audio or force MP4/Matroska muxer
-    std::string fallback_flags = (ext == ".webm") ? "-c:v copy -c:a libopus" : "-c:v copy -c:a aac -f mp4";
-    std::string cmd2 = escape_shell_arg(ffmpeg_bin) + " -y -loglevel error -i " +
-                       escape_shell_arg(video_file) + " -i " + escape_shell_arg(audio_file) +
-                       " -map 0:v:0 -map 1:a:0 " + fallback_flags + " " +
-                       escape_shell_arg(output_file) + null_dev;
-
-    if (system(cmd2.c_str()) == 0 && fs::exists(output_file, ec) && fs::file_size(output_file, ec) > 0) {
-        if (progress_cb) progress_cb(100.0);
-        return true;
-    }
-
-    return false;
-#endif
 }
 
 bool MediaMuxer::mux_mp4_and_mp4(
@@ -781,15 +872,15 @@ bool MediaMuxer::mux_mp4_and_mp4(
         return true;
     }
 
-    namespace fs = std::filesystem;
     std::error_code ec;
+    fs::path out_p = sys::path_from_utf8(output_file);
     std::string v_usable, a_usable;
     std::string v_defrag_tmp = output_file + ".v_defrag.tmp";
     std::string a_defrag_tmp = output_file + ".a_defrag.tmp";
 
     auto cleanup_defrag = [&]() {
-        fs::remove(v_defrag_tmp, ec);
-        fs::remove(a_defrag_tmp, ec);
+        fs::remove(sys::path_from_utf8(v_defrag_tmp), ec);
+        fs::remove(sys::path_from_utf8(a_defrag_tmp), ec);
     };
 
     if (!defragment_mp4_if_needed(video_file, v_defrag_tmp, v_usable) ||
@@ -820,12 +911,12 @@ bool MediaMuxer::mux_mp4_and_mp4(
 
     if (!v_ftyp || !v_moov || !v_mdat || !a_moov || !a_mdat) {
         cleanup_defrag();
-        if (out_error) *out_error = "Missing essential MP4 atoms (ftyp/moov/mdat)";
+        if (out_error) *out_error = "Missing essential MP4 atoms (ftyp/moov/mdat) or WebM stream requires ffmpeg";
         return false;
     }
 
-    std::ifstream v_in(v_usable, std::ios::binary);
-    std::ifstream a_in(a_usable, std::ios::binary);
+    std::ifstream v_in(sys::path_from_utf8(v_usable), std::ios::binary);
+    std::ifstream a_in(sys::path_from_utf8(a_usable), std::ios::binary);
     if (!v_in.is_open() || !a_in.is_open()) {
         cleanup_defrag();
         if (out_error) *out_error = "Could not open source media files";
@@ -833,16 +924,16 @@ bool MediaMuxer::mux_mp4_and_mp4(
     }
 
     std::vector<uint8_t> ftyp_data(v_ftyp->size);
-    v_in.seekg(v_ftyp->offset);
-    v_in.read(reinterpret_cast<char*>(ftyp_data.data()), v_ftyp->size);
+    v_in.seekg(static_cast<std::streamoff>(v_ftyp->offset));
+    v_in.read(reinterpret_cast<char*>(ftyp_data.data()), static_cast<std::streamsize>(v_ftyp->size));
 
     std::vector<uint8_t> v_moov_data(v_moov->payload_size);
-    v_in.seekg(v_moov->payload_offset);
-    v_in.read(reinterpret_cast<char*>(v_moov_data.data()), v_moov->payload_size);
+    v_in.seekg(static_cast<std::streamoff>(v_moov->payload_offset));
+    v_in.read(reinterpret_cast<char*>(v_moov_data.data()), static_cast<std::streamsize>(v_moov->payload_size));
 
     std::vector<uint8_t> a_moov_data(a_moov->payload_size);
-    a_in.seekg(a_moov->payload_offset);
-    a_in.read(reinterpret_cast<char*>(a_moov_data.data()), a_moov->payload_size);
+    a_in.seekg(static_cast<std::streamoff>(a_moov->payload_offset));
+    a_in.read(reinterpret_cast<char*>(a_moov_data.data()), static_cast<std::streamsize>(a_moov->payload_size));
 
     std::vector<uint8_t> v_trak, v_mvhd, a_trak;
     for (const auto& c : parse_children(v_moov_data.data(), 0, v_moov_data.size())) {
@@ -864,44 +955,68 @@ bool MediaMuxer::mux_mp4_and_mp4(
         return false;
     }
 
-    // Explicitly assign non-colliding Track IDs 1 (video) and 2 (audio)
     set_tkhd_track_id(v_trak, 1);
     set_tkhd_track_id(a_trak, 2);
 
-    // Ensure mvhd has full playback volume (0x0100 = 1.0) and next_track_id = 3
     if (v_mvhd.size() >= 108) {
         uint8_t version = v_mvhd[8];
         size_t vol_offset = (version == 0) ? 32 : 44;
         size_t next_id_offset = (version == 0) ? 104 : 116;
-        if (vol_offset + 2 <= v_mvhd.size()) {
-            write_be16(&v_mvhd[vol_offset], 0x0100);
-        }
-        if (next_id_offset + 4 <= v_mvhd.size()) {
-            write_be32(&v_mvhd[next_id_offset], 3);
-        }
+        if (vol_offset + 2 <= v_mvhd.size()) write_be16(&v_mvhd[vol_offset], 0x0100);
+        if (next_id_offset + 4 <= v_mvhd.size()) write_be32(&v_mvhd[next_id_offset], 3);
     }
-
-    uint32_t moov_payload_size = static_cast<uint32_t>(v_mvhd.size() + v_trak.size() + a_trak.size());
-    uint32_t moov_total_size = moov_payload_size + 8;
 
     uint64_t total_media_payload = v_mdat->payload_size + a_mdat->payload_size;
     bool extended_mdat = (total_media_payload + 8 > 0xFFFFFFFFULL);
     uint64_t mdat_header_size = extended_mdat ? 16 : 8;
 
-    // Fast-start layout: [ftyp] [moov] [mdat]
-    uint64_t new_mdat_box_offset = ftyp_data.size() + moov_total_size;
-    uint64_t new_v_mdat_payload_offset = new_mdat_box_offset + mdat_header_size;
-    uint64_t new_a_mdat_payload_offset = new_v_mdat_payload_offset + v_mdat->payload_size;
+    // Fixed-point loop: upgrade stco -> co64 on v_trak/a_trak FIRST so moov size & mdat payload offsets converge cleanly
+    uint64_t prev_v_off = v_mdat->payload_offset;
+    uint64_t prev_a_off = a_mdat->payload_offset;
+    uint64_t final_v_off = 0;
+    uint64_t final_a_off = 0;
+    uint64_t moov_total_size = 0;
 
-    if (!rewrite_stco_co64(v_trak, v_mdat->payload_offset, new_v_mdat_payload_offset) ||
-        !rewrite_stco_co64(a_trak, a_mdat->payload_offset, new_a_mdat_payload_offset)) {
+    for (int pass = 0; pass < 3; ++pass) {
+        uint64_t moov_payload_size = static_cast<uint64_t>(v_mvhd.size()) + v_trak.size() + a_trak.size();
+        moov_total_size = moov_payload_size + 8;
+        if (moov_total_size > 0xFFFFFFFFULL) {
+            cleanup_defrag();
+            if (out_error) *out_error = "MP4 moov box exceeds 4 GB container limit";
+            return false;
+        }
+
+        uint64_t new_mdat_box_offset = ftyp_data.size() + moov_total_size;
+        final_v_off = new_mdat_box_offset + mdat_header_size;
+        final_a_off = final_v_off + v_mdat->payload_size;
+
+        size_t before_v_sz = v_trak.size();
+        size_t before_a_sz = a_trak.size();
+        if (!rewrite_stco_co64(v_trak, prev_v_off, final_v_off) ||
+            !rewrite_stco_co64(a_trak, prev_a_off, final_a_off)) {
+            cleanup_defrag();
+            if (out_error) *out_error = "Failed to rewrite track chunk offsets";
+            return false;
+        }
+        prev_v_off = final_v_off;
+        prev_a_off = final_a_off;
+        if (v_trak.size() == before_v_sz && a_trak.size() == before_a_sz && pass > 0) {
+            break;
+        }
+    }
+
+    // Check available disk space before writing multi-GB output
+    fs::path out_dir_p = out_p.parent_path();
+    sys::VolumeCapabilities vol = sys::inspect_target_volume(out_dir_p.empty() ? "." : sys::path_to_utf8(out_dir_p));
+    uint64_t needed = ftyp_data.size() + moov_total_size + mdat_header_size + total_media_payload;
+    if (vol.valid && vol.free_bytes < needed) {
         cleanup_defrag();
-        if (out_error) *out_error = "Failed to rewrite track chunk offsets";
+        if (out_error) *out_error = "Not enough disk space for muxed output file";
         return false;
     }
 
-    std::vector<uint8_t> new_moov(moov_total_size);
-    write_be32(&new_moov[0], moov_total_size);
+    std::vector<uint8_t> new_moov(static_cast<size_t>(moov_total_size));
+    write_be32(&new_moov[0], static_cast<uint32_t>(moov_total_size));
     std::memcpy(&new_moov[4], "moov", 4);
     size_t write_pos = 8;
     std::memcpy(&new_moov[write_pos], v_mvhd.data(), v_mvhd.size());
@@ -910,18 +1025,16 @@ bool MediaMuxer::mux_mp4_and_mp4(
     write_pos += v_trak.size();
     std::memcpy(&new_moov[write_pos], a_trak.data(), a_trak.size());
 
-    std::ofstream out(output_file, std::ios::binary | std::ios::trunc);
+    std::ofstream out(out_p, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) {
         cleanup_defrag();
         if (out_error) *out_error = "Could not open output destination file";
         return false;
     }
 
-    // 1. Write ftyp & fast-start moov at front of file
-    out.write(reinterpret_cast<const char*>(ftyp_data.data()), ftyp_data.size());
-    out.write(reinterpret_cast<const char*>(new_moov.data()), new_moov.size());
+    out.write(reinterpret_cast<const char*>(ftyp_data.data()), static_cast<std::streamsize>(ftyp_data.size()));
+    out.write(reinterpret_cast<const char*>(new_moov.data()), static_cast<std::streamsize>(new_moov.size()));
 
-    // 2. Write mdat header
     if (extended_mdat) {
         uint8_t mdat_hdr[16];
         write_be32(&mdat_hdr[0], 1);
@@ -935,32 +1048,34 @@ bool MediaMuxer::mux_mp4_and_mp4(
         out.write(reinterpret_cast<const char*>(mdat_hdr), 8);
     }
 
-    // 3. Stream copy video and audio mdat payloads with 4 MB buffer
     constexpr size_t BUFFER_SIZE = 4 * 1024 * 1024;
     std::vector<char> buffer(BUFFER_SIZE);
 
-    v_in.seekg(v_mdat->payload_offset);
+    v_in.seekg(static_cast<std::streamoff>(v_mdat->payload_offset));
     uint64_t v_copied = 0;
-    while (v_copied < v_mdat->payload_size) {
+    bool write_failed = !out.good();
+    while (!write_failed && v_copied < v_mdat->payload_size) {
         size_t to_read = static_cast<size_t>(std::min<uint64_t>(BUFFER_SIZE, v_mdat->payload_size - v_copied));
-        v_in.read(buffer.data(), to_read);
+        v_in.read(buffer.data(), static_cast<std::streamsize>(to_read));
         std::streamsize got = v_in.gcount();
         if (got <= 0) break;
         out.write(buffer.data(), got);
+        if (!out.good()) { write_failed = true; break; }
         v_copied += static_cast<uint64_t>(got);
         if (progress_cb && total_media_payload > 0) {
             progress_cb((static_cast<double>(v_copied) / total_media_payload) * 95.0);
         }
     }
 
-    a_in.seekg(a_mdat->payload_offset);
+    a_in.seekg(static_cast<std::streamoff>(a_mdat->payload_offset));
     uint64_t a_copied = 0;
-    while (a_copied < a_mdat->payload_size) {
+    while (!write_failed && a_copied < a_mdat->payload_size) {
         size_t to_read = static_cast<size_t>(std::min<uint64_t>(BUFFER_SIZE, a_mdat->payload_size - a_copied));
-        a_in.read(buffer.data(), to_read);
+        a_in.read(buffer.data(), static_cast<std::streamsize>(to_read));
         std::streamsize got = a_in.gcount();
         if (got <= 0) break;
         out.write(buffer.data(), got);
+        if (!out.good()) { write_failed = true; break; }
         a_copied += static_cast<uint64_t>(got);
         if (progress_cb && total_media_payload > 0) {
             progress_cb((static_cast<double>(v_copied + a_copied) / total_media_payload) * 95.0);
@@ -968,14 +1083,22 @@ bool MediaMuxer::mux_mp4_and_mp4(
     }
 
     out.flush();
-    bool ok = out.good() && (v_copied == v_mdat->payload_size) && (a_copied == a_mdat->payload_size);
+    bool ok = !write_failed && out.good() && (v_copied == v_mdat->payload_size) && (a_copied == a_mdat->payload_size);
     out.close();
     v_in.close();
     a_in.close();
     cleanup_defrag();
 
-    if (ok && progress_cb) progress_cb(100.0);
-    return ok;
+    if (!ok) {
+        fs::remove(out_p, ec);
+        if (out_error && out_error->empty()) {
+            *out_error = "Failed while writing muxed output MP4";
+        }
+        return false;
+    }
+
+    if (progress_cb) progress_cb(100.0);
+    return true;
 }
 
 bool MediaMuxer::concat_ts_segments(
@@ -989,14 +1112,12 @@ bool MediaMuxer::concat_ts_segments(
         return false;
     }
 
-    std::string ts_target = output_file;
-    bool remux_to_mp4 = (output_file.size() >= 4 &&
-                         output_file.substr(output_file.size() - 4) == ".mp4");
-    if (remux_to_mp4) {
-        ts_target = output_file + ".concat.ts";
-    }
+    fs::path out_p = sys::path_from_utf8(output_file);
+    bool remux_to_mp4 = (sys::ascii_tolower(sys::path_to_utf8(out_p.extension())) == ".mp4");
+    std::string ts_target = remux_to_mp4 ? (output_file + ".concat.ts") : output_file;
+    fs::path ts_target_p = sys::path_from_utf8(ts_target);
 
-    std::ofstream out(ts_target, std::ios::binary | std::ios::trunc);
+    std::ofstream out(ts_target_p, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) {
         if (out_error) *out_error = "Could not open output TS file";
         return false;
@@ -1005,16 +1126,21 @@ bool MediaMuxer::concat_ts_segments(
     constexpr size_t BUFFER_SIZE = 2 * 1024 * 1024;
     std::vector<char> buffer(BUFFER_SIZE);
     size_t total_files = segment_files.size();
+    std::error_code ec;
 
     for (size_t idx = 0; idx < total_files; ++idx) {
-        std::ifstream in(segment_files[idx], std::ios::binary);
+        std::ifstream in(sys::path_from_utf8(segment_files[idx]), std::ios::binary);
         if (!in.is_open()) {
+            out.close();
+            fs::remove(ts_target_p, ec);
             if (out_error) *out_error = "Missing TS segment: " + segment_files[idx];
             return false;
         }
-        while (in.read(buffer.data(), BUFFER_SIZE) || in.gcount() > 0) {
+        while (in.read(buffer.data(), static_cast<std::streamsize>(BUFFER_SIZE)) || in.gcount() > 0) {
             out.write(buffer.data(), in.gcount());
             if (out.fail()) {
+                out.close();
+                fs::remove(ts_target_p, ec);
                 if (out_error) *out_error = "Disk write error while concatenating TS segments";
                 return false;
             }
@@ -1025,12 +1151,16 @@ bool MediaMuxer::concat_ts_segments(
     }
 
     out.flush();
+    bool write_ok = out.good();
     out.close();
+    if (!write_ok) {
+        fs::remove(ts_target_p, ec);
+        return false;
+    }
 
     if (remux_to_mp4) {
         bool conv_ok = convert_ts_to_mp4(ts_target, output_file, progress_cb, out_error);
-        std::error_code ec;
-        std::filesystem::remove(ts_target, ec);
+        fs::remove(ts_target_p, ec);
         return conv_ok;
     }
     return true;
@@ -1044,43 +1174,39 @@ bool MediaMuxer::convert_ts_to_mp4(
 
     std::string ffmpeg_bin = find_ffmpeg();
     if (!ffmpeg_bin.empty()) {
-#ifdef _WIN32
-        auto to_w = [](const std::string& s) { return std::wstring(s.begin(), s.end()); };
-        std::wstring w_ffmpeg = to_w(escape_shell_arg(ffmpeg_bin));
-        std::wstring w_ts = to_w(escape_shell_arg(ts_file));
-        std::wstring w_out = to_w(escape_shell_arg(output_file));
+        std::error_code ec;
+        fs::path ts_p = sys::path_from_utf8(ts_file);
+        fs::path out_p = sys::path_from_utf8(output_file);
+        uint64_t ts_sz = fs::exists(ts_p, ec) ? fs::file_size(ts_p, ec) : 0;
+        bool use_faststart = (ts_sz > 0 && ts_sz < 512ULL * 1024 * 1024);
 
-        std::wstring wcmd = w_ffmpeg + L" -y -loglevel error -i " + w_ts +
-                            L" -c copy -bsf:a aac_adtstoasc -movflags +faststart " + w_out;
-        if (run_process_hidden(wcmd) && std::filesystem::exists(output_file)) {
+        std::vector<std::string> args1 = {
+            "-y", "-loglevel", "error", "-i", ts_file, "-c", "copy", "-bsf:a", "aac_adtstoasc"
+        };
+        if (use_faststart) {
+            args1.push_back("-movflags");
+            args1.push_back("+faststart");
+        }
+        args1.push_back(output_file);
+
+        if (sys::run_hidden_process(ffmpeg_bin, args1) && fs::exists(out_p, ec) && fs::file_size(out_p, ec) > 0) {
             if (progress_cb) progress_cb(100.0);
             return true;
         }
-        std::wstring wcmd2 = w_ffmpeg + L" -y -loglevel error -i " + w_ts +
-                             L" -c copy -movflags +faststart " + w_out;
-        if (run_process_hidden(wcmd2) && std::filesystem::exists(output_file)) {
+
+        std::vector<std::string> args2 = {
+            "-y", "-loglevel", "error", "-i", ts_file, "-c", "copy"
+        };
+        if (use_faststart) {
+            args2.push_back("-movflags");
+            args2.push_back("+faststart");
+        }
+        args2.push_back(output_file);
+
+        if (sys::run_hidden_process(ffmpeg_bin, args2) && fs::exists(out_p, ec) && fs::file_size(out_p, ec) > 0) {
             if (progress_cb) progress_cb(100.0);
             return true;
         }
-#else
-        std::string null_dev = " >/dev/null 2>&1";
-        std::string cmd = escape_shell_arg(ffmpeg_bin) + " -y -loglevel error -i " +
-                          escape_shell_arg(ts_file) +
-                          " -c copy -bsf:a aac_adtstoasc -movflags +faststart " +
-                          escape_shell_arg(output_file) + null_dev;
-        if (system(cmd.c_str()) == 0) {
-            if (progress_cb) progress_cb(100.0);
-            return true;
-        }
-        // Fallback without aac_adtstoasc for non-AAC audio tracks (e.g. MP3/AC3/Opus in TS)
-        std::string cmd2 = escape_shell_arg(ffmpeg_bin) + " -y -loglevel error -i " +
-                           escape_shell_arg(ts_file) + " -c copy -movflags +faststart " +
-                           escape_shell_arg(output_file) + null_dev;
-        if (system(cmd2.c_str()) == 0) {
-            if (progress_cb) progress_cb(100.0);
-            return true;
-        }
-#endif
     }
 
     if (out_error) *out_error = "TS to MP4 conversion requires ffmpeg";
@@ -1097,4 +1223,3 @@ bool MediaMuxer::mux_streams(
 }
 
 } // namespace opendm
-

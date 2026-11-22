@@ -213,10 +213,13 @@ GtkWidget* OptionsDialog::build_connection_tab() {
     gtk_grid_attach(GTK_GRID(grid), lbl_limit, 0, 1, 1, 1);
 
     spin_speed_limit_ = gtk_spin_button_new_with_range(10, 1000000, 50);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin_speed_limit_), 500);
+    uint64_t limit_kb = QueueManager::instance().get_global_speed_limit() / 1024;
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin_speed_limit_), static_cast<double>(limit_kb >= 10 ? limit_kb : 500));
     gtk_grid_attach(GTK_GRID(grid), spin_speed_limit_, 1, 1, 1, 1);
 
     chk_enable_limiter_ = gtk_check_button_new_with_label("Enable global speed limiter");
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(chk_enable_limiter_),
+        QueueManager::instance().is_global_speed_limit_enabled() ? TRUE : FALSE);
     gtk_grid_attach(GTK_GRID(grid), chk_enable_limiter_, 0, 2, 2, 1);
 
     return vbox;
@@ -396,7 +399,8 @@ GtkWidget* OptionsDialog::build_scheduler_tab() {
     gtk_grid_attach(GTK_GRID(grid), lbl_active, 0, 0, 1, 1);
 
     spin_max_active_ = gtk_spin_button_new_with_range(1, 10, 1);
-    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin_max_active_), 2);
+    gtk_spin_button_set_value(GTK_SPIN_BUTTON(spin_max_active_),
+        static_cast<double>(QueueManager::instance().get_main_queue().get_max_concurrent()));
     gtk_grid_attach(GTK_GRID(grid), spin_max_active_, 1, 0, 1, 1);
 
     chk_sched_turn_off_ = gtk_check_button_new_with_label("Turn off computer when downloads finish");
@@ -416,23 +420,23 @@ void OptionsDialog::on_save_clicked() {
         }
     }
 
-    // 2. Save connections & speed limiter
+    // 2. Save connections, scheduler max concurrent & speed limiter
     int conns = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spin_connections_));
     int limit_kb = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spin_speed_limit_));
     bool enable_limiter = gtk_check_button_get_active(GTK_CHECK_BUTTON(chk_enable_limiter_));
+    int max_active = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spin_max_active_));
 
     if (conns > 0) {
         QueueManager::instance().set_default_max_connections(static_cast<size_t>(conns));
     }
-    QueueManager::instance().enable_global_speed_limit(enable_limiter);
     if (limit_kb > 0) {
         QueueManager::instance().set_global_speed_limit(static_cast<uint64_t>(limit_kb) * 1024);
     }
+    QueueManager::instance().enable_global_speed_limit(enable_limiter && limit_kb > 0);
+    if (max_active > 0) {
+        QueueManager::instance().get_main_queue().set_max_concurrent(static_cast<size_t>(max_active));
+    }
     QueueManager::instance().save_to_file();
-
-    // 3. Save scheduler queue config
-    int max_active = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(spin_max_active_));
-    QueueManager::instance().get_main_queue().set_max_concurrent(max_active);
 }
 
 } // namespace opendm

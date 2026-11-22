@@ -1,11 +1,14 @@
 #include "win32_grabber_dialog.hpp"
+#include "win32_dialogs_common.hpp"
 #include "dpi_helper.hpp"
 #include "../core/site_grabber.hpp"
 #include "../core/download_queue.hpp"
+#include "../core/win32_unicode.hpp"
 #include <commctrl.h>
 #include <shlobj.h>
 #include <thread>
 #include <atomic>
+#include <memory>
 #include <vector>
 
 namespace opendm {
@@ -13,9 +16,9 @@ namespace win32 {
 
 namespace {
 
-#define WM_GRABBER_FILE (WM_USER + 301)
-#define WM_GRABBER_STATUS (WM_USER + 302)
-#define WM_GRABBER_DONE (WM_USER + 303)
+constexpr UINT WM_GRABBER_FILE = WM_USER + 301;
+constexpr UINT WM_GRABBER_STATUS = WM_USER + 302;
+constexpr UINT WM_GRABBER_DONE = WM_USER + 303;
 
 struct GrabberDialogState {
     HWND hwnd{nullptr};
@@ -38,8 +41,7 @@ struct GrabberDialogState {
     SiteGrabber grabber;
     std::vector<DiscoveredFile> discovered;
     std::atomic<bool> crawling{false};
-    std::atomic<bool> destroyed{false};
-    std::thread crawler_thread;
+    std::shared_ptr<std::atomic<bool>> alive{std::make_shared<std::atomic<bool>>(true)};
     bool done{false};
 };
 
@@ -57,36 +59,36 @@ LRESULT CALLBACK GrabberWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case WM_GRABBER_FILE: {
             DiscoveredFile* pdf = reinterpret_cast<DiscoveredFile*>(lParam);
             if (pdf) {
-                if (state && !state->destroyed) {
+                if (state && state->alive && state->alive->load()) {
                     state->discovered.push_back(*pdf);
                     int idx = static_cast<int>(state->discovered.size() - 1);
-                    std::wstring wfn(pdf->filename.begin(), pdf->filename.end());
-                    std::wstring wcat(pdf->category.begin(), pdf->category.end());
-                    std::wstring wurl(pdf->url.begin(), pdf->url.end());
+                    std::wstring wfn = sys::utf8_to_wide(pdf->filename);
+                    std::wstring wcat = sys::utf8_to_wide(pdf->category);
+                    std::wstring wurl = sys::utf8_to_wide(pdf->url);
 
                     LVITEMW lvi = {LVIF_TEXT};
                     lvi.iItem = idx;
-                    lvi.pszText = (LPWSTR)wfn.c_str();
+                    lvi.pszText = const_cast<LPWSTR>(wfn.c_str());
                     ListView_InsertItem(state->hListView, &lvi);
-                    ListView_SetItemText(state->hListView, idx, 1, (LPWSTR)wcat.c_str());
-                    ListView_SetItemText(state->hListView, idx, 2, (LPWSTR)wurl.c_str());
+                    ListView_SetItemText(state->hListView, idx, 1, const_cast<LPWSTR>(wcat.c_str()));
+                    ListView_SetItemText(state->hListView, idx, 2, const_cast<LPWSTR>(wurl.c_str()));
                 }
                 delete pdf;
             }
             return 0;
         }
         case WM_GRABBER_STATUS: {
-            if (state && !state->destroyed) {
-                std::wstring* pmsg = reinterpret_cast<std::wstring*>(lParam);
-                if (pmsg) {
+            std::wstring* pmsg = reinterpret_cast<std::wstring*>(lParam);
+            if (pmsg) {
+                if (state && state->alive && state->alive->load()) {
                     SetWindowTextW(state->hStaticStatus, pmsg->c_str());
-                    delete pmsg;
                 }
+                delete pmsg;
             }
             return 0;
         }
         case WM_GRABBER_DONE: {
-            if (state && !state->destroyed) {
+            if (state && state->alive && state->alive->load()) {
                 state->crawling = false;
                 EnableWindow(state->hBtnStart, TRUE);
                 EnableWindow(state->hBtnStop, FALSE);
@@ -99,11 +101,8 @@ LRESULT CALLBACK GrabberWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             if (id == 901) { // Start Crawl
-                wchar_t buf[2048] = {0};
-                GetWindowTextW(state->hEditUrl, buf, 2048);
-                std::wstring wu(buf);
-                if (wu.empty()) return 0;
-                std::string start_url(wu.begin(), wu.end());
+                std::string start_url = get_window_text_utf8(state->hEditUrl);
+                if (start_url.empty()) return 0;
 
                 wchar_t d_buf[16] = {0};
                 GetWindowTextW(state->hEditDepth, d_buf, 16);
@@ -136,53 +135,54 @@ LRESULT CALLBACK GrabberWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 EnableWindow(state->hBtnDownloadAll, FALSE);
                 SetWindowTextW(state->hStaticStatus, L"Connecting and crawling...");
 
-                if (state->crawler_thread.joinable()) {
-                    state->grabber.stop();
-                    state->crawler_thread.join();
-                }
-
-                state->crawler_thread = std::thread([hwnd, pstate = state, cfg]() {
-                    pstate->grabber.start(
-                        cfg,
-                        [hwnd, pstate](const DiscoveredFile& df) {
-                            if (pstate->destroyed) return;
-                            auto* pdf = new DiscoveredFile(df);
-                            if (IsWindow(hwnd)) {
-                                if (!PostMessageW(hwnd, WM_GRABBER_FILE, 0, reinterpret_cast<LPARAM>(pdf))) {
-                                    delete pdf;
-                                }
-                            } else {
+                auto alive = state->alive;
+                state->grabber.start(
+                    cfg,
+                    [hwnd, alive](const DiscoveredFile& df) {
+                        if (!alive->load()) return;
+                        auto* pdf = new DiscoveredFile(df);
+                        if (IsWindow(hwnd)) {
+                            if (!PostMessageW(hwnd, WM_GRABBER_FILE, 0, reinterpret_cast<LPARAM>(pdf))) {
                                 delete pdf;
                             }
-                        },
-                        [hwnd, pstate](const std::string& st, size_t, size_t) {
-                            if (pstate->destroyed) return;
-                            auto* wst = new std::wstring(st.begin(), st.end());
+                        } else {
+                            delete pdf;
+                        }
+                    },
+                    [hwnd, alive](const std::string& st, size_t, size_t) {
+                        if (!alive->load()) return;
+                        if (st == "Crawl complete") {
                             if (IsWindow(hwnd)) {
-                                if (!PostMessageW(hwnd, WM_GRABBER_STATUS, 0, reinterpret_cast<LPARAM>(wst))) {
-                                    delete wst;
-                                }
-                            } else {
+                                PostMessageW(hwnd, WM_GRABBER_DONE, 0, 0);
+                            }
+                            return;
+                        }
+                        auto* wst = new std::wstring(sys::utf8_to_wide(st));
+                        if (IsWindow(hwnd)) {
+                            if (!PostMessageW(hwnd, WM_GRABBER_STATUS, 0, reinterpret_cast<LPARAM>(wst))) {
                                 delete wst;
                             }
+                        } else {
+                            delete wst;
                         }
-                    );
-                    if (IsWindow(hwnd)) {
-                        PostMessageW(hwnd, WM_GRABBER_DONE, 0, 0);
                     }
-                });
+                );
                 return 0;
             }
             if (id == 902) { // Stop Crawl
                 state->grabber.stop();
+                PostMessageW(hwnd, WM_GRABBER_DONE, 0, 0);
                 return 0;
             }
             if (id == 903) { // Download All
+                std::string base_dir = QueueManager::instance().get_default_save_dir();
+                if (base_dir.empty()) base_dir = sys::get_downloads_dir_utf8();
+                static std::atomic<uint64_t> cnt{1};
                 for (const auto& df : state->discovered) {
-                    static uint64_t cnt = 1;
-                    std::string id_str = "grabber_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(cnt++);
-                    std::string fn = df.filename.empty() ? "grabbed_file.bin" : df.filename;
-                    auto sess = std::make_shared<DownloadSession>(id_str, df.url, fn);
+                    std::string id_str = "grabber_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(cnt.fetch_add(1));
+                    std::string fn = DownloadSession::sanitize_filename(df.filename.empty() ? "grabbed_file.bin" : df.filename);
+                    std::string dest_path = sys::path_to_utf8(sys::path_from_utf8(base_dir) / sys::path_from_utf8(fn));
+                    auto sess = std::make_shared<DownloadSession>(id_str, df.url, dest_path);
                     QueueManager::instance().get_main_queue().add_session(sess, true);
                 }
                 MessageBoxW(hwnd, L"Added all discovered files to download queue!", L"Site Grabber", MB_OK | MB_ICONINFORMATION);
@@ -203,8 +203,8 @@ LRESULT CALLBACK GrabberWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             return 0;
         }
         case WM_DESTROY: {
-            state->destroyed = true;
-            state->grabber.stop();
+            if (state && state->alive) state->alive->store(false);
+            if (state) state->grabber.stop();
             return 0;
         }
         default:
@@ -238,17 +238,11 @@ void Win32GrabberDialog::show(HWND parent) {
     int dlg_w = DpiHelper::scale(650, dpi);
     int dlg_h = DpiHelper::scale(480, dpi);
 
-    RECT rcParent;
-    if (parent && GetWindowRect(parent, &rcParent)) {
-        // center
-    } else {
-        GetWindowRect(GetDesktopWindow(), &rcParent);
-    }
-    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlg_w) / 2;
-    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlg_h) / 2;
+    int x = 0, y = 0;
+    compute_centered_pos(parent, dlg_w, dlg_h, x, y);
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        WS_EX_DLGMODALFRAME,
         className, L"OpenDM Site Grabber Spider",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         x, y, dlg_w, dlg_h,
@@ -366,25 +360,9 @@ void Win32GrabberDialog::show(HWND parent) {
         hwnd, (HMENU)904, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(state.hBtnClose, WM_SETFONT, (WPARAM)state.hFont, TRUE);
 
-    if (parent) EnableWindow(parent, FALSE);
-
-    MSG msg;
-    while (!state.done && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (!IsDialogMessageW(hwnd, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    if (parent) {
-        EnableWindow(parent, TRUE);
-        SetForegroundWindow(parent);
-    }
+    run_modal_loop(hwnd, parent, state.done);
 
     state.grabber.stop();
-    if (state.crawler_thread.joinable()) {
-        state.crawler_thread.join();
-    }
 
     if (state.hFont) DeleteObject(state.hFont);
     if (state.hFontBold) DeleteObject(state.hFontBold);

@@ -50,6 +50,17 @@ private:
     UINT timer_id_{0};
     UINT dpi_{96};
     bool completed_notified_{false};
+
+    // Cached values to prevent redundant SetWindowTextW flicker every 200ms
+    std::string last_title_;
+    std::string last_status_;
+    std::string last_size_;
+    std::string last_dl_;
+    std::string last_speed_;
+    std::string last_eta_;
+    int last_resume_{-1};
+    int last_pbar_pos_{-1};
+    std::string last_btn_label_;
 };
 
 } // namespace win32

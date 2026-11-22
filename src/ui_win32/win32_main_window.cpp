@@ -1,4 +1,5 @@
 #include "win32_main_window.hpp"
+#include "win32_dialogs_common.hpp"
 #include "win32_add_url_dialog.hpp"
 #include "win32_download_info_dialog.hpp"
 #include "win32_download_complete_dialog.hpp"
@@ -14,16 +15,18 @@
 #include "../core/batch_importer.hpp"
 #include "../core/site_logon.hpp"
 #include "../core/youtube_engine.hpp"
+#include "../core/win32_unicode.hpp"
 
+#include <windowsx.h>
 #include <gdiplus.h>
 #include <shellapi.h>
 #include <shlwapi.h>
 #include <uxtheme.h>
 #include <filesystem>
 #include <iostream>
-#include <sstream>
-#include <iomanip>
 #include <algorithm>
+#include <atomic>
+#include <thread>
 
 namespace fs = std::filesystem;
 
@@ -32,47 +35,9 @@ namespace win32 {
 
 namespace {
 
-std::string format_bytes(int64_t bytes) {
-    if (bytes < 0) return "Unknown";
-    constexpr double KB = 1024.0;
-    constexpr double MB = 1024.0 * KB;
-    constexpr double GB = 1024.0 * MB;
-
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(2);
-    if (bytes >= GB) {
-        ss << (bytes / GB) << " GB";
-    } else if (bytes >= MB) {
-        ss << (bytes / MB) << " MB";
-    } else if (bytes >= KB) {
-        ss << (bytes / KB) << " KB";
-    } else {
-        ss << bytes << " Bytes";
-    }
-    return ss.str();
-}
-
-std::string format_speed(uint64_t bytes_per_sec) {
-    if (bytes_per_sec == 0) return "0.00 KB/s";
-    return format_bytes(bytes_per_sec) + "/s";
-}
-
-std::string format_eta(int64_t eta_sec) {
-    if (eta_sec <= 0) return "--:--";
-    int64_t hours = eta_sec / 3600;
-    int64_t mins = (eta_sec % 3600) / 60;
-    int64_t secs = eta_sec % 60;
-
-    std::ostringstream ss;
-    if (hours > 0) {
-        ss << hours << "h " << mins << "m " << secs << "s";
-    } else if (mins > 0) {
-        ss << mins << "m " << secs << "s";
-    } else {
-        ss << secs << "s";
-    }
-    return ss.str();
-}
+inline std::string format_bytes(int64_t bytes) { return sys::format_bytes(bytes); }
+inline std::string format_speed(uint64_t bps) { return sys::format_speed(bps); }
+inline std::string format_eta(int64_t eta_sec) { return sys::format_eta(eta_sec); }
 
 std::string get_url_domain(const std::string& url) {
     std::string s = url;
@@ -85,43 +50,82 @@ std::string get_url_domain(const std::string& url) {
     return s;
 }
 
-int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
-    UINT num = 0, size = 0;
-    Gdiplus::GetImageEncodersSize(&num, &size);
-    if (size == 0) return -1;
+constexpr UINT WM_APP_PROMPT_DOWNLOAD    = WM_APP + 41;
+constexpr UINT WM_APP_PROGRESS_COMPLETED = WM_APP + 201;
+constexpr UINT WM_APP_DRAIN_COMPLETIONS  = WM_APP + 202;
+constexpr UINT WM_APP_YT_EXTRACT_DONE    = WM_APP + 203;
 
-    std::vector<BYTE> memory(size);
-    Gdiplus::ImageCodecInfo* pImageCodecInfo = (Gdiplus::ImageCodecInfo*)memory.data();
-    Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
-
-    for (UINT j = 0; j < num; ++j) {
-        if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
-            *pClsid = pImageCodecInfo[j].Clsid;
-            return j;
-        }
-    }
-    return -1;
+inline std::wstring utf8_to_wide(const std::string& s) {
+    return sys::utf8_to_wide(s);
 }
 
-// Posted by worker threads (IPC server) to show a download prompt on the UI thread.
-// lParam owns a heap-allocated DownloadPromptInfo.
-constexpr UINT WM_APP_PROMPT_DOWNLOAD = WM_APP + 41;
+struct YtWaitModalState {
+    HWND hwnd{nullptr};
+    HWND hProgress{nullptr};
+    HWND hBtnCancel{nullptr};
+    HFONT hFont{nullptr};
+    std::shared_ptr<std::atomic<bool>> alive{std::make_shared<std::atomic<bool>>(true)};
+    bool cancelled{false};
+    bool done{false};
+    bool ok{false};
+    YouTubeVideoInfo info;
+    std::string error;
+};
 
-// Correct UTF-8 -> UTF-16 conversion (byte-wise widening garbles non-ASCII names)
-std::wstring utf8_to_wide(const std::string& s) {
-    if (s.empty()) return std::wstring();
-    int len = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    if (len <= 0) {
-        // Not valid UTF-8: fall back to the ANSI code page
-        len = MultiByteToWideChar(CP_ACP, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-        if (len <= 0) return std::wstring();
-        std::wstring out(static_cast<size_t>(len), L'\0');
-        MultiByteToWideChar(CP_ACP, 0, s.data(), static_cast<int>(s.size()), &out[0], len);
-        return out;
+struct YtExtractThreadResult {
+    bool ok{false};
+    YouTubeVideoInfo info;
+    std::string error;
+};
+
+LRESULT CALLBACK YtWaitWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    auto* state = reinterpret_cast<YtWaitModalState*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+        case WM_CREATE: {
+            auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            state = reinterpret_cast<YtWaitModalState*>(cs->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+            state->hwnd = hwnd;
+            return 0;
+        }
+        case WM_APP_YT_EXTRACT_DONE: {
+            std::unique_ptr<YtExtractThreadResult> res(reinterpret_cast<YtExtractThreadResult*>(lParam));
+            if (state && state->alive && state->alive->load()) {
+                if (res) {
+                    state->ok = res->ok;
+                    state->info = std::move(res->info);
+                    state->error = std::move(res->error);
+                }
+                state->done = true;
+                DestroyWindow(hwnd);
+            }
+            return 0;
+        }
+        case WM_COMMAND: {
+            if (LOWORD(wParam) == IDCANCEL && state) {
+                state->cancelled = true;
+                state->done = true;
+                DestroyWindow(hwnd);
+                return 0;
+            }
+            break;
+        }
+        case WM_CLOSE: {
+            if (state) {
+                state->cancelled = true;
+                state->done = true;
+            }
+            DestroyWindow(hwnd);
+            return 0;
+        }
+        case WM_DESTROY: {
+            if (state && state->alive) state->alive->store(false);
+            return 0;
+        }
+        default:
+            break;
     }
-    std::wstring out(static_cast<size_t>(len), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), &out[0], len);
-    return out;
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 } // namespace
@@ -196,6 +200,13 @@ void Win32MainWindow::setup_ui() {
     setup_sidebar();
     setup_downloads_view();
     setup_statusbar();
+
+    // Seed completed IDs so sessions loaded from disk don't replay completion popups
+    for (const auto& s : QueueManager::instance().get_main_queue().get_all_sessions()) {
+        if (s && s->get_status() == SessionStatus::COMPLETED) {
+            completed_notified_ids_.insert(s->get_id());
+        }
+    }
 
     update_layout();
     refresh_downloads_list();
@@ -549,6 +560,28 @@ void Win32MainWindow::refresh_downloads_list() {
 
     auto all_sessions = QueueManager::instance().get_main_queue().get_all_sessions();
 
+    // Detect newly completed downloads even if their progress dialog was closed
+    bool queued_completion = false;
+    for (const auto& s : all_sessions) {
+        if (s && s->get_status() == SessionStatus::COMPLETED &&
+            completed_notified_ids_.find(s->get_id()) == completed_notified_ids_.end()) {
+            completed_notified_ids_.insert(s->get_id());
+            auto dlg_it = active_progress_dialogs_.find(s->get_id());
+            if (dlg_it != active_progress_dialogs_.end()) {
+                auto dlg = dlg_it->second;
+                active_progress_dialogs_.erase(dlg_it);
+                if (dlg) dlg->close();
+            }
+            auto prog = s->get_progress();
+            uint64_t sz = prog.total_size > 0 ? static_cast<uint64_t>(prog.total_size) : 0;
+            completed_notices_.emplace_back(s->get_destination_path(), sz);
+            queued_completion = true;
+        }
+    }
+    if (queued_completion && hwnd_ && IsWindow(hwnd_)) {
+        PostMessageW(hwnd_, WM_APP_DRAIN_COMPLETIONS, 0, 0);
+    }
+
     std::vector<std::shared_ptr<DownloadSession>> visible_sessions;
     for (const auto& s : all_sessions) {
         if (!s) continue;
@@ -606,12 +639,14 @@ void Win32MainWindow::refresh_downloads_list() {
         std::wstring wfn = utf8_to_wide(fname);
 
         std::string sz = format_bytes(prog.total_size);
-        std::wstring wsz(sz.begin(), sz.end());
+        std::wstring wsz = utf8_to_wide(sz);
 
         std::string st = "Idle";
         if (prog.status == SessionStatus::DOWNLOADING) {
             int pct = static_cast<int>(prog.progress_fraction * 100);
             st = "Downloading " + std::to_string(pct) + "%";
+        } else if (prog.status == SessionStatus::PROBING) {
+            st = "Connecting...";
         } else if (prog.status == SessionStatus::PAUSED) {
             st = "Paused";
         } else if (prog.status == SessionStatus::COMPLETED) {
@@ -623,24 +658,16 @@ void Win32MainWindow::refresh_downloads_list() {
         }
         std::wstring wst = utf8_to_wide(st);
 
-        std::string eta = format_eta(prog.eta_seconds);
-        std::wstring weta(eta.begin(), eta.end());
-
-        std::string spd = format_speed(prog.speed_bytes_per_sec);
-        std::wstring wspd(spd.begin(), spd.end());
-
-        std::string date_added = "Today";
-        std::wstring wdate(date_added.begin(), date_added.end());
-
-        std::string dom = get_url_domain(s->get_url());
-        std::wstring wdom(dom.begin(), dom.end());
+        std::wstring weta = utf8_to_wide(format_eta(prog.eta_seconds));
+        std::wstring wspd = utf8_to_wide(format_speed(prog.speed_bytes_per_sec));
+        std::wstring wdate = L"Today";
+        std::wstring wdom = utf8_to_wide(get_url_domain(s->get_url()));
 
         // Cached file icon by extension to avoid GDI leak
         std::string ext = "";
         size_t dot = fname.rfind('.');
         if (dot != std::string::npos) {
-            ext = fname.substr(dot + 1);
-            for (char& c : ext) c = static_cast<char>(std::tolower(c));
+            ext = sys::ascii_tolower(fname.substr(dot + 1));
         }
         int icon_idx = 0;
         auto icon_it = ext_icon_map_.find(ext);
@@ -719,7 +746,7 @@ void Win32MainWindow::refresh_downloads_list() {
     SendMessageW(hStatusbar_, SB_SETTEXTW, 0, (LPARAM)count_txt.c_str());
 
     std::string spd_txt = "Total Speed: " + format_speed(total_speed);
-    std::wstring wspd_txt(spd_txt.begin(), spd_txt.end());
+    std::wstring wspd_txt = utf8_to_wide(spd_txt);
     SendMessageW(hStatusbar_, SB_SETTEXTW, 1, (LPARAM)wspd_txt.c_str());
 
     bool lim_on = QueueManager::instance().is_global_speed_limit_enabled();
@@ -729,13 +756,103 @@ void Win32MainWindow::refresh_downloads_list() {
     update_toolbar_sensitivity();
 }
 
+void Win32MainWindow::drain_completed_notices() {
+    if (completion_modal_active_ || closing_ || delete_in_progress_) return;
+    completion_modal_active_ = true;
+    while (!completed_notices_.empty() && !closing_ && hwnd_ && IsWindow(hwnd_)) {
+        auto item = std::move(completed_notices_.front());
+        completed_notices_.pop_front();
+        Win32DownloadCompleteDialog::show(hwnd_, item.first, item.second);
+    }
+    completion_modal_active_ = false;
+}
+
+bool Win32MainWindow::extract_youtube_with_progress(const std::string& url, YouTubeVideoInfo& out_info, std::string& out_err) {
+    YtWaitModalState state;
+    UINT dpi = DpiHelper::get_dpi(hwnd_);
+    state.hFont = DpiHelper::create_font(9, FW_NORMAL, false, dpi);
+
+    static bool s_reg = false;
+    const wchar_t* cls = L"OpenDM_YtWaitModal";
+    if (!s_reg) {
+        WNDCLASSEXW wc = {sizeof(WNDCLASSEXW)};
+        wc.lpfnWndProc = YtWaitWndProc;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = cls;
+        wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        RegisterClassExW(&wc);
+        s_reg = true;
+    }
+
+    int dlg_w = DpiHelper::scale(360, dpi);
+    int dlg_h = DpiHelper::scale(145, dpi);
+    int x = 0, y = 0;
+    compute_centered_pos(hwnd_, dlg_w, dlg_h, x, y);
+
+    HWND dlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME, cls, L"OpenDM - Analyzing YouTube Video",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
+        x, y, dlg_w, dlg_h, hwnd_, nullptr, GetModuleHandleW(nullptr), &state);
+
+    int pad = DpiHelper::scale(16, dpi);
+    int cw = dlg_w - pad * 2 - DpiHelper::scale(14, dpi);
+    HWND hLbl = CreateWindowExW(0, L"STATIC", L"Fetching available video and audio streams...",
+        WS_CHILD | WS_VISIBLE, pad, DpiHelper::scale(16, dpi), cw, DpiHelper::scale(20, dpi),
+        dlg, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hLbl, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+
+    state.hProgress = CreateWindowExW(0, PROGRESS_CLASSW, L"",
+        WS_CHILD | WS_VISIBLE | PBS_MARQUEE,
+        pad, DpiHelper::scale(42, dpi), cw, DpiHelper::scale(18, dpi),
+        dlg, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hProgress, PBM_SETMARQUEE, TRUE, 30);
+
+    int btn_w = DpiHelper::scale(84, dpi);
+    int btn_h = DpiHelper::scale(24, dpi);
+    state.hBtnCancel = CreateWindowExW(0, L"BUTTON", L"Cancel",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        (dlg_w - btn_w) / 2, DpiHelper::scale(74, dpi), btn_w, btn_h,
+        dlg, (HMENU)IDCANCEL, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hBtnCancel, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+
+    auto alive = state.alive;
+    std::thread([dlg, alive, url]() {
+        auto* res = new YtExtractThreadResult();
+        res->ok = YouTubeEngine::extract_video_info(url, res->info, &res->error) && res->info.has_playable_formats();
+        if (alive->load() && IsWindow(dlg)) {
+            if (!PostMessageW(dlg, WM_APP_YT_EXTRACT_DONE, 0, reinterpret_cast<LPARAM>(res))) {
+                delete res;
+            }
+        } else {
+            delete res;
+        }
+    }).detach();
+
+    run_modal_loop(dlg, hwnd_, state.done);
+    if (state.hFont) DeleteObject(state.hFont);
+
+    if (state.cancelled) {
+        out_err = "Cancelled";
+        return false;
+    }
+    out_info = std::move(state.info);
+    out_err = std::move(state.error);
+    return state.ok;
+}
+
 std::shared_ptr<DownloadSession> Win32MainWindow::get_selected_session() {
     int sel = ListView_GetNextItem(hListView_, -1, LVNI_SELECTED);
     if (sel >= 0 && sel < static_cast<int>(visible_session_ids_.size())) {
         return QueueManager::instance().find_session(visible_session_ids_[sel]);
     }
     if (!selected_session_id_.empty()) {
-        return QueueManager::instance().find_session(selected_session_id_);
+        for (const auto& vid : visible_session_ids_) {
+            if (vid == selected_session_id_) {
+                return QueueManager::instance().find_session(selected_session_id_);
+            }
+        }
+        selected_session_id_.clear();
     }
     return nullptr;
 }
@@ -782,6 +899,25 @@ void Win32MainWindow::add_download_url(const std::string& url, const std::string
                                        const std::string& filename, bool start_now) {
     if (url.empty()) return;
 
+    if (!start_now) {
+        std::string fn = filename.empty()
+            ? DownloadSession::extract_filename_from_url(url)
+            : DownloadSession::sanitize_filename(DownloadSession::url_decode(filename));
+        std::string base_dir = !path.empty() ? path
+            : (!QueueManager::instance().get_default_save_dir().empty()
+                ? QueueManager::instance().get_default_save_dir()
+                : sys::get_downloads_dir_utf8());
+        std::string dest = sys::path_to_utf8(sys::path_from_utf8(base_dir) / sys::path_from_utf8(fn));
+        static std::atomic<uint64_t> counter{1};
+        std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter.fetch_add(1));
+        auto s = std::make_shared<DownloadSession>(id, url, dest);
+        s->set_category(QueueManager::detect_category(fn));
+        SiteLogonManager::instance().apply_to_session(*s, url);
+        QueueManager::instance().get_main_queue().add_session(s, false);
+        refresh_downloads_list();
+        return;
+    }
+
     DownloadPromptInfo info;
     info.url = url;
     info.filename = filename.empty()
@@ -799,19 +935,24 @@ void Win32MainWindow::prompt_download(const DownloadPromptInfo& info) {
     if (YouTubeEngine::is_youtube_url(target_info.url) && target_info.audio_stream_url.empty()) {
         YouTubeVideoInfo yt_info;
         std::string err;
-        if (YouTubeEngine::extract_video_info(target_info.url, yt_info, &err) && yt_info.has_playable_formats()) {
-            auto yt_res = Win32YoutubeFormatDialog::show(hwnd_, yt_info);
-            if (!yt_res.accepted) {
-                return;
+        if (!extract_youtube_with_progress(target_info.url, yt_info, err)) {
+            if (err != "Cancelled") {
+                std::wstring msg = utf8_to_wide(err.empty() ? "Could not extract playable YouTube formats." : ("YouTube extraction failed:\n" + err));
+                MessageBoxW(hwnd_, msg.c_str(), L"YouTube Error", MB_OK | MB_ICONWARNING);
             }
-            target_info.url = yt_res.video_url;
-            target_info.filename = yt_res.filename;
-            target_info.audio_stream_url = yt_res.audio_url;
-            target_info.user_agent = yt_res.user_agent;
-            target_info.is_streaming_media = yt_res.is_muxed;
-            target_info.category = "Video";
-            target_info.referer = "https://www.youtube.com/";
+            return;
         }
+        auto yt_res = Win32YoutubeFormatDialog::show(hwnd_, yt_info);
+        if (!yt_res.accepted) {
+            return;
+        }
+        target_info.url = yt_res.video_url;
+        target_info.filename = yt_res.filename;
+        target_info.audio_stream_url = yt_res.audio_url;
+        target_info.user_agent = yt_res.user_agent;
+        target_info.is_streaming_media = yt_res.is_muxed;
+        target_info.category = "Video";
+        target_info.referer = "https://www.youtube.com/";
     }
 
     if (target_info.filename.empty() || target_info.filename == "download.bin") {
@@ -832,10 +973,10 @@ void Win32MainWindow::prompt_download(const DownloadPromptInfo& info) {
     }
 
     std::error_code ec;
-    fs::create_directories(fs::path(utf8_to_wide(res.info.save_as_path)).parent_path(), ec);
+    fs::create_directories(sys::path_from_utf8(res.info.save_as_path).parent_path(), ec);
 
-    static uint64_t counter = 1;
-    std::string sess_id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+    static std::atomic<uint64_t> counter{1};
+    std::string sess_id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter.fetch_add(1));
     auto session = std::make_shared<DownloadSession>(sess_id, res.info.url, res.info.save_as_path);
     session->set_category(res.info.category);
     if (!res.info.username.empty()) {
@@ -876,25 +1017,6 @@ void Win32MainWindow::on_add_url() {
         info.password = res.password;
         info.filename = DownloadSession::extract_filename_from_url(res.url);
         info.category = QueueManager::detect_category(info.filename);
-
-        if (YouTubeEngine::is_youtube_url(res.url)) {
-            YouTubeVideoInfo yt_info;
-            std::string err;
-            if (YouTubeEngine::extract_video_info(res.url, yt_info, &err) && yt_info.has_playable_formats()) {
-                auto yt_res = Win32YoutubeFormatDialog::show(hwnd_, yt_info);
-                if (yt_res.accepted) {
-                    info.url = yt_res.video_url;
-                    info.filename = yt_res.filename;
-                    info.audio_stream_url = yt_res.audio_url;
-                    info.user_agent = yt_res.user_agent;
-                    info.is_streaming_media = yt_res.is_muxed;
-                    info.category = "Video";
-                    info.referer = "https://www.youtube.com/";
-                } else {
-                    return;
-                }
-            }
-        }
 
         prompt_download(info);
     }
@@ -1035,30 +1157,37 @@ void Win32MainWindow::on_zip_preview() {
 }
 
 void Win32MainWindow::on_batch_import() {
-    wchar_t szFile[MAX_PATH] = {0};
+    std::vector<wchar_t> szFile(4096, L'\0');
     OPENFILENAMEW ofn = {sizeof(OPENFILENAMEW)};
     ofn.hwndOwner = hwnd_;
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFile = szFile.data();
+    ofn.nMaxFile = static_cast<DWORD>(szFile.size());
     ofn.lpstrFilter = L"Batch Files (*.ef2;*.txt)\0*.ef2;*.txt\0All Files (*.*)\0*.*\0";
     ofn.nFilterIndex = 1;
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
 
     if (GetOpenFileNameW(&ofn)) {
-        std::wstring chosen(szFile);
-        std::string imp_path(chosen.begin(), chosen.end());
+        std::string imp_path = sys::wide_to_utf8(szFile.data());
         std::string err;
         auto items = BatchImporter::import_file(imp_path, err);
         if (items.empty()) {
             MessageBoxW(hwnd_, L"Failed to import batch file or no URLs found.", L"Import Batch", MB_OK | MB_ICONERROR);
         } else {
+            std::string default_dir = QueueManager::instance().get_default_save_dir();
+            if (default_dir.empty()) default_dir = sys::get_downloads_dir_utf8();
+            static std::atomic<uint64_t> cnt{1};
             for (const auto& it : items) {
-                static uint64_t cnt = 1;
-                std::string sid = "import_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(cnt++);
+                std::string sid = "import_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(cnt.fetch_add(1));
                 std::string fn = (it.filename.empty() || it.filename == "download.bin")
                     ? DownloadSession::extract_filename_from_url(it.url)
                     : DownloadSession::sanitize_filename(DownloadSession::url_decode(it.filename));
-                auto sess = std::make_shared<DownloadSession>(sid, it.url, fn);
+                std::string dir = it.path.empty() ? default_dir : it.path;
+                std::string dest_path = sys::path_to_utf8(sys::path_from_utf8(dir) / sys::path_from_utf8(fn));
+                auto sess = std::make_shared<DownloadSession>(sid, it.url, dest_path);
+                SiteLogonManager::instance().apply_to_session(*sess, it.url);
+                if (!it.referer.empty()) sess->set_header("Referer", it.referer);
+                if (!it.cookies.empty()) sess->set_header("Cookie", it.cookies);
+                if (!it.user_agent.empty()) sess->set_header("User-Agent", it.user_agent);
                 QueueManager::instance().get_main_queue().add_session(sess, false);
             }
             std::wstring msg = L"Successfully imported " + std::to_wstring(items.size()) + L" downloads.";
@@ -1069,25 +1198,24 @@ void Win32MainWindow::on_batch_import() {
 }
 
 void Win32MainWindow::on_batch_export() {
-    wchar_t szFile[MAX_PATH] = {0};
+    std::vector<wchar_t> szFile(4096, L'\0');
     OPENFILENAMEW ofn = {sizeof(OPENFILENAMEW)};
     ofn.hwndOwner = hwnd_;
-    ofn.lpstrFile = szFile;
-    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFile = szFile.data();
+    ofn.nMaxFile = static_cast<DWORD>(szFile.size());
     ofn.lpstrFilter = L"OpenDM / IDM Batch File (*.ef2)\0*.ef2\0Text File (*.txt)\0*.txt\0";
     ofn.nFilterIndex = 1;
     ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
 
     if (GetSaveFileNameW(&ofn)) {
-        std::wstring chosen(szFile);
-        std::string exp_path(chosen.begin(), chosen.end());
+        std::string exp_path = sys::wide_to_utf8(szFile.data());
         auto sessions = QueueManager::instance().get_main_queue().get_all_sessions();
         std::vector<BatchItem> items;
         for (const auto& s : sessions) {
             BatchItem bi;
             bi.url = s->get_url();
             bi.filename = s->get_filename();
-            bi.path = s->get_destination_path();
+            bi.path = sys::path_to_utf8(sys::path_from_utf8(s->get_destination_path()).parent_path());
             items.push_back(bi);
         }
         std::string err;
@@ -1139,16 +1267,22 @@ void Win32MainWindow::on_open_folder() {
 void Win32MainWindow::on_copy_url() {
     auto s = get_selected_session();
     if (s) {
-        std::string url = s->get_url();
-        std::wstring wurl(url.begin(), url.end());
+        std::wstring wurl = utf8_to_wide(s->get_url());
         if (OpenClipboard(hwnd_)) {
             EmptyClipboard();
             size_t len = (wurl.size() + 1) * sizeof(wchar_t);
             HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, len);
             if (hMem) {
-                memcpy(GlobalLock(hMem), wurl.c_str(), len);
-                GlobalUnlock(hMem);
-                SetClipboardData(CF_UNICODETEXT, hMem);
+                void* p = GlobalLock(hMem);
+                if (p) {
+                    memcpy(p, wurl.c_str(), len);
+                    GlobalUnlock(hMem);
+                    if (!SetClipboardData(CF_UNICODETEXT, hMem)) {
+                        GlobalFree(hMem);
+                    }
+                } else {
+                    GlobalFree(hMem);
+                }
             }
             CloseClipboard();
         }
@@ -1173,10 +1307,12 @@ bool Win32MainWindow::save_snapshot(const std::string& filename) {
 
     Win32Assets::init_gdiplus();
     Gdiplus::Bitmap gdiBmp(hBitmap, nullptr);
-    CLSID pngClsid;
-    GetEncoderClsid(L"image/png", &pngClsid);
-    std::wstring wpath(filename.begin(), filename.end());
-    Gdiplus::Status st = gdiBmp.Save(wpath.c_str(), &pngClsid, nullptr);
+    CLSID pngClsid{};
+    Gdiplus::Status st = Gdiplus::GenericError;
+    if (get_gdiplus_encoder_clsid(L"image/png", &pngClsid) >= 0) {
+        std::wstring wpath = sys::path_from_utf8(filename).wstring();
+        st = gdiBmp.Save(wpath.c_str(), &pngClsid, nullptr);
+    }
 
     SelectObject(hdcMem, hOld);
     DeleteObject(hBitmap);
@@ -1211,7 +1347,10 @@ LRESULT CALLBACK Win32MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
             return 0;
         }
         case WM_TIMER: {
-            if (self) self->refresh_downloads_list();
+            if (self) {
+                self->refresh_downloads_list();
+                QueueManager::instance().save_if_dirty();
+            }
             return 0;
         }
         case WM_APP_PROMPT_DOWNLOAD: {
@@ -1219,15 +1358,45 @@ LRESULT CALLBACK Win32MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
             if (self && info) self->prompt_download(*info);
             return 0;
         }
+        case WM_APP_PROGRESS_COMPLETED: {
+            std::unique_ptr<std::string> sid(reinterpret_cast<std::string*>(lParam));
+            if (self && sid) {
+                auto s = QueueManager::instance().find_session(*sid);
+                if (s && self->completed_notified_ids_.insert(*sid).second) {
+                    auto prog = s->get_progress();
+                    uint64_t sz = prog.total_size > 0 ? static_cast<uint64_t>(prog.total_size) : 0;
+                    self->completed_notices_.emplace_back(s->get_destination_path(), sz);
+                }
+                auto dlg_it = self->active_progress_dialogs_.find(*sid);
+                if (dlg_it != self->active_progress_dialogs_.end()) {
+                    auto dlg = dlg_it->second;
+                    self->active_progress_dialogs_.erase(dlg_it);
+                    if (dlg) dlg->close();
+                }
+                self->drain_completed_notices();
+            }
+            return 0;
+        }
+        case WM_APP_DRAIN_COMPLETIONS: {
+            if (self) self->drain_completed_notices();
+            return 0;
+        }
         case WM_INITMENUPOPUP: {
             if (self) {
                 HMENU hMenu = reinterpret_cast<HMENU>(wParam);
                 auto s = self->get_selected_session();
                 BOOL has_sel = (s != nullptr);
+                bool can_resume = false;
+                bool can_stop = false;
+                if (has_sel) {
+                    auto st = s->get_status();
+                    can_resume = (st == SessionStatus::PAUSED || st == SessionStatus::IDLE || st == SessionStatus::ERROR);
+                    can_stop = (st == SessionStatus::DOWNLOADING || st == SessionStatus::PROBING || st == SessionStatus::ASSEMBLING);
+                }
                 UINT flag = has_sel ? MF_ENABLED : (MF_DISABLED | MF_GRAYED);
 
-                EnableMenuItem(hMenu, IDM_FILE_RESUME, MF_BYCOMMAND | flag);
-                EnableMenuItem(hMenu, IDM_FILE_STOP, MF_BYCOMMAND | flag);
+                EnableMenuItem(hMenu, IDM_FILE_RESUME, MF_BYCOMMAND | (can_resume ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
+                EnableMenuItem(hMenu, IDM_FILE_STOP, MF_BYCOMMAND | (can_stop ? MF_ENABLED : (MF_DISABLED | MF_GRAYED)));
                 EnableMenuItem(hMenu, IDM_FILE_DELETE, MF_BYCOMMAND | flag);
                 EnableMenuItem(hMenu, IDM_FILE_OPEN, MF_BYCOMMAND | flag);
                 EnableMenuItem(hMenu, IDM_FILE_OPEN_FOLDER, MF_BYCOMMAND | flag);
@@ -1251,8 +1420,7 @@ LRESULT CALLBACK Win32MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
                 tvi.pszText = buf;
                 tvi.cchTextMax = 128;
                 TreeView_GetItem(self->hTreeView_, &tvi);
-                std::wstring wt(buf);
-                self->current_category_.assign(wt.begin(), wt.end());
+                self->current_category_ = sys::wide_to_utf8(buf);
                 self->refresh_downloads_list();
                 return 0;
             }
@@ -1380,7 +1548,7 @@ LRESULT CALLBACK Win32MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
                     return 0;
                 }
                 case IDM_TASKS_EXIT: {
-                    PostQuitMessage(0);
+                    DestroyWindow(hwnd);
                     return 0;
                 }
                 default:
@@ -1403,7 +1571,7 @@ LRESULT CALLBACK Win32MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
         }
         case WM_LBUTTONDOWN: {
             if (self && self->sidebar_visible_) {
-                int x = LOWORD(lParam);
+                int x = GET_X_LPARAM(lParam);
                 if (abs(x - self->sidebar_width_) <= 6) {
                     self->dragging_splitter_ = true;
                     SetCapture(hwnd);
@@ -1414,7 +1582,7 @@ LRESULT CALLBACK Win32MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
         }
         case WM_MOUSEMOVE: {
             if (self && self->dragging_splitter_) {
-                int x = LOWORD(lParam);
+                int x = GET_X_LPARAM(lParam);
                 if (x >= DpiHelper::scale(120, self->dpi_) && x <= DpiHelper::scale(500, self->dpi_)) {
                     self->sidebar_width_ = x;
                     self->update_layout();
@@ -1431,12 +1599,19 @@ LRESULT CALLBACK Win32MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
             }
             break;
         }
+        case WM_CAPTURECHANGED: {
+            if (self) self->dragging_splitter_ = false;
+            return 0;
+        }
         case WM_DESTROY: {
             if (self) {
+                self->closing_ = true;
+                self->completed_notices_.clear();
                 if (self->timer_id_) {
                     KillTimer(hwnd, self->timer_id_);
                     self->timer_id_ = 0;
                 }
+                QueueManager::instance().shutdown_all_sessions();
                 // Close any modeless progress windows before the owner goes away
                 auto dialogs = std::move(self->active_progress_dialogs_);
                 self->active_progress_dialogs_.clear();

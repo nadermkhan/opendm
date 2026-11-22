@@ -1,52 +1,85 @@
 #include "post_download.hpp"
-#include <iostream>
+#include "win32_unicode.hpp"
+
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <sstream>
-#include <iomanip>
 #include <thread>
+#include <vector>
 
-#ifdef _WIN32
-#include <windows.h>
-#define popen _popen
-#define pclose _pclose
-#else
+#ifndef _WIN32
 #include <unistd.h>
-#include <sys/wait.h>
 #endif
+
+namespace fs = std::filesystem;
 
 namespace opendm {
 
 namespace {
 
-std::string format_file_size(int64_t bytes) {
-    if (bytes < 0) return "Unknown size";
-    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
-    int unit_idx = 0;
-    double d = static_cast<double>(bytes);
-    while (d >= 1024.0 && unit_idx < 4) {
-        d /= 1024.0;
-        unit_idx++;
+std::vector<std::string> split_command_tokens(const std::string& cmd) {
+    std::vector<std::string> tokens;
+    std::string cur;
+    bool in_quotes = false;
+    char quote_char = 0;
+
+    for (size_t i = 0; i < cmd.size(); ++i) {
+        char c = cmd[i];
+        if (in_quotes) {
+            if (c == quote_char) {
+                in_quotes = false;
+            } else {
+                cur.push_back(c);
+            }
+        } else if (c == '"' || c == '\'') {
+            in_quotes = true;
+            quote_char = c;
+        } else if (c == ' ' || c == '\t') {
+            if (!cur.empty()) {
+                tokens.push_back(std::move(cur));
+                cur.clear();
+            }
+        } else {
+            cur.push_back(c);
+        }
     }
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(1) << d << " " << units[unit_idx];
-    return ss.str();
+    if (!cur.empty()) tokens.push_back(std::move(cur));
+    return tokens;
 }
 
-void async_exec(const std::string& cmd) {
+std::string find_windows_defender_cli() {
 #ifdef _WIN32
-    std::thread([cmd]() {
-        system(cmd.c_str());
-    }).detach();
-#else
-    pid_t pid = fork();
-    if (pid == 0) {
-        // Child
-        setsid();
-        execl("/bin/sh", "sh", "-c", cmd.c_str(), nullptr);
-        _exit(1);
+    std::error_code ec;
+    std::string prog_data = sys::get_env_utf8("ProgramData");
+    if (!prog_data.empty()) {
+        fs::path plat = sys::path_from_utf8(prog_data) / "Microsoft" / "Windows Defender" / "Platform";
+        if (fs::exists(plat, ec) && fs::is_directory(plat, ec)) {
+            std::vector<fs::path> versions;
+            for (const auto& entry : fs::directory_iterator(plat, ec)) {
+                if (entry.is_directory(ec)) {
+                    fs::path cand = entry.path() / "MpCmdRun.exe";
+                    if (fs::exists(cand, ec)) {
+                        versions.push_back(cand);
+                    }
+                }
+            }
+            if (!versions.empty()) {
+                std::sort(versions.begin(), versions.end());
+                return sys::path_to_utf8(versions.back());
+            }
+        }
+    }
+    std::string prog_files = sys::get_env_utf8("ProgramFiles");
+    if (!prog_files.empty()) {
+        fs::path cand = sys::path_from_utf8(prog_files) / "Windows Defender" / "MpCmdRun.exe";
+        if (fs::exists(cand, ec)) {
+            return sys::path_to_utf8(cand);
+        }
     }
 #endif
+    return {};
 }
 
 } // namespace
@@ -56,90 +89,149 @@ PostDownloadManager& PostDownloadManager::instance() {
     return inst;
 }
 
+void PostDownloadManager::set_av_command(const std::string& cmd) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    av_scan_cmd_ = cmd;
+}
+
+std::string PostDownloadManager::get_av_command() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return av_scan_cmd_;
+}
+
+void PostDownloadManager::set_notification_callback(NotificationCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    notify_cb_ = std::move(cb);
+}
+
 void PostDownloadManager::notify_completion(
     const std::string& filename,
     int64_t total_size,
     bool success,
     const std::string& error_msg) {
 
+    NotificationCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cb = notify_cb_;
+    }
+    if (cb) {
+        cb(filename, total_size, success, error_msg);
+        return;
+    }
+
+#ifndef _WIN32
     std::string title = success ? "Download Complete" : "Download Failed";
     std::string body = filename;
     if (success) {
-        body += " (" + format_file_size(total_size) + ")";
+        body += " (" + sys::format_bytes(total_size) + ")";
     } else if (!error_msg.empty()) {
         body += ": " + error_msg;
     }
-
     std::string icon = success ? "document-save" : "dialog-error";
-
-    // Escape quotes for shell safety
-    std::string safe_body;
-    for (char c : body) {
-        if (c == '"' || c == '\\' || c == '`' || c == '$') safe_body += '\\';
-        safe_body += c;
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        execlp("notify-send", "notify-send", "-i", icon.c_str(), "-a", "OpenDM",
+               title.c_str(), body.c_str(), nullptr);
+        _exit(1);
     }
-
-    std::string cmd = "notify-send -i " + icon + " -a OpenDM \"" + title + "\" \"" + safe_body + "\" 2>/dev/null";
-    async_exec(cmd);
+#else
+    (void)filename;
+    (void)total_size;
+    (void)success;
+    (void)error_msg;
+#endif
 }
 
 bool PostDownloadManager::scan_file(const std::string& filepath, std::string* out_scan_report) {
-    std::string cmd;
-    if (!av_scan_cmd_.empty()) {
-        cmd = av_scan_cmd_;
-        size_t pos = cmd.find("%file");
-        if (pos != std::string::npos) {
-            cmd.replace(pos, 5, "\"" + filepath + "\"");
-        } else {
-            cmd += " \"" + filepath + "\"";
+    if (filepath.empty()) return false;
+
+    std::string custom_cmd = get_av_command();
+    std::string exe;
+    std::vector<std::string> args;
+
+    if (!custom_cmd.empty()) {
+        auto tokens = split_command_tokens(custom_cmd);
+        if (tokens.empty()) return false;
+        exe = tokens[0];
+        bool replaced = false;
+        for (size_t i = 1; i < tokens.size(); ++i) {
+            std::string tok = tokens[i];
+            size_t pos = tok.find("%file");
+            if (pos != std::string::npos) {
+                tok.replace(pos, 5, filepath);
+                replaced = true;
+            }
+            args.push_back(std::move(tok));
+        }
+        if (!replaced) {
+            args.push_back(filepath);
         }
     } else {
-        // Fallback to clamscan if present
-        if (system("which clamscan >/dev/null 2>&1") == 0) {
-            cmd = "clamscan --no-summary \"" + filepath + "\"";
-        } else {
+#ifdef _WIN32
+        exe = find_windows_defender_cli();
+        if (exe.empty()) {
             return false;
         }
-    }
-
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) return false;
-
-    char buffer[256];
-    std::string output;
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        output += buffer;
-    }
-    int status = pclose(pipe);
-
-    if (out_scan_report) *out_scan_report = output;
-#ifdef _WIN32
-    return (status == 0);
+        args = {"-Scan", "-ScanType", "3", "-File", filepath};
 #else
-    return (WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        exe = "clamscan";
+        args = {"--no-summary", filepath};
 #endif
+    }
+
+    std::string output;
+    int exit_code = -1;
+    bool ok = sys::run_hidden_process(
+        exe, args,
+        [&output](std::string_view line) {
+            if (!output.empty()) output.push_back('\n');
+            output.append(line);
+        },
+        nullptr, &exit_code);
+
+    if (out_scan_report) {
+        *out_scan_report = output;
+    }
+    return ok && exit_code == 0;
 }
 
 void PostDownloadManager::execute_completion_action(CompletionAction action) {
     switch (action) {
         case CompletionAction::EXIT_APP:
             std::cout << "[OpenDM] Completion action: Exiting application." << std::endl;
-            exit(0);
-            break;
+            std::exit(0);
         case CompletionAction::SUSPEND_SYSTEM:
-            std::cout << "[OpenDM] Completion action: Suspending system." << std::endl;
 #ifdef _WIN32
-            async_exec("rundll32.exe powrprof.dll,SetSuspendState 0,1,0");
+            std::thread([]() {
+                sys::run_hidden_process("rundll32.exe", {"powrprof.dll,SetSuspendState", "0,1,0"});
+            }).detach();
 #else
-            async_exec("systemctl suspend 2>/dev/null || dbus-send --system --print-reply --dest=org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager.Suspend boolean:true");
+            {
+                pid_t pid = fork();
+                if (pid == 0) {
+                    setsid();
+                    execlp("systemctl", "systemctl", "suspend", nullptr);
+                    _exit(1);
+                }
+            }
 #endif
             break;
         case CompletionAction::SHUTDOWN_SYSTEM:
-            std::cout << "[OpenDM] Completion action: Shutting down system." << std::endl;
 #ifdef _WIN32
-            async_exec("shutdown.exe /s /t 0");
+            std::thread([]() {
+                sys::run_hidden_process("shutdown.exe", {"/s", "/t", "5"});
+            }).detach();
 #else
-            async_exec("systemctl poweroff 2>/dev/null || dbus-send --system --print-reply --dest=org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager.PowerOff boolean:true");
+            {
+                pid_t pid = fork();
+                if (pid == 0) {
+                    setsid();
+                    execlp("systemctl", "systemctl", "poweroff", nullptr);
+                    _exit(1);
+                }
+            }
 #endif
             break;
         case CompletionAction::NONE:

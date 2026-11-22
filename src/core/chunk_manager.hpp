@@ -1,11 +1,12 @@
 #pragma once
 
-#include <string>
-#include <vector>
-#include <memory>
-#include <mutex>
+#include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
 
 namespace opendm {
 
@@ -57,53 +58,53 @@ public:
     int find_max_free_chunk();
 
     // IDM algorithm: ChunksList::FindChunkWithZipCentralDir()
-    // Returns chunk ID covering target_offset and optionally writes remaining bytes to out_remaining_bytes
     int find_chunk_with_zip_central_dir(int64_t target_offset, int64_t* out_remaining_bytes = nullptr);
 
     // IDM algorithm: ChunksList::CreateNewItem() & Connection::OnChangeBounds()
-    // Splits chunk at target_chunk_id, returns newly created chunk ID, or -1 on failure
     int split_chunk(int target_chunk_id, const std::string& temp_dir, const std::string& file_prefix);
+
+    // Atomically claims an existing PENDING chunk for work-stealing on capped pools
+    int claim_next_pending_chunk();
+
+    // Reconciles chunk->downloaded_bytes with actual physical .part file sizes on disk before splits start
+    void reconcile_disk_sizes();
 
     // Update chunk progress
     void update_chunk_progress(int chunk_id, int64_t bytes_received, uint64_t speed_bytes_per_sec);
 
-    // Atomically clamps incoming write size to current chunk end_offset and updates progress
+    // Atomically clamps incoming write size to current chunk end_offset and reserves progress
     size_t clamp_and_update_chunk(int chunk_id, int64_t current_bytes_received,
                                   size_t incoming_bytes, uint64_t speed_bytes_per_sec,
                                   bool& out_reached_boundary);
 
-    // Set chunk status
+    // Rolls back uncommitted bytes if writing to disk failed
+    void rollback_chunk_write(int chunk_id, int64_t committed_bytes);
+
     void set_chunk_status(int chunk_id, ChunkStatus status);
-
-    // Mark chunk as completed
     void mark_chunk_completed(int chunk_id);
-
-    // Check if all chunks completed
     bool all_chunks_completed() const;
 
-    // Get total downloaded bytes across all chunks
     int64_t get_total_downloaded_bytes() const;
-
-    // Get total file size (or -1 if streaming/unknown)
     int64_t get_total_size() const;
 
-    // Snapshots of chunks for UI
     std::vector<Chunk> get_chunks_snapshot() const;
-
-    // Get specific chunk info
     bool get_chunk(int chunk_id, Chunk& out_chunk) const;
 
-    // IDM algorithm: ChunksList::JoinFile() & AppendFile()
-    // Stitches all chunks into the target file in order, then removes temporary chunks
-    bool join_file(const std::string& destination_filepath, std::function<void(double)> progress_cb = nullptr);
+    // Freezes chunk speeds without clobbering downloaded_bytes (safe on pause)
+    void reset_all_speeds();
 
-    // Reset chunk state and clear chunks
+    // Recomputes total remaining bytes to download across incomplete chunks
+    int64_t get_remaining_bytes() const;
+
+    // Stitches all chunks into target file in order, then removes temporary chunks.
+    // Default arguments preserve compatibility with unit tests.
+    bool join_file(const std::string& destination_filepath,
+                   std::function<void(double)> progress_cb = nullptr,
+                   const std::atomic<bool>* cancel_flag = nullptr);
+
     void reset();
-
-    // Clean up temporary .part files from disk
     void cleanup_temp_files();
 
-    // Save and load state for resume
     std::string serialize_state() const;
     bool deserialize_state(const std::string& json_str);
 

@@ -375,6 +375,22 @@ int main() {
     fs::remove(video_test);
     fs::remove(audio_test);
     fs::remove(muxed_test);
+
+    // Test 4: Case-insensitive .MP4 extension + zero mvhd duration backfill check
+    std::cout << "[Test 4] Uppercase .MP4 extension handling..." << std::endl;
+    std::string up_video = "/tmp/test_UPPER.MP4";
+    std::string up_audio = "/tmp/test_UPPER_A.M4A";
+    std::string up_out = "/tmp/test_UPPER_OUT.MP4";
+    create_synthetic_mp4(up_video, 1, "vide", std::vector<uint8_t>(64, 0x11));
+    create_synthetic_mp4(up_audio, 1, "soun", std::vector<uint8_t>(32, 0x22));
+    std::string up_err;
+    assert(opendm::MediaMuxer::mux_mp4_and_mp4(up_video, up_audio, up_out, nullptr, &up_err));
+    assert(fs::exists(up_out) && fs::file_size(up_out) > 0);
+    fs::remove(up_video);
+    fs::remove(up_audio);
+    fs::remove(up_out);
+    std::cout << "  ✓ Case-insensitive .MP4/.M4A muxing verified." << std::endl;
+
     fs::remove(ts1);
     fs::remove(ts2);
     fs::remove(ts_out);

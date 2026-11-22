@@ -2,6 +2,8 @@
 #include "core/site_logon.hpp"
 #include "core/download_session.hpp"
 #include "core/download_queue.hpp"
+#include "core/win32_unicode.hpp"
+#include "core/youtube_engine.hpp"
 #include "cli/cli_parser.hpp"
 #include "ipc/ipc_server.hpp"
 #include <iostream>
@@ -421,6 +423,139 @@ int main() {
         assert(opendm::DownloadSession::extract_filename_from_url("https://example.com/") == "download.bin");
 
         std::cout << "  [PASS] URL percent-decoding, filename extraction, and category detection verified." << std::endl;
+    }
+
+    // 14. Windows Unicode, Legacy Migration, Settings Persistence, SiteLogon Headers & >16KB IPC
+    std::cout << "[Test 14] UTF-8 Paths, QueueManager Migration/Settings, Batch Empty Lines & Large IPC..." << std::endl;
+    {
+        // A. UTF-8 <-> Wide round-trip & DOS reserved filename detection
+        std::string utf8_sample = "বাংলা_ভিডিও_日本語_2025.mp4";
+        assert(opendm::sys::wide_to_utf8(opendm::sys::utf8_to_wide(utf8_sample)) == utf8_sample);
+        assert(opendm::sys::is_reserved_dos_name("CON.txt"));
+        assert(opendm::DownloadSession::sanitize_filename("CON.txt") == "_CON.txt");
+
+        // B. QueueManager legacy backslash migration + settings + quoted ETag round-trip
+        std::string qstore = "/tmp/opendm_test_mig_queue.json";
+        fs::remove(qstore);
+        fs::remove(qstore + ".bak");
+        {
+            std::ofstream legacy_out(qstore);
+            legacy_out << R"({
+  "version": 1,
+  "queues": [
+    {
+      "name": "Main Download Queue",
+      "items": [
+        {
+          "id": "mig_1",
+          "url": "https://example.com/movie.mkv",
+          "destination_path": "C:\Users\NiO\Downloads\Video\movie.mkv",
+          "filename": "movie.mkv",
+          "category": "Video",
+          "total_size": 5368709120,
+          "etag": "\"abc-123\"",
+          "supports_ranges": true,
+          "status": 3
+        }
+      ]
+    }
+  ]
+})";
+        }
+        opendm::QueueManager::instance().set_storage_path(qstore);
+        assert(opendm::QueueManager::instance().load_from_file());
+        auto mig_sess = opendm::QueueManager::instance().find_session("mig_1");
+        assert(mig_sess != nullptr);
+        assert(mig_sess->get_destination_path() == "C:\\Users\\NiO\\Downloads\\Video\\movie.mkv");
+
+        // Persist settings + non-ASCII filename session & reload
+        opendm::QueueManager::instance().set_default_max_connections(12);
+        opendm::QueueManager::instance().set_global_speed_limit(512 * 1024);
+        opendm::QueueManager::instance().enable_global_speed_limit(true);
+        opendm::QueueManager::instance().set_default_save_dir("D:/Downloads/বাংলা");
+        auto utf8_sess = std::make_shared<opendm::DownloadSession>("utf8_s", "https://example.com/video.mp4",
+                                                                   "/tmp/" + utf8_sample);
+        opendm::QueueManager::instance().get_main_queue().add_session(utf8_sess, false);
+        opendm::QueueManager::instance().save_to_file();
+
+        opendm::QueueManager::instance().load_from_file();
+        assert(opendm::QueueManager::instance().get_default_max_connections() == 12);
+        assert(opendm::QueueManager::instance().get_global_speed_limit() == 512 * 1024);
+        assert(opendm::QueueManager::instance().is_global_speed_limit_enabled());
+        assert(opendm::QueueManager::instance().get_default_save_dir() == "D:/Downloads/বাংলা");
+        assert(opendm::QueueManager::instance().find_session("utf8_s") != nullptr);
+        opendm::QueueManager::instance().get_main_queue().remove_session("utf8_s", false);
+        opendm::QueueManager::instance().get_main_queue().remove_session("mig_1", true);
+        fs::remove(qstore);
+        fs::remove(qstore + ".bak");
+
+        // C. BatchImporter preserves empty lines between EF2 items
+        std::string ef2_empty = "/tmp/test_empty_line.ef2";
+        {
+            std::ofstream out(ef2_empty);
+            out << "<\nhttps://example.com/a.zip\nreferer: https://example.com/\n\n>\n<\nhttps://example.com/b.zip\nUser-Agent: TestUA/1.0\n>\n";
+        }
+        std::string berr;
+        auto b_items = opendm::BatchImporter::import_file(ef2_empty, berr);
+        assert(b_items.size() == 2);
+        assert(b_items[0].referer == "https://example.com/");
+        assert(b_items[1].user_agent == "TestUA/1.0");
+        fs::remove(ef2_empty);
+
+        // D. >16KB IPC payload & response round-trip + multi-line Tonec \r\n headers
+        opendm::IpcServer big_ipc("/tmp/opendm_big_ipc_test.sock");
+        big_ipc.set_gui_mode(true);
+        opendm::DownloadPromptInfo big_prompt;
+        bool got_big_prompt = false;
+        big_ipc.set_download_prompt_callback([&](const opendm::DownloadPromptInfo& info) {
+            big_prompt = info;
+            got_big_prompt = true;
+        });
+        assert(big_ipc.start());
+
+        // >20KB JSON request with huge parameter
+        std::string long_param(22000, 'x');
+        std::string big_req = "{\"action\": \"download\", \"url\": \"https://example.com/big_payload.zip?pad=" + long_param + "\"}";
+        std::string big_resp = opendm::IpcServer::send_command(big_req, "/tmp/opendm_big_ipc_test.sock");
+        assert(big_resp.find("\"status\": \"prompting\"") != std::string::npos);
+        assert(got_big_prompt);
+        assert(big_prompt.filename == "big_payload.zip");
+
+        // Verify >16KB build_youtube_extract_json serialization + Tonec \r\n headers
+        opendm::YouTubeVideoInfo huge_yt;
+        huge_yt.video_id = "huge123";
+        huge_yt.title = "Very Long Test Title বাংলা";
+        huge_yt.best_audio.itag = 140;
+        huge_yt.best_audio.container = "M4A";
+        huge_yt.best_audio.bitrate = 128000;
+        huge_yt.best_audio.url = "https://rr1.googlevideo.com/videoplayback?id=audio";
+        huge_yt.audio_formats.push_back(huge_yt.best_audio);
+        for (int i = 0; i < 60; ++i) {
+            opendm::YouTubeFormat f;
+            f.itag = 200 + i;
+            f.quality_label = "1080p";
+            f.container = "MP4";
+            f.url = "https://rr1.googlevideo.com/videoplayback?id=" + std::to_string(i) + "&pad=" + std::string(300, 'a');
+            huge_yt.video_formats.push_back(f);
+        }
+        std::string yt_json = opendm::build_youtube_extract_json(huge_yt);
+        assert(yt_json.size() > 20000);
+
+        // Multi-line \r\n headers inside Tonec message
+        got_big_prompt = false;
+        std::string resp_hdrs = "HTTP/1.1 200 OK\r\nContent-Length: 5242880\r\nContent-Disposition: attachment; filename=\"Report (2025).zip\"\r\n";
+        std::string ml_url = "https://example.com/download.php?id=99";
+        std::string ml_tonec = "MSG#300#13#1#0:0:0:200:0:1,"
+            "6=" + std::to_string(ml_url.size()) + ":" + ml_url + ","
+            "13=" + std::to_string(resp_hdrs.size()) + ":" + resp_hdrs + ";";
+        std::string ml_resp = opendm::IpcServer::send_command(ml_tonec, "/tmp/opendm_big_ipc_test.sock");
+        assert(ml_resp.find("\"status\": \"prompting\"") != std::string::npos);
+        assert(got_big_prompt);
+        assert(big_prompt.filename == "Report (2025).zip");
+        assert(big_prompt.file_size == 5242880);
+
+        big_ipc.stop();
+        std::cout << "  [PASS] UTF-8 helpers, legacy migration, settings persistence, batch importer & >16KB/multi-line IPC verified." << std::endl;
     }
 
     std::cout << "All Subsystem Integration tests passed!" << std::endl;

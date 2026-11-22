@@ -1,4 +1,5 @@
 #include "win32_assets.hpp"
+#include "../core/win32_unicode.hpp"
 #include <gdiplus.h>
 #include <shellapi.h>
 #include <shlwapi.h>
@@ -29,7 +30,7 @@ void Win32Assets::shutdown_gdiplus() {
 }
 
 std::wstring Win32Assets::resolve_asset_path(const std::string& filename) {
-    std::wstring wfname(filename.begin(), filename.end());
+    std::wstring wfname = sys::utf8_to_wide(filename);
 
     // 1. Current directory: data/ui_assets/
     std::wstring p1 = L"data\\ui_assets\\" + wfname;
@@ -38,16 +39,14 @@ std::wstring Win32Assets::resolve_asset_path(const std::string& filename) {
     }
 
     // 2. Relative to executable module path
-    wchar_t exe_path[MAX_PATH];
-    if (GetModuleFileNameW(nullptr, exe_path, MAX_PATH) > 0) {
-        PathRemoveFileSpecW(exe_path); // exe directory
-        std::wstring p2 = std::wstring(exe_path) + L"\\data\\ui_assets\\" + wfname;
+    std::string exe_dir = sys::get_exe_dir_utf8();
+    if (!exe_dir.empty()) {
+        std::filesystem::path exe_p = sys::path_from_utf8(exe_dir);
+        std::wstring p2 = (exe_p / L"data" / L"ui_assets" / wfname).wstring();
         if (GetFileAttributesW(p2.c_str()) != INVALID_FILE_ATTRIBUTES) {
             return p2;
         }
-
-        PathRemoveFileSpecW(exe_path); // parent directory
-        std::wstring p3 = std::wstring(exe_path) + L"\\data\\ui_assets\\" + wfname;
+        std::wstring p3 = (exe_p.parent_path() / L"data" / L"ui_assets" / wfname).wstring();
         if (GetFileAttributesW(p3.c_str()) != INVALID_FILE_ATTRIBUTES) {
             return p3;
         }
@@ -216,7 +215,7 @@ HIMAGELIST Win32Assets::create_disabled_image_list(const std::vector<std::string
 }
 
 HICON Win32Assets::get_file_type_icon(const std::string& filename, bool small_icon) {
-    std::wstring wname(filename.begin(), filename.end());
+    std::wstring wname = sys::utf8_to_wide(filename);
     SHFILEINFOW sfi = {};
     DWORD_PTR res = SHGetFileInfoW(
         wname.c_str(),
@@ -228,7 +227,7 @@ HICON Win32Assets::get_file_type_icon(const std::string& filename, bool small_ic
     if (res && sfi.hIcon) {
         return sfi.hIcon;
     }
-    return LoadIcon(nullptr, IDI_APPLICATION);
+    return CopyIcon(LoadIcon(nullptr, IDI_APPLICATION));
 }
 
 } // namespace win32

@@ -1,5 +1,8 @@
 #include "ipc_server.hpp"
 #include "../core/youtube_engine.hpp"
+#include "../core/win32_unicode.hpp"
+#include <curl/curl.h>
+#include <nlohmann/json.hpp>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -8,9 +11,11 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#ifdef ERROR
+#undef ERROR
+#endif
 #include <io.h>
 #include <fcntl.h>
-#include <shlwapi.h>
 #else
 #include <unistd.h>
 #include <fcntl.h>
@@ -19,6 +24,8 @@
 #endif
 
 namespace opendm {
+
+using json = nlohmann::json;
 
 // Reads a 32-bit length-prefixed native message from stdin
 bool read_native_message(std::string& out_msg) {
@@ -38,17 +45,7 @@ bool read_native_message(std::string& out_msg) {
 
 // Writes a 32-bit length-prefixed JSON string to stdout
 void write_native_json_string(const std::string& raw_msg) {
-    std::string json_str = "\"";
-    for (char c : raw_msg) {
-        if (c == '"') json_str += "\\\"";
-        else if (c == '\\') json_str += "\\\\";
-        else if (c == '\n') json_str += "\\n";
-        else if (c == '\r') json_str += "\\r";
-        else if (c == '\t') json_str += "\\t";
-        else json_str += c;
-    }
-    json_str += "\"";
-
+    std::string json_str = json(raw_msg).dump();
     uint32_t length = static_cast<uint32_t>(json_str.length());
     std::cout.write(reinterpret_cast<const char*>(&length), sizeof(length));
     std::cout.write(json_str.data(), length);
@@ -65,28 +62,12 @@ void write_native_raw_json(const std::string& json_obj) {
 
 // Helper to strip surrounding JSON quotes and unescape
 std::string unquote_json_string(const std::string& input) {
-    if (input.size() >= 2 && input.front() == '"' && input.back() == '"') {
-        std::string unescaped;
-        unescaped.reserve(input.size() - 2);
-        for (size_t i = 1; i < input.size() - 1; ++i) {
-            if (input[i] == '\\' && i + 1 < input.size() - 1) {
-                char next = input[++i];
-                if (next == '"') unescaped += '"';
-                else if (next == '\\') unescaped += '\\';
-                else if (next == 'n') unescaped += '\n';
-                else if (next == 'r') unescaped += '\r';
-                else if (next == 't') unescaped += '\t';
-                else unescaped += next;
-            } else {
-                unescaped += input[i];
-            }
-        }
-        return unescaped;
-    }
+    try {
+        json j = json::parse(input);
+        if (j.is_string()) return j.get<std::string>();
+    } catch (...) {}
     return input;
 }
-
-
 
 void ensure_opendm_running() {
     std::string test_resp = IpcServer::send_command("{\"action\": \"ping\"}");
@@ -95,13 +76,13 @@ void ensure_opendm_running() {
     }
 
 #ifdef _WIN32
-    wchar_t host_path[MAX_PATH];
-    if (GetModuleFileNameW(nullptr, host_path, MAX_PATH) > 0) {
-        PathRemoveFileSpecW(host_path);
-        std::wstring exe_path = std::wstring(host_path) + L"\\opendm.exe";
+    std::string exe_dir = sys::get_exe_dir_utf8();
+    if (!exe_dir.empty()) {
+        std::filesystem::path exe_path = sys::path_from_utf8(exe_dir) / "opendm.exe";
+        std::wstring wexe = exe_path.wstring();
         STARTUPINFOW si = {sizeof(si)};
         PROCESS_INFORMATION pi = {};
-        if (CreateProcessW(exe_path.c_str(), nullptr, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        if (CreateProcessW(wexe.c_str(), nullptr, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
             CloseHandle(pi.hProcess);
             CloseHandle(pi.hThread);
         }
@@ -165,26 +146,31 @@ void ensure_opendm_running() {
 #include <csignal>
 
 int main(int argc, char* argv[]) {
+    curl_global_init(CURL_GLOBAL_ALL);
 #ifdef _WIN32
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
-    const char* tmp = getenv("TEMP");
-    std::string log_file = (tmp ? tmp : ".") + std::string("/opendm_native_host.log");
+    std::string tmp_dir = opendm::sys::get_env_utf8("TEMP");
+    std::filesystem::path log_path = tmp_dir.empty()
+        ? std::filesystem::path("opendm_native_host.log")
+        : (opendm::sys::path_from_utf8(tmp_dir) / "opendm_native_host.log");
 #else
     signal(SIGCHLD, SIG_IGN); // Prevent zombie processes
-    std::string log_file = "/tmp/opendm_native_host.log";
+    std::filesystem::path log_path = "/tmp/opendm_native_host.log";
 #endif
     std::ios_base::sync_with_stdio(false);
 
-    std::ofstream log(log_file, std::ios::app);
-    log << "[NATIVE_HOST] Started. argc=" << argc << std::endl;
-    for (int i = 0; i < argc; ++i) {
-        log << "  argv[" << i << "] = " << argv[i] << std::endl;
+    std::ofstream log(log_path, std::ios::app);
+    std::vector<std::string> args = opendm::sys::get_cli_args_utf8(argc, argv);
+    log << "[NATIVE_HOST] Started. argc=" << args.size() << std::endl;
+    for (size_t i = 0; i < args.size(); ++i) {
+        log << "  argv[" << i << "] = " << args[i] << std::endl;
     }
     log.flush();
 
     std::string incoming;
     while (opendm::read_native_message(incoming)) {
+        if (incoming.empty()) continue;
         log << "[NATIVE_HOST] incoming: " << incoming << std::endl;
         log.flush();
         std::string raw = opendm::unquote_json_string(incoming);
@@ -247,9 +233,15 @@ int main(int argc, char* argv[]) {
 
                 // Only instruct browser to cancel internal download (e[1]=3) if IPC server accepted the download.
                 // If ignored (web resource, HTML/PHP, image without attachment), send e[1]=0 so browser continues.
-                if (resp.find("\"status\": \"prompting\"") != std::string::npos ||
-                    resp.find("\"status\": \"downloading\"") != std::string::npos ||
-                    resp.find("\"status\": \"started\"") != std::string::npos) {
+                std::string status;
+                try {
+                    auto jresp = nlohmann::json::parse(resp);
+                    if (jresp.is_object() && jresp.contains("status") && jresp["status"].is_string()) {
+                        status = jresp["status"].get<std::string>();
+                    }
+                } catch (...) {}
+
+                if (status == "prompting" || status == "downloading" || status == "started" || status == "ok") {
                     opendm::write_native_json_string("MSG#" + std::to_string(hdr.id) + "#1#2#0:" + std::to_string(hdr.id) + ":3;");
                 } else {
                     opendm::write_native_json_string("MSG#" + std::to_string(hdr.id) + "#1#2#0:" + std::to_string(hdr.id) + ":0;");
@@ -265,39 +257,32 @@ int main(int argc, char* argv[]) {
         // Standard JSON messaging
         opendm::ensure_opendm_running();
         std::string response = opendm::IpcServer::send_command(incoming);
-        if (response.find("Could not connect") != std::string::npos && incoming.find("\"extract_youtube\"") != std::string::npos) {
-            // Standalone engine fallback if OpenDM GUI socket is not ready yet
-            std::string url;
-            size_t u_pos = incoming.find("\"url\"");
-            if (u_pos != std::string::npos) {
-                size_t q1 = incoming.find('"', incoming.find(':', u_pos));
-                if (q1 != std::string::npos) {
-                    size_t q2 = incoming.find('"', q1 + 1);
-                    if (q2 != std::string::npos) url = incoming.substr(q1 + 1, q2 - q1 - 1);
-                }
-            }
-            if (url.empty()) {
-                size_t v_pos = incoming.find("\"videoId\"");
-                if (v_pos != std::string::npos) {
-                    size_t q1 = incoming.find('"', incoming.find(':', v_pos));
-                    if (q1 != std::string::npos) {
-                        size_t q2 = incoming.find('"', q1 + 1);
-                        if (q2 != std::string::npos) url = "https://www.youtube.com/watch?v=" + incoming.substr(q1 + 1, q2 - q1 - 1);
+        if (response.find("Could not connect") != std::string::npos) {
+            try {
+                auto jreq = nlohmann::json::parse(incoming);
+                if (jreq.is_object() && jreq.value("action", "") == "extract_youtube") {
+                    std::string url = jreq.value("url", "");
+                    if (url.empty()) {
+                        std::string vid = jreq.value("videoId", "");
+                        if (!vid.empty()) {
+                            url = "https://www.youtube.com/watch?v=" + vid;
+                        }
+                    }
+                    if (!url.empty()) {
+                        opendm::YouTubeVideoInfo info;
+                        std::string err;
+                        if (opendm::YouTubeEngine::extract_video_info(url, info, &err) && info.has_playable_formats()) {
+                            response = opendm::build_youtube_extract_json(info);
+                        }
                     }
                 }
-            }
-            if (!url.empty()) {
-                opendm::YouTubeVideoInfo info;
-                std::string err;
-                if (opendm::YouTubeEngine::extract_video_info(url, info, &err) && info.has_playable_formats()) {
-                    response = opendm::build_youtube_extract_json(info);
-                }
-            }
+            } catch (...) {}
         }
         opendm::write_native_raw_json(response);
     }
 
     log << "[NATIVE_HOST] Exiting." << std::endl;
     log.flush();
+    curl_global_cleanup();
     return 0;
 }

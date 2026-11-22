@@ -1,5 +1,6 @@
 #include "youtube_engine.hpp"
 #include "dash_parser.hpp"
+#include "curl_utils.hpp"
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <regex>
@@ -299,6 +300,8 @@ std::string YouTubeEngine::get_or_fetch_visitor_data(const std::string& video_id
     headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.5");
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    net::configure_curl_ssl(curl);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, ""); // Enable gzip/br decompression
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_string_write);
@@ -340,6 +343,8 @@ std::string YouTubeEngine::get_or_fetch_visitor_data(const std::string& video_id
             h2 = curl_slist_append(h2, "Accept-Language: en-US,en;q=0.5");
 
             curl_easy_setopt(curl2, CURLOPT_URL, watch_url.c_str());
+            net::configure_curl_ssl(curl2);
+            curl_easy_setopt(curl2, CURLOPT_NOSIGNAL, 1L);
             curl_easy_setopt(curl2, CURLOPT_HTTPHEADER, h2);
             curl_easy_setopt(curl2, CURLOPT_ACCEPT_ENCODING, "");
             curl_easy_setopt(curl2, CURLOPT_WRITEFUNCTION, curl_string_write);
@@ -451,6 +456,8 @@ bool YouTubeEngine::query_innertube_client(
 
     const char* api_url = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
     curl_easy_setopt(curl, CURLOPT_URL, api_url);
+    net::configure_curl_ssl(curl);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, req_body.c_str());
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, static_cast<long>(req_body.length()));
@@ -500,6 +507,8 @@ bool YouTubeEngine::probe_stream_range(
         }
 
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        net::configure_curl_ssl(curl);
+        curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(curl, CURLOPT_RANGE, range_hdr.c_str());
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS);
@@ -541,16 +550,50 @@ bool YouTubeEngine::parse_player_response(
         return false;
     }
 
-    if (root.contains("playabilityStatus")) {
-        std::string status = root["playabilityStatus"].value("status", "");
+    auto jstr = [](const json& obj, const char* key, const std::string& def = "") -> std::string {
+        if (!obj.is_object()) return def;
+        auto it = obj.find(key);
+        if (it == obj.end() || it->is_null()) return def;
+        if (it->is_string()) return it->get<std::string>();
+        if (it->is_number_integer()) return std::to_string(it->get<int64_t>());
+        return def;
+    };
+    auto jint = [](const json& obj, const char* key, int def = 0) -> int {
+        if (!obj.is_object()) return def;
+        auto it = obj.find(key);
+        if (it == obj.end() || it->is_null()) return def;
+        if (it->is_number_integer()) return it->get<int>();
+        if (it->is_string()) { try { return std::stoi(it->get<std::string>()); } catch (...) {} }
+        return def;
+    };
+    auto ju64 = [](const json& obj, const char* key, uint64_t def = 0) -> uint64_t {
+        if (!obj.is_object()) return def;
+        auto it = obj.find(key);
+        if (it == obj.end() || it->is_null()) return def;
+        if (it->is_number_unsigned()) return it->get<uint64_t>();
+        if (it->is_number_integer()) {
+            int64_t v = it->get<int64_t>();
+            return v > 0 ? static_cast<uint64_t>(v) : def;
+        }
+        if (it->is_string()) { try { return std::stoull(it->get<std::string>()); } catch (...) {} }
+        return def;
+    };
+
+    if (!root.is_object()) {
+        if (out_error) *out_error = "Response JSON is not an object";
+        return false;
+    }
+
+    if (root.contains("playabilityStatus") && root["playabilityStatus"].is_object()) {
+        std::string status = jstr(root["playabilityStatus"], "status");
         if (status != "OK") {
-            std::string reason = root["playabilityStatus"].value("reason", status);
+            std::string reason = jstr(root["playabilityStatus"], "reason", status);
             if (out_error) *out_error = "Playability status: " + status + " (" + reason + ")";
             return false;
         }
     }
 
-    if (!root.contains("streamingData")) {
+    if (!root.contains("streamingData") || !root["streamingData"].is_object()) {
         if (out_error) *out_error = "Response contains no streamingData";
         return false;
     }
@@ -558,17 +601,17 @@ bool YouTubeEngine::parse_player_response(
     out_info.video_id = video_id;
     out_info.client_used = client.name;
 
-    if (root.contains("videoDetails")) {
+    if (root.contains("videoDetails") && root["videoDetails"].is_object()) {
         const auto& vd = root["videoDetails"];
-        out_info.title = vd.value("title", "");
-        out_info.author = vd.value("author", "");
-        std::string len_str = vd.value("lengthSeconds", "0");
-        try { out_info.duration_seconds = std::stoull(len_str); } catch (...) {}
+        out_info.title = jstr(vd, "title");
+        out_info.author = jstr(vd, "author");
+        out_info.duration_seconds = ju64(vd, "lengthSeconds", 0);
 
-        if (vd.contains("thumbnail") && vd["thumbnail"].contains("thumbnails") && vd["thumbnail"]["thumbnails"].is_array()) {
+        if (vd.contains("thumbnail") && vd["thumbnail"].is_object() &&
+            vd["thumbnail"].contains("thumbnails") && vd["thumbnail"]["thumbnails"].is_array()) {
             const auto& thumbs = vd["thumbnail"]["thumbnails"];
-            if (!thumbs.empty()) {
-                out_info.thumbnail_url = thumbs.back().value("url", "");
+            if (!thumbs.empty() && thumbs.back().is_object()) {
+                out_info.thumbnail_url = jstr(thumbs.back(), "url");
             }
         }
     }
@@ -577,22 +620,18 @@ bool YouTubeEngine::parse_player_response(
 
     auto parse_fmt = [&](const json& j, bool is_prog, bool is_aud) -> YouTubeFormat {
         YouTubeFormat f;
-        f.itag = j.value("itag", 0);
-        f.quality_label = j.value("qualityLabel", "");
-        f.width = j.value("width", 0);
-        f.height = j.value("height", 0);
-        f.fps = j.value("fps", 0);
-        f.mime_type = j.value("mimeType", "");
-        f.bitrate = j.value("bitrate", 0ULL);
-        f.url = j.value("url", "");
+        f.itag = jint(j, "itag", 0);
+        f.quality_label = jstr(j, "qualityLabel");
+        f.width = jint(j, "width", 0);
+        f.height = jint(j, "height", 0);
+        f.fps = jint(j, "fps", 0);
+        f.mime_type = jstr(j, "mimeType");
+        f.bitrate = ju64(j, "bitrate", 0);
+        f.url = jstr(j, "url");
         f.user_agent = client.user_agent;
         f.is_progressive = is_prog;
         f.is_audio = is_aud;
-
-        std::string clen_str = j.value("contentLength", "");
-        if (!clen_str.empty()) {
-            try { f.content_length = std::stoull(clen_str); } catch (...) {}
-        }
+        f.content_length = ju64(j, "contentLength", 0);
 
         parse_codecs_from_mime(f.mime_type, f.container, f.vcodec, f.acodec);
 
@@ -610,7 +649,8 @@ bool YouTubeEngine::parse_player_response(
 
     if (sd.contains("formats") && sd["formats"].is_array()) {
         for (const auto& item : sd["formats"]) {
-            std::string u = item.value("url", "");
+            if (!item.is_object()) continue;
+            std::string u = jstr(item, "url");
             if (!is_valid_stream_url(u)) continue;
 
             YouTubeFormat fmt = parse_fmt(item, true, false);
@@ -627,10 +667,11 @@ bool YouTubeEngine::parse_player_response(
 
     if (sd.contains("adaptiveFormats") && sd["adaptiveFormats"].is_array()) {
         for (const auto& item : sd["adaptiveFormats"]) {
-            std::string u = item.value("url", "");
+            if (!item.is_object()) continue;
+            std::string u = jstr(item, "url");
             if (!is_valid_stream_url(u)) continue;
 
-            std::string mime = item.value("mimeType", "");
+            std::string mime = jstr(item, "mimeType");
             bool is_aud = (mime.find("audio") != std::string::npos);
             YouTubeFormat fmt = parse_fmt(item, false, is_aud);
             if (is_aud) {
@@ -669,7 +710,7 @@ bool YouTubeEngine::parse_player_response(
 
     // FIX: Fallback to dashManifestUrl via DashParser if adaptiveFormats yielded no HD video
     if (out_info.video_formats.empty() && sd.contains("dashManifestUrl")) {
-        std::string mpd_url = sd.value("dashManifestUrl", "");
+        std::string mpd_url = jstr(sd, "dashManifestUrl");
         DashManifest manifest;
         if (!mpd_url.empty() && DashParser::fetch_and_parse(mpd_url, manifest)) {
             for (const auto& v : manifest.video_streams) {

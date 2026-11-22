@@ -39,6 +39,7 @@ private:
     ~SiteLogonManager() = default;
 
     std::string default_config_path() const;
+    bool save_to_file_locked(const std::string& filepath = "") const;
 
     mutable std::mutex mutex_;
     std::map<std::string, SiteCredential> credentials_;

@@ -1,15 +1,16 @@
 #pragma once
 
 #include "download_session.hpp"
-#include <string>
-#include <vector>
+#include "speed_limiter.hpp"
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
-#include <atomic>
-#include <functional>
-#include <chrono>
-#include <future>
+#include <vector>
 
 namespace opendm {
 
@@ -35,17 +36,20 @@ public:
     ~DownloadQueue();
 
     std::string get_id() const { return id_; }
-    std::string get_name() const { return name_; }
-    void set_name(const std::string& name) { name_ = name; }
+    std::string get_name() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return name_;
+    }
+    void set_name(const std::string& name) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        name_ = name;
+    }
 
     void set_max_concurrent(size_t max_concurrent);
     size_t get_max_concurrent() const;
 
     // Queue items
-    void add_session(std::shared_ptr<DownloadSession> session, bool start_now = false);
-    // Removes the session from the list. Its threads are stopped and its temp files
-    // deleted on a background thread, so this never blocks the caller.
-    // Set `persist` to false when removing many items, then call save_to_file() once.
+    void add_session(std::shared_ptr<DownloadSession> session, bool start_now = false, bool persist = true);
     bool remove_session(const std::string& session_id, bool persist = true);
     std::shared_ptr<DownloadSession> get_session(const std::string& session_id) const;
     std::vector<std::shared_ptr<DownloadSession>> get_all_sessions() const;
@@ -72,6 +76,7 @@ private:
     void queue_scheduler_loop();
     void process_pending_items();
     void check_schedule_triggers();
+    void fire_update_callback();
 
     std::string id_;
     std::string name_;
@@ -85,6 +90,8 @@ private:
     std::thread queue_thread_;
 
     SchedulerConfig scheduler_;
+    int last_start_trigger_key_{-1};
+    int last_stop_trigger_key_{-1};
     QueueUpdatedCallback update_callback_;
 };
 
@@ -97,10 +104,8 @@ public:
     std::shared_ptr<DownloadQueue> create_queue(const std::string& name, size_t max_concurrent = 2);
     std::vector<std::shared_ptr<DownloadQueue>> get_all_queues() const;
 
-    // Helper: auto-detect category based on filename extension
     static std::string detect_category(const std::string& filename);
 
-    // Find session across any queue
     std::shared_ptr<DownloadSession> find_session(const std::string& session_id) const;
 
     // Global speed limiter control
@@ -108,10 +113,15 @@ public:
     void enable_global_speed_limit(bool enable);
     bool is_global_speed_limit_enabled() const;
     uint64_t get_global_speed_limit() const;
+    SpeedLimiter* get_global_speed_limiter() { return &global_speed_limiter_; }
 
     // Default max connections per download session (1..32, default 16)
     void set_default_max_connections(size_t max_conns);
     size_t get_default_max_connections() const;
+
+    // Default save directory (UTF-8)
+    void set_default_save_dir(const std::string& dir);
+    std::string get_default_save_dir() const;
 
     // State persistence across application restarts
     static std::string get_default_storage_path();
@@ -121,10 +131,15 @@ public:
     bool load_from_file(const std::string& filepath = "");
     void clear_all();
 
-    // Stops a session, joins its threads and deletes its temp files on a background
-    // thread. Safe to call from the UI thread: returns immediately.
+    void mark_dirty();
+    void save_if_dirty();
+
+    // Stops & joins all active sessions, pending teardowns/scans, and persists final state on exit
+    void shutdown_all_sessions();
+
+    // Background teardown & scan tracking
     void cancel_session_async(std::shared_ptr<DownloadSession> session);
-    // Blocks until every pending background teardown finished (call before exit).
+    void track_background_task(std::future<void> fut);
     void wait_for_pending_teardowns();
 
 private:
@@ -135,10 +150,13 @@ private:
     std::shared_ptr<DownloadQueue> main_queue_;
     std::vector<std::shared_ptr<DownloadQueue>> queues_;
     std::string storage_path_;
+    std::string default_save_dir_;
 
+    SpeedLimiter global_speed_limiter_;
     bool global_limit_enabled_{false};
     uint64_t global_limit_bytes_per_sec_{0};
     std::atomic<size_t> default_max_connections_{16};
+    mutable std::atomic<bool> dirty_{false};
 
     std::mutex teardown_mutex_;
     std::vector<std::future<void>> teardowns_;

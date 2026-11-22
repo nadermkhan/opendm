@@ -1,4 +1,5 @@
 #include "dash_parser.hpp"
+#include "curl_utils.hpp"
 #include <curl/curl.h>
 #include <iostream>
 #include <sstream>
@@ -121,10 +122,12 @@ bool DashParser::parse_mpd_xml(
         out_manifest.media_presentation_duration = extract_xml_attr(mpd_tag, "mediaPresentationDuration");
     }
 
-    // Scan for top-level BaseURL inside MPD
+    // Scan for top-level BaseURL inside MPD before the first Period or AdaptationSet
     std::string root_base_url = manifest_base_url;
+    size_t first_child = xml_content.find("<Period");
+    if (first_child == std::string::npos) first_child = xml_content.find("<AdaptationSet");
     size_t root_base_pos = xml_content.find("<BaseURL>");
-    if (root_base_pos != std::string::npos) {
+    if (root_base_pos != std::string::npos && (first_child == std::string::npos || root_base_pos < first_child)) {
         size_t close = xml_content.find("</BaseURL>", root_base_pos);
         if (close != std::string::npos) {
             std::string u = trim_spaces(xml_content.substr(root_base_pos + 9, close - root_base_pos - 9));
@@ -141,12 +144,13 @@ bool DashParser::parse_mpd_xml(
         cursor = next_end;
 
         size_t first_gt = adapt_block.find('>');
+        if (first_gt == std::string::npos) continue;
         std::string adapt_hdr = adapt_block.substr(0, first_gt);
 
         std::string mime_type = extract_xml_attr(adapt_hdr, "mimeType");
         std::string content_type = extract_xml_attr(adapt_hdr, "contentType");
-        bool is_video = (content_type == "video" || mime_type.find("video") != std::string::npos);
-        bool is_audio = (content_type == "audio" || mime_type.find("audio") != std::string::npos);
+        bool adapt_is_video = (content_type == "video" || mime_type.find("video") != std::string::npos);
+        bool adapt_is_audio = (content_type == "audio" || mime_type.find("audio") != std::string::npos);
 
         // Scan <Representation> tags inside this AdaptationSet
         size_t rep_cursor = 0;
@@ -157,6 +161,7 @@ bool DashParser::parse_mpd_xml(
             rep_cursor = rep_end;
 
             size_t rep_first_gt = rep_block.find('>');
+            if (rep_first_gt == std::string::npos) continue;
             std::string rep_hdr = rep_block.substr(0, rep_first_gt);
 
             DashRepresentation rep;
@@ -194,18 +199,20 @@ bool DashParser::parse_mpd_xml(
                 rep.base_url = root_base_url;
             }
 
-            // Determine if video or audio from representation attributes if not set at adaptation level
-            if (!is_video && !is_audio) {
+            // Determine per-representation media type without mutating parent AdaptationSet flags
+            bool rep_is_video = adapt_is_video;
+            bool rep_is_audio = adapt_is_audio;
+            if (!rep_is_video && !rep_is_audio) {
                 if (rep.width > 0 || rep.height > 0 || rep.mime_type.find("video") != std::string::npos) {
-                    is_video = true;
+                    rep_is_video = true;
                 } else if (rep.mime_type.find("audio") != std::string::npos) {
-                    is_audio = true;
+                    rep_is_audio = true;
                 }
             }
 
-            if (is_video) {
+            if (rep_is_video) {
                 out_manifest.video_streams.push_back(rep);
-            } else if (is_audio) {
+            } else if (rep_is_audio) {
                 out_manifest.audio_streams.push_back(rep);
             }
         }
@@ -232,6 +239,10 @@ bool DashParser::fetch_and_parse(
 
     std::string response_data;
     curl_easy_setopt(curl, CURLOPT_URL, mpd_url.c_str());
+    net::configure_curl_ssl(curl);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_string_write);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_data);

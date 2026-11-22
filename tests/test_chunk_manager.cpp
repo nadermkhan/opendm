@@ -252,6 +252,51 @@ void test_join_file_callback_no_deadlock() {
     std::filesystem::remove_all(temp_dir);
 }
 
+void test_big_file_64bit_and_work_stealing() {
+    std::cout << "[TEST] Running test_big_file_64bit_and_work_stealing..." << std::endl;
+    opendm::ChunkManager cm;
+    std::string temp_dir = "/tmp/opendm_bigfile_test";
+    std::filesystem::remove_all(temp_dir);
+    std::filesystem::create_directories(temp_dir);
+
+    constexpr int64_t five_gb = 5LL * 1024LL * 1024LL * 1024LL; // > 4GB
+    assert(cm.init_first_chunk(five_gb, temp_dir, "big5g"));
+    int c1 = cm.split_chunk(0, temp_dir, "big5g");
+    assert(c1 == 1);
+
+    opendm::Chunk chunk0, chunk1;
+    assert(cm.get_chunk(0, chunk0));
+    assert(cm.get_chunk(1, chunk1));
+    assert(chunk1.end_offset == five_gb - 1);
+    assert(chunk1.start_offset > 0x80000000LL); // > 2GB boundary
+
+    cm.mark_chunk_completed(0);
+    cm.set_chunk_status(1, opendm::ChunkStatus::PENDING);
+
+    std::string serialized = cm.serialize_state();
+    opendm::ChunkManager restored;
+    assert(restored.deserialize_state(serialized));
+    assert(restored.get_total_size() == five_gb);
+
+    // Work-stealing must claim the pending 2.5GB+ tail chunk
+    int claimed_id = restored.claim_next_pending_chunk();
+    assert(claimed_id == 1);
+    opendm::Chunk claimed;
+    assert(restored.get_chunk(claimed_id, claimed));
+    assert(claimed.start_offset == chunk1.start_offset);
+
+    // Rollback restores downloaded bytes accurately to prior committed byte offset (0)
+    int64_t before = restored.get_total_downloaded_bytes();
+    restored.update_chunk_progress(1, 4096, 1000);
+    assert(restored.get_total_downloaded_bytes() == before + 4096);
+    restored.rollback_chunk_write(1, 0);
+    assert(restored.get_total_downloaded_bytes() == before);
+
+    restored.reset_all_speeds();
+    std::filesystem::remove_all(temp_dir);
+    std::cout << "  ✓ >4GB 64-bit offsets, serialization, work-stealing, and rollback verified" << std::endl;
+}
+
 int main() {
     std::cout << "=== OpenDM Core Algorithm Tests ===" << std::endl;
     test_initialization();
@@ -261,6 +306,7 @@ int main() {
     test_chunk_assembly();
     test_join_file_callback_no_deadlock();
     test_speed_limiter();
+    test_big_file_64bit_and_work_stealing();
     std::cout << "=== All OpenDM Tests PASSED Successfully! ===" << std::endl;
     return 0;
 }

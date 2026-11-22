@@ -1,10 +1,14 @@
 #include "site_logon.hpp"
 #include "download_session.hpp"
 #include "site_grabber.hpp"
+#include "win32_unicode.hpp"
+#include <nlohmann/json.hpp>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
 #include <iostream>
+#include <sstream>
+
+namespace fs = std::filesystem;
 
 namespace opendm {
 
@@ -39,44 +43,28 @@ SiteLogonManager::SiteLogonManager() {
 }
 
 std::string SiteLogonManager::default_config_path() const {
-#ifdef _WIN32
-    const char* appdata = getenv("APPDATA");
-    if (appdata) {
-        std::string p = std::string(appdata) + "/OpenDM";
-        std::error_code ec;
-        std::filesystem::create_directories(p, ec);
-        return (std::filesystem::path(p) / "site_logins.json").string();
-    }
-    const char* up = getenv("USERPROFILE");
-    if (up) {
-        std::string p = std::string(up) + "/.opendm";
-        std::error_code ec;
-        std::filesystem::create_directories(p, ec);
-        return (std::filesystem::path(p) / "site_logins.json").string();
-    }
-    return "site_logins.json";
-#else
-    const char* home = getenv("HOME");
-    std::string base = home ? home : "/home/nader";
-    return (std::filesystem::path(base) / ".config" / "opendm" / "site_logins.json").string();
-#endif
+    fs::path dir = sys::path_from_utf8(sys::get_appdata_dir_utf8());
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    return sys::path_to_utf8(dir / "site_logins.json");
 }
 
 void SiteLogonManager::set_credential(const SiteCredential& cred) {
     std::lock_guard<std::mutex> lock(mutex_);
     credentials_[cred.domain] = cred;
-    save_to_file();
+    save_to_file_locked();
 }
 
 void SiteLogonManager::remove_credential(const std::string& domain) {
     std::lock_guard<std::mutex> lock(mutex_);
     credentials_.erase(domain);
-    save_to_file();
+    save_to_file_locked();
 }
 
 std::vector<SiteCredential> SiteLogonManager::get_all_credentials() const {
     std::lock_guard<std::mutex> lock(mutex_);
     std::vector<SiteCredential> list;
+    list.reserve(credentials_.size());
     for (const auto& [k, v] : credentials_) {
         list.push_back(v);
     }
@@ -84,21 +72,22 @@ std::vector<SiteCredential> SiteLogonManager::get_all_credentials() const {
 }
 
 bool SiteLogonManager::get_credential_for_url(const std::string& url, SiteCredential& out_cred) const {
-    std::string host = SiteGrabber::extract_host(url);
+    std::string host = sys::ascii_tolower(SiteGrabber::extract_host(url));
     if (host.empty()) return false;
 
     std::lock_guard<std::mutex> lock(mutex_);
-    // Exact match
-    auto it = credentials_.find(host);
-    if (it != credentials_.end()) {
-        out_cred = it->second;
-        return true;
+    for (const auto& [domain, cred] : credentials_) {
+        std::string ld = sys::ascii_tolower(domain);
+        if (host == ld) {
+            out_cred = cred;
+            return true;
+        }
     }
 
-    // Subdomain matching
     for (const auto& [domain, cred] : credentials_) {
-        if (host.length() > domain.length()) {
-            if (host.rfind("." + domain) == host.length() - domain.length() - 1) {
+        std::string ld = sys::ascii_tolower(domain);
+        if (!ld.empty() && host.length() > ld.length()) {
+            if (host.rfind("." + ld) == host.length() - ld.length() - 1) {
                 out_cred = cred;
                 return true;
             }
@@ -114,96 +103,105 @@ void SiteLogonManager::apply_to_session(DownloadSession& session, const std::str
         return;
     }
 
-    // Apply Basic Auth and Userpwd
     if (!cred.username.empty() && !cred.password.empty()) {
         session.set_credentials(cred.username, cred.password);
         std::string auth_token = base64_encode(cred.username + ":" + cred.password);
         session.set_header("Authorization", "Basic " + auth_token);
     }
 
-    // Apply Cookies
     if (!cred.custom_cookies.empty()) {
         session.set_header("Cookie", cred.custom_cookies);
     }
 
-    // Apply custom headers
     for (const auto& [k, v] : cred.custom_headers) {
         session.set_header(k, v);
     }
 }
 
 bool SiteLogonManager::save_to_file(const std::string& filepath) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return save_to_file_locked(filepath);
+}
+
+bool SiteLogonManager::save_to_file_locked(const std::string& filepath) const {
     std::string path = filepath.empty() ? default_config_path() : filepath;
-    std::filesystem::path p(path);
+    fs::path p = sys::path_from_utf8(path);
+    std::error_code ec;
     if (p.has_parent_path()) {
-        std::filesystem::create_directories(p.parent_path());
+        fs::create_directories(p.parent_path(), ec);
     }
 
-    std::ofstream f(path);
-    if (!f.is_open()) return false;
-
-    f << "[\n";
-    bool first = true;
+    nlohmann::json arr = nlohmann::json::array();
     for (const auto& [domain, cred] : credentials_) {
-        if (!first) f << ",\n";
-        first = false;
-        f << "  {\n"
-          << "    \"domain\": \"" << cred.domain << "\",\n"
-          << "    \"username\": \"" << cred.username << "\",\n"
-          << "    \"password\": \"" << cred.password << "\",\n"
-          << "    \"auth_type\": \"" << cred.auth_type << "\",\n"
-          << "    \"custom_cookies\": \"" << cred.custom_cookies << "\"\n"
-          << "  }";
+        nlohmann::json item = {
+            {"domain", cred.domain},
+            {"username", cred.username},
+            {"password", cred.password},
+            {"auth_type", cred.auth_type},
+            {"custom_cookies", cred.custom_cookies},
+            {"custom_headers", cred.custom_headers}
+        };
+        arr.push_back(std::move(item));
     }
-    f << "\n]\n";
-    return true;
+
+    fs::path tmp_p = sys::path_from_utf8(path + ".tmp");
+    std::ofstream f(tmp_p, std::ios::binary | std::ios::trunc);
+    if (!f.is_open()) return false;
+    f << arr.dump(2) << "\n";
+    f.flush();
+    bool ok = f.good();
+    f.close();
+    if (!ok) {
+        fs::remove(tmp_p, ec);
+        return false;
+    }
+    return sys::atomic_replace_file(tmp_p, p, ec);
 }
 
 bool SiteLogonManager::load_from_file(const std::string& filepath) {
     std::string path = filepath.empty() ? default_config_path() : filepath;
-    if (!std::filesystem::exists(path)) return false;
+    fs::path p = sys::path_from_utf8(path);
+    std::error_code ec;
+    if (!fs::exists(p, ec)) return false;
 
-    std::ifstream f(path);
+    std::ifstream f(p, std::ios::binary);
     if (!f.is_open()) return false;
 
     std::stringstream buffer;
     buffer << f.rdbuf();
     std::string content = buffer.str();
+    f.close();
 
-    // Simple line/token parser for credentials
-    std::lock_guard<std::mutex> lock(mutex_);
-    credentials_.clear();
-
-    size_t pos = 0;
-    while ((pos = content.find('{', pos)) != std::string::npos) {
-        size_t end = content.find('}', pos);
-        if (end == std::string::npos) break;
-        std::string obj = content.substr(pos, end - pos + 1);
-
-        auto get_field = [&obj](const std::string& key) -> std::string {
-            size_t kpos = obj.find("\"" + key + "\":");
-            if (kpos == std::string::npos) return "";
-            size_t start = obj.find('\"', kpos + key.length() + 2);
-            if (start == std::string::npos) return "";
-            size_t finish = obj.find('\"', start + 1);
-            if (finish == std::string::npos) return "";
-            return obj.substr(start + 1, finish - start - 1);
-        };
-
-        std::string d = get_field("domain");
-        if (!d.empty()) {
-            SiteCredential sc;
-            sc.domain = d;
-            sc.username = get_field("username");
-            sc.password = get_field("password");
-            sc.auth_type = get_field("auth_type");
-            sc.custom_cookies = get_field("custom_cookies");
-            credentials_[d] = sc;
+    std::map<std::string, SiteCredential> parsed;
+    try {
+        nlohmann::json arr = nlohmann::json::parse(content);
+        if (arr.is_array()) {
+            for (const auto& item : arr) {
+                if (!item.is_object()) continue;
+                std::string d = item.value("domain", "");
+                if (d.empty()) continue;
+                SiteCredential sc;
+                sc.domain = d;
+                sc.username = item.value("username", "");
+                sc.password = item.value("password", "");
+                sc.auth_type = item.value("auth_type", "basic");
+                sc.custom_cookies = item.value("custom_cookies", "");
+                if (item.contains("custom_headers") && item["custom_headers"].is_object()) {
+                    for (auto& [hk, hv] : item["custom_headers"].items()) {
+                        if (hv.is_string()) {
+                            sc.custom_headers[hk] = hv.get<std::string>();
+                        }
+                    }
+                }
+                parsed[d] = std::move(sc);
+            }
         }
-
-        pos = end + 1;
+    } catch (...) {
+        return false;
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
+    credentials_ = std::move(parsed);
     return true;
 }
 

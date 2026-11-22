@@ -1,11 +1,16 @@
 #include "chunk_manager.hpp"
-#include <fstream>
-#include <filesystem>
+#include "win32_unicode.hpp"
+
+#include <nlohmann/json.hpp>
 #include <algorithm>
-#include <sstream>
-#include <iostream>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <limits>
+#include <sstream>
+
+namespace fs = std::filesystem;
 
 namespace opendm {
 
@@ -22,7 +27,12 @@ bool ChunkManager::init_first_chunk(int64_t total_size, const std::string& temp_
         return false;
     }
 
-    std::filesystem::create_directories(temp_dir);
+    fs::path td = sys::path_from_utf8(temp_dir.empty() ? "." : temp_dir);
+    std::error_code ec;
+    fs::create_directories(td, ec);
+    if (ec && !fs::exists(td, ec)) {
+        return false;
+    }
 
     auto chunk = std::make_shared<Chunk>();
     chunk->id = next_chunk_id_++;
@@ -31,7 +41,7 @@ bool ChunkManager::init_first_chunk(int64_t total_size, const std::string& temp_
     chunk->downloaded_bytes = 0;
     chunk->current_speed = 0;
     chunk->status = ChunkStatus::PENDING;
-    chunk->temp_filepath = (std::filesystem::path(temp_dir) / (file_prefix + ".part0")).string();
+    chunk->temp_filepath = sys::path_to_utf8(td / sys::path_from_utf8(file_prefix + ".part0"));
 
     chunks_.push_back(chunk);
     return true;
@@ -44,16 +54,21 @@ bool ChunkManager::init_stream_chunk(const std::string& temp_dir, const std::str
     next_chunk_id_ = 0;
     is_streaming_ = true;
 
-    std::filesystem::create_directories(temp_dir);
+    fs::path td = sys::path_from_utf8(temp_dir.empty() ? "." : temp_dir);
+    std::error_code ec;
+    fs::create_directories(td, ec);
+    if (ec && !fs::exists(td, ec)) {
+        return false;
+    }
 
     auto chunk = std::make_shared<Chunk>();
     chunk->id = next_chunk_id_++;
     chunk->start_offset = 0;
-    chunk->end_offset = -1; // indefinite
+    chunk->end_offset = -1;
     chunk->downloaded_bytes = 0;
     chunk->current_speed = 0;
     chunk->status = ChunkStatus::PENDING;
-    chunk->temp_filepath = (std::filesystem::path(temp_dir) / (file_prefix + ".part0")).string();
+    chunk->temp_filepath = sys::path_to_utf8(td / sys::path_from_utf8(file_prefix + ".part0"));
 
     chunks_.push_back(chunk);
     return true;
@@ -68,7 +83,6 @@ bool ChunkManager::need_new_connection(size_t current_connections, size_t max_co
         return false;
     }
 
-    // IDM algorithm: Check if the chunk with maximum free bytes has >= 2 * MIN_CHUNK_SIZE
     int target_idx = -1;
     int64_t max_free = 0;
 
@@ -87,8 +101,6 @@ bool ChunkManager::need_new_connection(size_t current_connections, size_t max_co
         return false;
     }
 
-    // IDM algorithm (IDMan.exe @ 0x0055aeea):
-    // Checks if max_free >= 2 * MinChunkSize + 3 (204,803 bytes)
     return (max_free >= 2 * MIN_CHUNK_SIZE + 3);
 }
 
@@ -119,8 +131,6 @@ int ChunkManager::find_chunk_with_zip_central_dir(int64_t target_offset, int64_t
     if (out_remaining_bytes) {
         *out_remaining_bytes = 0;
     }
-    // IDM algorithm: ChunksList::FindChunkWithZipCentralDir (IDMan.exe @ 0x005599c0)
-    // Searches chunks where start_offset + downloaded_bytes <= target_offset <= end_offset
     for (const auto& c : chunks_) {
         if (c->status == ChunkStatus::DOWNLOADING || c->status == ChunkStatus::PENDING) {
             int64_t current_pos = c->start_offset + c->downloaded_bytes;
@@ -153,18 +163,18 @@ int ChunkManager::split_chunk(int target_chunk_id, const std::string& temp_dir, 
     int64_t current_pos = target->start_offset + target->downloaded_bytes;
     int64_t remaining = target->end_offset - current_pos + 1;
 
-    // IDM threshold: (2 * MinChunkSize + 3) = 204,803 bytes
     if (remaining < 2 * MIN_CHUNK_SIZE + 3) {
-        return -1; // Too small to split profitably
+        return -1;
     }
 
-    // Carve at midpoint of remaining range
+    fs::path td = sys::path_from_utf8(temp_dir.empty() ? "." : temp_dir);
+    std::error_code ec;
+    fs::create_directories(td, ec);
+
     int64_t split_point = current_pos + (remaining / 2);
-
     int64_t original_end = target->end_offset;
-    target->end_offset = split_point - 1; // Update existing chunk boundary dynamically
+    target->end_offset = split_point - 1;
 
-    // Create new chunk covering [split_point, original_end]
     auto new_chunk = std::make_shared<Chunk>();
     new_chunk->id = next_chunk_id_++;
     new_chunk->start_offset = split_point;
@@ -172,11 +182,8 @@ int ChunkManager::split_chunk(int target_chunk_id, const std::string& temp_dir, 
     new_chunk->downloaded_bytes = 0;
     new_chunk->current_speed = 0;
     new_chunk->status = ChunkStatus::PENDING;
+    new_chunk->temp_filepath = sys::path_to_utf8(td / sys::path_from_utf8(file_prefix + ".part" + std::to_string(new_chunk->id)));
 
-    std::filesystem::path p = std::filesystem::path(temp_dir) / (file_prefix + ".part" + std::to_string(new_chunk->id));
-    new_chunk->temp_filepath = p.string();
-
-    // Insert sorted by start_offset
     auto insert_pos = std::upper_bound(chunks_.begin(), chunks_.end(), new_chunk,
         [](const std::shared_ptr<Chunk>& a, const std::shared_ptr<Chunk>& b) {
             return a->start_offset < b->start_offset;
@@ -184,6 +191,67 @@ int ChunkManager::split_chunk(int target_chunk_id, const std::string& temp_dir, 
     chunks_.insert(insert_pos, new_chunk);
 
     return static_cast<int>(new_chunk->id);
+}
+
+int ChunkManager::claim_next_pending_chunk() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    int best_id = -1;
+    int64_t max_rem = -1;
+    for (const auto& c : chunks_) {
+        if (c->status == ChunkStatus::PENDING) {
+            int64_t rem = c->remaining_bytes();
+            if (best_id == -1 || rem > max_rem) {
+                max_rem = rem;
+                best_id = static_cast<int>(c->id);
+            }
+        }
+    }
+    if (best_id != -1) {
+        for (auto& c : chunks_) {
+            if (c->id == static_cast<uint32_t>(best_id)) {
+                c->status = ChunkStatus::DOWNLOADING;
+                break;
+            }
+        }
+    }
+    return best_id;
+}
+
+void ChunkManager::reconcile_disk_sizes() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (is_streaming_) {
+        return;
+    }
+    for (auto& c : chunks_) {
+        if (c->status == ChunkStatus::COMPLETED) {
+            continue;
+        }
+        std::error_code ec;
+        fs::path part_p = sys::path_from_utf8(c->temp_filepath);
+        int64_t disk_bytes = 0;
+        if (!c->temp_filepath.empty() && fs::exists(part_p, ec)) {
+            uint64_t sz = fs::file_size(part_p, ec);
+            if (!ec) {
+                disk_bytes = static_cast<int64_t>(sz);
+            }
+        }
+        int64_t max_sz = c->total_size();
+        if (max_sz > 0 && disk_bytes > max_sz) {
+            std::error_code r_ec;
+            fs::resize_file(part_p, static_cast<uintmax_t>(max_sz), r_ec);
+            if (!r_ec) {
+                disk_bytes = max_sz;
+            }
+        }
+        c->downloaded_bytes = std::max<int64_t>(0, disk_bytes);
+        c->current_speed = 0;
+        if (max_sz > 0 && c->downloaded_bytes >= max_sz) {
+            c->downloaded_bytes = max_sz;
+            c->status = ChunkStatus::COMPLETED;
+        } else {
+            c->status = ChunkStatus::PENDING;
+        }
+    }
 }
 
 void ChunkManager::update_chunk_progress(int chunk_id, int64_t bytes_received, uint64_t speed_bytes_per_sec) {
@@ -235,6 +303,17 @@ size_t ChunkManager::clamp_and_update_chunk(
         }
     }
     return 0;
+}
+
+void ChunkManager::rollback_chunk_write(int chunk_id, int64_t committed_bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& c : chunks_) {
+        if (c->id == static_cast<uint32_t>(chunk_id)) {
+            c->downloaded_bytes = std::max<int64_t>(0, committed_bytes);
+            c->current_speed = 0;
+            break;
+        }
+    }
 }
 
 void ChunkManager::set_chunk_status(int chunk_id, ChunkStatus status) {
@@ -304,7 +383,27 @@ bool ChunkManager::get_chunk(int chunk_id, Chunk& out_chunk) const {
     return false;
 }
 
-bool ChunkManager::join_file(const std::string& destination_filepath, std::function<void(double)> progress_cb) {
+void ChunkManager::reset_all_speeds() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& c : chunks_) {
+        c->current_speed = 0;
+    }
+}
+
+int64_t ChunkManager::get_remaining_bytes() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    int64_t rem = 0;
+    for (const auto& c : chunks_) {
+        if (c->status != ChunkStatus::COMPLETED && c->end_offset >= c->start_offset) {
+            rem += c->remaining_bytes();
+        }
+    }
+    return rem;
+}
+
+bool ChunkManager::join_file(const std::string& destination_filepath,
+                             std::function<void(double)> progress_cb,
+                             const std::atomic<bool>* cancel_flag) {
     std::vector<Chunk> sorted_chunks;
     int64_t total_size = 0;
     bool streaming = false;
@@ -318,37 +417,33 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
         for (const auto& c : chunks_) {
             sorted_chunks.push_back(*c);
             if (temp_dir_to_clean.empty() && !c->temp_filepath.empty()) {
-                std::filesystem::path tp(c->temp_filepath);
-                temp_dir_to_clean = tp.parent_path().string();
+                fs::path tp = sys::path_from_utf8(c->temp_filepath);
+                temp_dir_to_clean = sys::path_to_utf8(tp.parent_path());
             }
         }
         total_size = total_file_size_;
         streaming = is_streaming_;
     }
 
-    // Sort chunks by start_offset
     std::sort(sorted_chunks.begin(), sorted_chunks.end(),
         [](const Chunk& a, const Chunk& b) {
             return a.start_offset < b.start_offset;
         });
 
-    namespace fs = std::filesystem;
     std::error_code ec;
-
-    // Verify all chunk files exist and have sufficient bytes before touching destination
     int64_t expected_total = 0;
-    for (size_t i = 0; i < sorted_chunks.size(); ++i) {
-        const auto& chunk = sorted_chunks[i];
-        if (!fs::exists(chunk.temp_filepath, ec)) {
+    for (const auto& chunk : sorted_chunks) {
+        fs::path part_p = sys::path_from_utf8(chunk.temp_filepath);
+        if (!fs::exists(part_p, ec)) {
             return false;
         }
-        uint64_t disk_sz = fs::file_size(chunk.temp_filepath, ec);
+        uint64_t disk_sz = fs::file_size(part_p, ec);
         if (ec) return false;
 
         if (!streaming && chunk.end_offset >= chunk.start_offset) {
             int64_t expected_chunk_sz = chunk.end_offset - chunk.start_offset + 1;
             if (static_cast<int64_t>(disk_sz) < expected_chunk_sz) {
-                return false; // Incomplete or truncated part file
+                return false;
             }
             expected_total += expected_chunk_sz;
         } else {
@@ -360,55 +455,59 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
         total_size = expected_total;
     }
 
-    // Ensure parent directory exists
-    fs::path dest_p(destination_filepath);
+    fs::path dest_p = sys::path_from_utf8(destination_filepath);
     if (dest_p.has_parent_path()) {
         fs::create_directories(dest_p.parent_path(), ec);
     }
 
-    // Fast-path: if there is only 1 chunk, clamp its size in-place and rename O(1) if on same mount
+    // Fast path for single-chunk downloads on the same filesystem: zero copy overhead
     if (sorted_chunks.size() == 1) {
-        const auto& single = sorted_chunks[0];
-        if (!streaming && single.end_offset >= single.start_offset) {
-            uint64_t exact_sz = static_cast<uint64_t>(single.end_offset - single.start_offset + 1);
-            if (fs::file_size(single.temp_filepath, ec) != exact_sz) {
-                fs::resize_file(single.temp_filepath, exact_sz, ec);
+        fs::path part_p = sys::path_from_utf8(sorted_chunks[0].temp_filepath);
+        if (!streaming && sorted_chunks[0].end_offset >= sorted_chunks[0].start_offset) {
+            uint64_t exact_sz = static_cast<uint64_t>(sorted_chunks[0].end_offset - sorted_chunks[0].start_offset + 1);
+            if (fs::file_size(part_p, ec) != exact_sz) {
+                fs::resize_file(part_p, exact_sz, ec);
+                if (ec) {
+                    return false;
+                }
             }
         }
-        fs::remove(destination_filepath, ec);
-        fs::rename(single.temp_filepath, destination_filepath, ec);
-        if (!ec) {
+        if (sys::atomic_replace_file(part_p, dest_p, ec)) {
             if (!temp_dir_to_clean.empty()) {
-                fs::remove(temp_dir_to_clean, ec);
+                fs::remove(sys::path_from_utf8(temp_dir_to_clean), ec);
             }
             if (progress_cb) progress_cb(1.0);
             return true;
         }
     }
 
-    // Assemble into a staging file first so failed assembly never destroys destination or parts
-    std::string staging_path = destination_filepath + ".assembling.tmp";
-    std::ofstream dest_file(staging_path, std::ios::binary | std::ios::trunc);
+    std::string staging_utf8 = destination_filepath + ".assembling.tmp";
+    fs::path staging_p = sys::path_from_utf8(staging_utf8);
+    std::ofstream dest_file(staging_p, std::ios::binary | std::ios::trunc);
     if (!dest_file.is_open()) {
         return false;
     }
 
-    // Use a 4 MB stream buffer for high-throughput sequential I/O
     constexpr size_t BUFFER_SIZE = 4 * 1024 * 1024;
     std::vector<char> io_buf(BUFFER_SIZE);
     std::vector<char> out_stream_buf(BUFFER_SIZE);
-    dest_file.rdbuf()->pubsetbuf(out_stream_buf.data(), out_stream_buf.size());
+    dest_file.rdbuf()->pubsetbuf(out_stream_buf.data(), static_cast<std::streamsize>(out_stream_buf.size()));
 
     int64_t total_written = 0;
     auto last_cb_time = std::chrono::steady_clock::now();
     double last_reported_progress = -1.0;
 
-    for (size_t i = 0; i < sorted_chunks.size(); ++i) {
-        const auto& chunk = sorted_chunks[i];
-        std::ifstream part_file(chunk.temp_filepath, std::ios::binary);
+    for (const auto& chunk : sorted_chunks) {
+        if (cancel_flag && cancel_flag->load(std::memory_order_relaxed)) {
+            dest_file.close();
+            fs::remove(staging_p, ec);
+            return false;
+        }
+
+        std::ifstream part_file(sys::path_from_utf8(chunk.temp_filepath), std::ios::binary);
         if (!part_file.is_open()) {
             dest_file.close();
-            fs::remove(staging_path, ec);
+            fs::remove(staging_p, ec);
             return false;
         }
 
@@ -417,9 +516,16 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
             : std::numeric_limits<int64_t>::max();
 
         while (bytes_remaining_for_chunk > 0 && part_file.good()) {
+            if (cancel_flag && cancel_flag->load(std::memory_order_relaxed)) {
+                part_file.close();
+                dest_file.close();
+                fs::remove(staging_p, ec);
+                return false;
+            }
+
             size_t to_read = static_cast<size_t>(
                 std::min<int64_t>(static_cast<int64_t>(io_buf.size()), bytes_remaining_for_chunk));
-            part_file.read(io_buf.data(), to_read);
+            part_file.read(io_buf.data(), static_cast<std::streamsize>(to_read));
             std::streamsize bytes_read = part_file.gcount();
             if (bytes_read <= 0) {
                 break;
@@ -429,7 +535,7 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
             if (dest_file.fail()) {
                 part_file.close();
                 dest_file.close();
-                fs::remove(staging_path, ec);
+                fs::remove(staging_p, ec);
                 return false;
             }
 
@@ -450,10 +556,9 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
 
         part_file.close();
 
-        // Ensure non-streaming chunk yielded all expected bytes
         if (!streaming && chunk.end_offset >= chunk.start_offset && bytes_remaining_for_chunk != 0) {
             dest_file.close();
-            fs::remove(staging_path, ec);
+            fs::remove(staging_p, ec);
             return false;
         }
     }
@@ -463,24 +568,20 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
     dest_file.close();
 
     if (!write_ok) {
-        fs::remove(staging_path, ec);
+        fs::remove(staging_p, ec);
         return false;
     }
 
-    // Atomically move staging file to final destination
-    fs::remove(destination_filepath, ec);
-    fs::rename(staging_path, destination_filepath, ec);
-    if (ec) {
-        fs::remove(staging_path, ec);
+    if (!sys::atomic_replace_file(staging_p, dest_p, ec)) {
+        fs::remove(staging_p, ec);
         return false;
     }
 
-    // Only delete temporary .part files AFTER assembly is completely verified
     for (const auto& chunk : sorted_chunks) {
-        fs::remove(chunk.temp_filepath, ec);
+        fs::remove(sys::path_from_utf8(chunk.temp_filepath), ec);
     }
     if (!temp_dir_to_clean.empty()) {
-        fs::remove(temp_dir_to_clean, ec);
+        fs::remove(sys::path_from_utf8(temp_dir_to_clean), ec);
     }
 
     if (progress_cb) {
@@ -489,23 +590,26 @@ bool ChunkManager::join_file(const std::string& destination_filepath, std::funct
     return true;
 }
 
-
 void ChunkManager::cleanup_temp_files() {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::string temp_dir;
+    fs::path temp_dir;
     for (const auto& c : chunks_) {
         if (!c->temp_filepath.empty()) {
             std::error_code ec;
-            std::filesystem::remove(c->temp_filepath, ec);
+            fs::path tp = sys::path_from_utf8(c->temp_filepath);
+            fs::remove(tp, ec);
             if (temp_dir.empty()) {
-                std::filesystem::path tp(c->temp_filepath);
-                temp_dir = tp.parent_path().string();
+                temp_dir = tp.parent_path();
             }
         }
     }
     if (!temp_dir.empty()) {
         std::error_code ec;
-        std::filesystem::remove(temp_dir, ec);
+        fs::remove(temp_dir, ec);
+        // Clean empty parent .opendm_tmp container if no other session temp dirs remain inside it
+        if (temp_dir.parent_path().filename() == ".opendm_tmp") {
+            fs::remove(temp_dir.parent_path(), ec);
+        }
     }
 }
 
@@ -520,97 +624,67 @@ void ChunkManager::reset() {
 
 std::string ChunkManager::serialize_state() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::ostringstream ss;
-    ss << "{\n";
-    ss << "  \"total_file_size\": " << total_file_size_ << ",\n";
-    ss << "  \"is_streaming\": " << (is_streaming_ ? "true" : "false") << ",\n";
-    ss << "  \"next_chunk_id\": " << next_chunk_id_ << ",\n";
-    ss << "  \"chunks\": [\n";
-
-    for (size_t i = 0; i < chunks_.size(); ++i) {
-        const auto& c = chunks_[i];
-        ss << "    {\n";
-        ss << "      \"id\": " << c->id << ",\n";
-        ss << "      \"start_offset\": " << c->start_offset << ",\n";
-        ss << "      \"end_offset\": " << c->end_offset << ",\n";
-        ss << "      \"downloaded_bytes\": " << c->downloaded_bytes << ",\n";
-        ss << "      \"status\": " << static_cast<int>(c->status) << ",\n";
-        ss << "      \"temp_filepath\": \"" << c->temp_filepath << "\"\n";
-        ss << "    }" << (i + 1 < chunks_.size() ? "," : "") << "\n";
+    nlohmann::json chunks_arr = nlohmann::json::array();
+    for (const auto& c : chunks_) {
+        chunks_arr.push_back({
+            {"id", c->id},
+            {"start_offset", c->start_offset},
+            {"end_offset", c->end_offset},
+            {"downloaded_bytes", c->downloaded_bytes},
+            {"status", static_cast<int>(c->status)},
+            {"temp_filepath", c->temp_filepath}
+        });
     }
-
-    ss << "  ]\n";
-    ss << "}\n";
-    return ss.str();
+    nlohmann::json root = {
+        {"total_file_size", total_file_size_},
+        {"is_streaming", is_streaming_},
+        {"next_chunk_id", next_chunk_id_},
+        {"chunks", std::move(chunks_arr)}
+    };
+    return root.dump(2);
 }
 
 bool ChunkManager::deserialize_state(const std::string& json_str) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    chunks_.clear();
+    nlohmann::json j;
+    try {
+        j = nlohmann::json::parse(json_str);
+    } catch (...) {
+        return false;
+    }
+    if (!j.is_object()) return false;
 
-    // Helper lambda to find value by key in simple JSON
-    auto get_num = [&json_str](const std::string& key) -> int64_t {
-        size_t pos = json_str.find("\"" + key + "\":");
-        if (pos == std::string::npos) return -1;
-        pos += key.length() + 3;
-        while (pos < json_str.length() && (json_str[pos] == ' ' || json_str[pos] == '\t')) pos++;
-        try {
-            return std::stoll(json_str.substr(pos));
-        } catch (...) {
-            return -1;
-        }
-    };
+    std::vector<std::shared_ptr<Chunk>> loaded;
+    int64_t t_size = j.value("total_file_size", int64_t{-1});
+    bool streaming = j.value("is_streaming", false);
+    int64_t next_id_raw = j.value("next_chunk_id", int64_t{0});
+    uint32_t max_seen_id = 0;
 
-    total_file_size_ = get_num("total_file_size");
-    next_chunk_id_ = static_cast<uint32_t>(get_num("next_chunk_id"));
-    is_streaming_ = (json_str.find("\"is_streaming\": true") != std::string::npos);
-
-    // Parse chunk objects
-    size_t chunk_pos = json_str.find("\"chunks\":");
-    if (chunk_pos == std::string::npos) return false;
-
-    size_t cur = chunk_pos;
-    while ((cur = json_str.find('{', cur)) != std::string::npos) {
-        size_t end = json_str.find('}', cur);
-        if (end == std::string::npos) break;
-        std::string block = json_str.substr(cur, end - cur + 1);
-
-        auto get_block_num = [&block](const std::string& key) -> int64_t {
-            size_t pos = block.find("\"" + key + "\":");
-            if (pos == std::string::npos) return 0;
-            pos += key.length() + 3;
-            while (pos < block.length() && (block[pos] == ' ' || block[pos] == '\t')) pos++;
-            try {
-                return std::stoll(block.substr(pos));
-            } catch (...) {
-                return 0;
-            }
-        };
-
-        auto get_block_str = [&block](const std::string& key) -> std::string {
-            size_t pos = block.find("\"" + key + "\":");
-            if (pos == std::string::npos) return "";
-            pos = block.find('\"', pos + key.length() + 2);
-            if (pos == std::string::npos) return "";
-            size_t end_s = block.find('\"', pos + 1);
-            if (end_s == std::string::npos) return "";
-            return block.substr(pos + 1, end_s - pos - 1);
-        };
-
-        if (block.find("\"id\":") != std::string::npos) {
+    if (j.contains("chunks") && j["chunks"].is_array()) {
+        for (const auto& item : j["chunks"]) {
+            if (!item.is_object() || !item.contains("id")) continue;
             auto chunk = std::make_shared<Chunk>();
-            chunk->id = static_cast<uint32_t>(get_block_num("id"));
-            chunk->start_offset = get_block_num("start_offset");
-            chunk->end_offset = get_block_num("end_offset");
-            chunk->downloaded_bytes = get_block_num("downloaded_bytes");
-            chunk->status = static_cast<ChunkStatus>(get_block_num("status"));
-            chunk->temp_filepath = get_block_str("temp_filepath");
-            chunks_.push_back(chunk);
+            chunk->id = item.value("id", 0U);
+            chunk->start_offset = item.value("start_offset", int64_t{0});
+            chunk->end_offset = item.value("end_offset", int64_t{0});
+            chunk->downloaded_bytes = item.value("downloaded_bytes", int64_t{0});
+            int st = item.value("status", 0);
+            if (st < 0 || st > 3) st = 0;
+            chunk->status = static_cast<ChunkStatus>(st);
+            chunk->temp_filepath = item.value("temp_filepath", "");
+            if (chunk->id >= max_seen_id) {
+                max_seen_id = chunk->id + 1;
+            }
+            loaded.push_back(std::move(chunk));
         }
-
-        cur = end + 1;
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
+    chunks_ = std::move(loaded);
+    total_file_size_ = t_size;
+    is_streaming_ = streaming;
+    next_chunk_id_ = (next_id_raw >= 0)
+        ? std::max<uint32_t>(static_cast<uint32_t>(next_id_raw), max_seen_id)
+        : max_seen_id;
     return !chunks_.empty();
 }
 

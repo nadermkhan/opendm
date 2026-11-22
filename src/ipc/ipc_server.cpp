@@ -3,11 +3,14 @@
 #include "../core/media_muxer.hpp"
 #include "../core/site_logon.hpp"
 #include "../core/youtube_engine.hpp"
+#include "../core/win32_unicode.hpp"
 
 #ifdef _WIN32
 #include <windows.h>
+#ifdef ERROR
+#undef ERROR
+#endif
 #include <io.h>
-#include <shlobj.h>
 #else
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -15,6 +18,7 @@
 #include <fcntl.h>
 #endif
 
+#include <nlohmann/json.hpp>
 #include <iostream>
 #include <sstream>
 #include <cstring>
@@ -22,57 +26,182 @@
 #include <filesystem>
 #include <algorithm>
 #include <unordered_set>
-#include <cctype>
 #include <iomanip>
 
 namespace opendm {
 
+using json = nlohmann::json;
+
 namespace {
 
-std::string extract_json_field(const std::string& json, const std::string& field) {
-    std::string key = "\"" + field + "\"";
-    size_t pos = json.find(key);
-    if (pos == std::string::npos) return "";
-
-    pos = json.find(':', pos + key.length());
-    if (pos == std::string::npos) return "";
-
-    // Skip whitespace
-    while (pos < json.length() && (json[pos] == ':' || json[pos] == ' ' || json[pos] == '\t')) {
-        pos++;
-    }
-
-    if (pos >= json.length()) return "";
-
-    if (json[pos] == '\"') {
-        size_t end = json.find('\"', pos + 1);
-        if (end == std::string::npos) return "";
-        return json.substr(pos + 1, end - pos - 1);
-    } else {
-        size_t end = json.find_first_of(",}\n\r", pos);
-        if (end == std::string::npos) end = json.length();
-        std::string val = json.substr(pos, end - pos);
-        // Trim
-        while (!val.empty() && (val.back() == ' ' || val.back() == '\t')) val.pop_back();
-        return val;
-    }
+std::string json_get_str(const json& obj, const char* key, const std::string& def = "") {
+    if (!obj.is_object()) return def;
+    auto it = obj.find(key);
+    if (it == obj.end() || it->is_null()) return def;
+    if (it->is_string()) return it->get<std::string>();
+    if (it->is_boolean()) return it->get<bool>() ? "true" : "false";
+    if (it->is_number_integer()) return std::to_string(it->get<int64_t>());
+    if (it->is_number_unsigned()) return std::to_string(it->get<uint64_t>());
+    return def;
 }
 
 std::string get_default_downloads_folder() {
-#ifdef _WIN32
-    PWSTR pPath = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &pPath))) {
-        std::wstring ws(pPath);
-        CoTaskMemFree(pPath);
-        return std::string(ws.begin(), ws.end());
-    }
-    const char* up = getenv("USERPROFILE");
-    if (up) return (std::filesystem::path(up) / "Downloads").string();
-    return "Downloads";
-#else
-    return (std::filesystem::path(getenv("HOME") ? getenv("HOME") : "/home/nader") / "Downloads").string();
-#endif
+    std::string configured = QueueManager::instance().get_default_save_dir();
+    if (!configured.empty()) return configured;
+    return sys::get_downloads_dir_utf8();
 }
+
+#ifdef _WIN32
+constexpr DWORD PIPE_IO_BUF_SIZE = 65536;
+constexpr size_t MAX_IPC_MSG_BYTES = 16 * 1024 * 1024;
+
+bool overlapped_io_exact(HANDLE hPipe, OVERLAPPED& ov, HANDLE stop_event, bool is_read,
+                         void* buf, DWORD len, DWORD* out_transferred, DWORD* out_err) {
+    DWORD transferred = 0;
+    BOOL ok = is_read
+        ? ReadFile(hPipe, buf, len, &transferred, &ov)
+        : WriteFile(hPipe, buf, len, &transferred, &ov);
+    DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+    if (ok) {
+        if (out_transferred) *out_transferred = transferred;
+        if (out_err) *out_err = ERROR_SUCCESS;
+        return true;
+    }
+    if (err != ERROR_IO_PENDING) {
+        if (out_transferred) *out_transferred = 0;
+        if (out_err) *out_err = err;
+        return err == ERROR_MORE_DATA;
+    }
+
+    HANDLE waits[2] = {stop_event, ov.hEvent};
+    DWORD wait_res = WaitForMultipleObjects(2, waits, FALSE, 30000);
+    if (wait_res != WAIT_OBJECT_0 + 1) {
+        CancelIoEx(hPipe, &ov);
+        DWORD dummy = 0;
+        GetOverlappedResult(hPipe, &ov, &dummy, TRUE);
+        if (out_transferred) *out_transferred = 0;
+        if (out_err) *out_err = (wait_res == WAIT_OBJECT_0) ? ERROR_OPERATION_ABORTED : ERROR_TIMEOUT;
+        return false;
+    }
+
+    if (!GetOverlappedResult(hPipe, &ov, &transferred, FALSE)) {
+        err = GetLastError();
+        if (out_transferred) *out_transferred = transferred;
+        if (out_err) *out_err = err;
+        return err == ERROR_MORE_DATA;
+    }
+    if (out_transferred) *out_transferred = transferred;
+    if (out_err) *out_err = ERROR_SUCCESS;
+    return true;
+}
+
+std::string read_pipe_message_overlapped(HANDLE hPipe, HANDLE stop_event) {
+    HANDLE ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ev) return "";
+    std::string request;
+    std::vector<char> chunk(PIPE_IO_BUF_SIZE);
+    while (request.size() < MAX_IPC_MSG_BYTES) {
+        ResetEvent(ev);
+        OVERLAPPED ov{};
+        ov.hEvent = ev;
+        DWORD n = 0;
+        DWORD err = ERROR_SUCCESS;
+        overlapped_io_exact(hPipe, ov, stop_event, true, chunk.data(), PIPE_IO_BUF_SIZE, &n, &err);
+        if (n > 0) request.append(chunk.data(), n);
+        if (err == ERROR_SUCCESS) break;
+        if (err == ERROR_MORE_DATA) continue;
+        request.clear();
+        break;
+    }
+    CloseHandle(ev);
+    return request;
+}
+
+void write_pipe_message_overlapped(HANDLE hPipe, HANDLE stop_event, const std::string& payload) {
+    HANDLE ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!ev) return;
+    ResetEvent(ev);
+    OVERLAPPED ov{};
+    ov.hEvent = ev;
+    DWORD written = 0;
+    DWORD err = ERROR_SUCCESS;
+    overlapped_io_exact(hPipe, ov, stop_event, false,
+                        const_cast<char*>(payload.data()),
+                        static_cast<DWORD>(payload.size()), &written, &err);
+    FlushFileBuffers(hPipe);
+    CloseHandle(ev);
+}
+#else
+bool is_complete_ipc_frame(const std::string& buf) {
+    size_t i = 0;
+    while (i < buf.size() && (buf[i] == ' ' || buf[i] == '\t' || buf[i] == '\r' || buf[i] == '\n')) {
+        ++i;
+    }
+    if (i >= buf.size()) return false;
+
+    // Tonec protocol: header + comma-separated id=len:payload fields ending in ';'
+    if (buf.compare(i, 4, "MSG#") == 0 || buf.compare(i, 5, "\"MSG#") == 0) {
+        size_t pos = buf.find(':', i);
+        if (pos == std::string::npos) {
+            return buf.back() == '\n' && buf.find(';') != std::string::npos;
+        }
+        // Check whether ends with ';' (or ';"\n') after trimming trailing whitespace/newline
+        size_t end = buf.size();
+        while (end > i && (buf[end - 1] == '\n' || buf[end - 1] == '\r' || buf[end - 1] == ' ' || buf[end - 1] == '"')) {
+            --end;
+        }
+        if (end <= i || buf[end - 1] != ';') return false;
+        // Verify length-prefixed Tonec fields so an internal ';' before a field payload isn't misread
+        size_t cur = i;
+        while (cur < end) {
+            size_t eq = buf.find('=', cur);
+            if (eq == std::string::npos || eq >= end) break;
+            size_t colon = buf.find(':', eq + 1);
+            if (colon == std::string::npos || colon >= end) break;
+            size_t flen = 0;
+            try {
+                flen = std::stoul(buf.substr(eq + 1, colon - eq - 1));
+            } catch (...) {
+                cur = colon + 1;
+                continue;
+            }
+            if (colon + 1 + flen > end) {
+                return false; // Incomplete length-prefixed field!
+            }
+            cur = colon + 1 + flen;
+        }
+        return true;
+    }
+
+    // JSON object frame: check balanced braces ignoring string literals
+    if (buf[i] == '{') {
+        int depth = 0;
+        bool in_str = false;
+        bool escaped = false;
+        for (size_t k = i; k < buf.size(); ++k) {
+            char c = buf[k];
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (in_str) {
+                if (c == '\\') escaped = true;
+                else if (c == '"') in_str = false;
+                continue;
+            }
+            if (c == '"') in_str = true;
+            else if (c == '{') ++depth;
+            else if (c == '}') {
+                --depth;
+                if (depth == 0) return true;
+            }
+        }
+        return false;
+    }
+
+    return buf.find('\n') != std::string::npos;
+}
+#endif
 
 } // namespace
 
@@ -370,17 +499,20 @@ std::string sanitize_media_filename(const std::string& title, const std::string&
     }
     std::string clean;
     clean.reserve(title.length());
-    for (char c : title) {
+    for (unsigned char c : title) {
         if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '\"' || c == '<' || c == '>' || c == '|') {
             clean += '_';
-        } else if (static_cast<unsigned char>(c) >= 32) {
-            clean += c;
+        } else if (c >= 32) {
+            clean += static_cast<char>(c);
         }
     }
     while (!clean.empty() && (clean.front() == ' ' || clean.front() == '.')) clean.erase(0, 1);
     while (!clean.empty() && (clean.back() == ' ' || clean.back() == '.')) clean.pop_back();
     if (clean.empty()) {
         return "video_download." + default_ext;
+    }
+    if (sys::is_reserved_dos_name(clean)) {
+        clean = "_" + clean;
     }
     if (clean.find('.') == std::string::npos) {
         clean += "." + default_ext;
@@ -453,13 +585,13 @@ void IpcServer::stop() {
     if (stop_event_) {
         SetEvent(stop_event_);
     }
-    std::wstring wpipe(socket_path_.begin(), socket_path_.end());
-    DWORD bytesRead = 0;
-    char buf[16] = {0};
-    CallNamedPipeW(wpipe.c_str(), (LPVOID)"\n", 1, buf, sizeof(buf), &bytesRead, 50);
 
     if (server_thread_.joinable()) {
         server_thread_.join();
+    }
+    {
+        std::unique_lock<std::mutex> lock(workers_mutex_);
+        workers_cv_.wait(lock, [this]() { return active_workers_ == 0; });
     }
     if (stop_event_) {
         CloseHandle(stop_event_);
@@ -487,48 +619,132 @@ bool IpcServer::is_running() const {
 
 void IpcServer::server_loop() {
 #ifdef _WIN32
-    std::wstring wpipe(socket_path_.begin(), socket_path_.end());
-    while (running_) {
-        HANDLE hPipe = CreateNamedPipeW(
+    std::wstring wpipe = sys::utf8_to_wide(socket_path_);
+    constexpr size_t PENDING_LISTENERS = 2;
+    struct PendingPipe {
+        HANDLE hPipe{INVALID_HANDLE_VALUE};
+        HANDLE hEvent{nullptr};
+        OVERLAPPED ov{};
+        bool connecting{false};
+    };
+
+    auto create_instance = [&](PendingPipe& p) -> bool {
+        p.hPipe = CreateNamedPipeW(
             wpipe.c_str(),
-            PIPE_ACCESS_DUPLEX,
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
             PIPE_UNLIMITED_INSTANCES,
-            16384, 16384, 1000, nullptr
+            PIPE_IO_BUF_SIZE, PIPE_IO_BUF_SIZE, 1000, nullptr
         );
-        if (hPipe == INVALID_HANDLE_VALUE) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
-            continue;
+        if (p.hPipe == INVALID_HANDLE_VALUE) return false;
+        if (!p.hEvent) p.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!p.hEvent) {
+            CloseHandle(p.hPipe);
+            p.hPipe = INVALID_HANDLE_VALUE;
+            return false;
+        }
+        ResetEvent(p.hEvent);
+        p.ov = OVERLAPPED{};
+        p.ov.hEvent = p.hEvent;
+        p.connecting = false;
+
+        BOOL ok = ConnectNamedPipe(p.hPipe, &p.ov);
+        DWORD err = GetLastError();
+        if (!ok) {
+            if (err == ERROR_IO_PENDING) {
+                p.connecting = true;
+            } else if (err == ERROR_PIPE_CONNECTED) {
+                SetEvent(p.hEvent);
+            } else {
+                CloseHandle(p.hPipe);
+                p.hPipe = INVALID_HANDLE_VALUE;
+                return false;
+            }
+        } else {
+            SetEvent(p.hEvent);
+        }
+        return true;
+    };
+
+    std::vector<PendingPipe> slots(PENDING_LISTENERS);
+    for (auto& s : slots) {
+        create_instance(s);
+    }
+
+    while (running_) {
+        std::vector<HANDLE> wait_handles;
+        std::vector<size_t> slot_indices;
+        wait_handles.push_back(stop_event_);
+        for (size_t i = 0; i < slots.size(); ++i) {
+            if (slots[i].hPipe != INVALID_HANDLE_VALUE && slots[i].hEvent) {
+                wait_handles.push_back(slots[i].hEvent);
+                slot_indices.push_back(i);
+            }
         }
 
-        BOOL connected = ConnectNamedPipe(hPipe, nullptr) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED);
-        if (connected && running_) {
-            std::string request;
-            char buffer[16384];
-            DWORD bytesRead = 0;
-            BOOL readOk = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
-            if (readOk || GetLastError() == ERROR_MORE_DATA) {
-                buffer[bytesRead] = '\0';
-                request.append(buffer, bytesRead);
-                while (!readOk && GetLastError() == ERROR_MORE_DATA) {
-                    readOk = ReadFile(hPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr);
-                    if (bytesRead > 0) {
-                        buffer[bytesRead] = '\0';
-                        request.append(buffer, bytesRead);
-                    }
+        DWORD wr = WaitForMultipleObjects(static_cast<DWORD>(wait_handles.size()),
+                                         wait_handles.data(), FALSE, 200);
+        if (!running_ || wr == WAIT_OBJECT_0) {
+            break;
+        }
+        if (wr == WAIT_TIMEOUT) {
+            for (auto& s : slots) {
+                if (s.hPipe == INVALID_HANDLE_VALUE && running_) {
+                    create_instance(s);
+                }
+            }
+            continue;
+        }
+        if (wr > WAIT_OBJECT_0 && wr < WAIT_OBJECT_0 + wait_handles.size()) {
+            size_t idx = slot_indices[wr - (WAIT_OBJECT_0 + 1)];
+            PendingPipe& ready = slots[idx];
+            if (ready.connecting) {
+                DWORD dummy = 0;
+                if (!GetOverlappedResult(ready.hPipe, &ready.ov, &dummy, FALSE)) {
+                    CloseHandle(ready.hPipe);
+                    ready.hPipe = INVALID_HANDLE_VALUE;
+                    if (running_) create_instance(ready);
+                    continue;
                 }
             }
 
-            if (!request.empty()) {
-                std::string response = handle_request(request) + "\n";
-                DWORD bytesWritten = 0;
-                WriteFile(hPipe, response.c_str(), static_cast<DWORD>(response.length()), &bytesWritten, nullptr);
-                FlushFileBuffers(hPipe);
+            HANDLE client_pipe = ready.hPipe;
+            ready.hPipe = INVALID_HANDLE_VALUE;
+            if (running_) {
+                create_instance(ready);
             }
-        }
 
-        DisconnectNamedPipe(hPipe);
-        CloseHandle(hPipe);
+            {
+                std::lock_guard<std::mutex> lock(workers_mutex_);
+                ++active_workers_;
+            }
+            std::thread([this, client_pipe]() {
+                std::string request = read_pipe_message_overlapped(client_pipe, stop_event_);
+                if (!request.empty() && running_) {
+                    std::string response = handle_request(request) + "\n";
+                    write_pipe_message_overlapped(client_pipe, stop_event_, response);
+                }
+                DisconnectNamedPipe(client_pipe);
+                CloseHandle(client_pipe);
+                {
+                    std::lock_guard<std::mutex> lock(workers_mutex_);
+                    --active_workers_;
+                }
+                workers_cv_.notify_all();
+            }).detach();
+        }
+    }
+
+    for (auto& s : slots) {
+        if (s.hPipe != INVALID_HANDLE_VALUE) {
+            CancelIoEx(s.hPipe, &s.ov);
+            CloseHandle(s.hPipe);
+            s.hPipe = INVALID_HANDLE_VALUE;
+        }
+        if (s.hEvent) {
+            CloseHandle(s.hEvent);
+            s.hEvent = nullptr;
+        }
     }
 #else
     while (running_) {
@@ -541,22 +757,27 @@ void IpcServer::server_loop() {
             continue;
         }
 
-        // Read message from client
+        // Read complete request frame from client (multi-line Tonec headers or balanced JSON)
         std::string request;
-        char buffer[4096];
+        char buffer[8192];
         ssize_t bytes_read = 0;
 
-        while ((bytes_read = read(client_fd, buffer, sizeof(buffer) - 1)) > 0) {
-            buffer[bytes_read] = '\0';
-            request.append(buffer, bytes_read);
-            if (request.find('\n') != std::string::npos) {
+        while ((bytes_read = read(client_fd, buffer, sizeof(buffer))) > 0) {
+            request.append(buffer, static_cast<size_t>(bytes_read));
+            if (is_complete_ipc_frame(request)) {
                 break;
             }
         }
 
-        std::string response = handle_request(request);
-        response += "\n";
-        (void)write(client_fd, response.c_str(), response.length());
+        if (!request.empty()) {
+            std::string response = handle_request(request) + "\n";
+            size_t total_written = 0;
+            while (total_written < response.size()) {
+                ssize_t w = write(client_fd, response.data() + total_written, response.size() - total_written);
+                if (w <= 0) break;
+                total_written += static_cast<size_t>(w);
+            }
+        }
         close(client_fd);
     }
 #endif
@@ -597,40 +818,22 @@ static std::string format_file_size(uint64_t bytes) {
     return ss.str();
 }
 
-static std::string json_escape_str(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 16);
-    for (char c : s) {
-        if (c == '"') out += "\\\"";
-        else if (c == '\\') out += "\\\\";
-        else if (c == '\n') out += "\\n";
-        else if (c == '\r') out += "\\r";
-        else if (c == '\t') out += "\\t";
-        else out += c;
-    }
-    return out;
-}
-
 std::string build_youtube_extract_json(const YouTubeVideoInfo& info) {
-    std::ostringstream ss;
-    ss << "{\"status\": \"ok\", ";
-    ss << "\"video_id\": \"" << json_escape_str(info.video_id) << "\", ";
-    ss << "\"title\": \"" << json_escape_str(info.title) << "\", ";
-    ss << "\"author\": \"" << json_escape_str(info.author) << "\", ";
-    ss << "\"duration\": " << info.duration_seconds << ", ";
-    ss << "\"duration_str\": \"" << YouTubeEngine::format_duration(info.duration_seconds) << "\", ";
-    ss << "\"client_used\": \"" << json_escape_str(info.client_used) << "\", ";
-    ss << "\"options\": [";
+    json root;
+    root["status"] = "ok";
+    root["video_id"] = info.video_id;
+    root["title"] = info.title;
+    root["author"] = info.author;
+    root["duration"] = info.duration_seconds;
+    root["duration_str"] = YouTubeEngine::format_duration(info.duration_seconds);
+    root["client_used"] = info.client_used;
 
-    bool first = true;
+    json options = json::array();
 
     // 1. Adaptive formats paired with best audio
     if (!info.video_formats.empty() && !info.audio_formats.empty()) {
         const auto& best_audio = info.best_audio;
         for (const auto& vf : info.video_formats) {
-            if (!first) ss << ", ";
-            first = false;
-
             uint64_t total = vf.content_length + (best_audio.content_length > 0 ? best_audio.content_length : 0);
             std::string size_str = format_file_size(total);
 
@@ -648,76 +851,70 @@ std::string build_youtube_extract_json(const YouTubeVideoInfo& info) {
             std::string dual_url = "yta2toidm://" + vf.url + "##" + best_audio.url;
             std::string ua = vf.user_agent.empty() ? best_audio.user_agent : vf.user_agent;
 
-            ss << "{"
-               << "\"label\": \"" << json_escape_str(label) << "\", "
-               << "\"quality\": \"" << json_escape_str(vf.quality_label) << "\", "
-               << "\"fps\": " << vf.fps << ", "
-               << "\"container\": \"" << vf.container << "\", "
-               << "\"itag\": " << vf.itag << ", "
-               << "\"size\": " << total << ", "
-               << "\"size_str\": \"" << size_str << "\", "
-               << "\"url\": \"" << json_escape_str(dual_url) << "\", "
-               << "\"user_agent\": \"" << json_escape_str(ua) << "\", "
-               << "\"is_audio\": false, "
-               << "\"is_muxed\": true"
-               << "}";
+            options.push_back({
+                {"label", label},
+                {"quality", vf.quality_label},
+                {"fps", vf.fps},
+                {"container", vf.container},
+                {"itag", vf.itag},
+                {"size", total},
+                {"size_str", size_str},
+                {"url", dual_url},
+                {"user_agent", ua},
+                {"is_audio", false},
+                {"is_muxed", true}
+            });
         }
     }
 
     // 2. Progressive formats
     for (const auto& pf : info.progressive_formats) {
-        if (!first) ss << ", ";
-        first = false;
-
         std::string size_str = format_file_size(pf.content_length);
         std::string label = pf.quality_label + " (" + pf.container + " - Progressive)";
         if (!size_str.empty()) {
             label += " - " + size_str;
         }
 
-        ss << "{"
-           << "\"label\": \"" << json_escape_str(label) << "\", "
-           << "\"quality\": \"" << json_escape_str(pf.quality_label) << "\", "
-           << "\"fps\": " << pf.fps << ", "
-           << "\"container\": \"" << pf.container << "\", "
-           << "\"itag\": " << pf.itag << ", "
-           << "\"size\": " << pf.content_length << ", "
-           << "\"size_str\": \"" << size_str << "\", "
-           << "\"url\": \"" << json_escape_str(pf.url) << "\", "
-           << "\"user_agent\": \"" << json_escape_str(pf.user_agent) << "\", "
-           << "\"is_audio\": false, "
-           << "\"is_muxed\": false"
-           << "}";
+        options.push_back({
+            {"label", label},
+            {"quality", pf.quality_label},
+            {"fps", pf.fps},
+            {"container", pf.container},
+            {"itag", pf.itag},
+            {"size", pf.content_length},
+            {"size_str", size_str},
+            {"url", pf.url},
+            {"user_agent", pf.user_agent},
+            {"is_audio", false},
+            {"is_muxed", false}
+        });
     }
 
     // 3. Audio only formats
     for (const auto& af : info.audio_formats) {
-        if (!first) ss << ", ";
-        first = false;
-
         std::string size_str = format_file_size(af.content_length);
         std::string label = "Audio Only - " + af.container + " (" + YouTubeEngine::format_bitrate(af.bitrate) + ")";
         if (!size_str.empty()) {
             label += " - " + size_str;
         }
 
-        ss << "{"
-           << "\"label\": \"" << json_escape_str(label) << "\", "
-           << "\"quality\": \"" << YouTubeEngine::format_bitrate(af.bitrate) << "\", "
-           << "\"fps\": 0, "
-           << "\"container\": \"" << af.container << "\", "
-           << "\"itag\": " << af.itag << ", "
-           << "\"size\": " << af.content_length << ", "
-           << "\"size_str\": \"" << size_str << "\", "
-           << "\"url\": \"" << json_escape_str(af.url) << "\", "
-           << "\"user_agent\": \"" << json_escape_str(af.user_agent) << "\", "
-           << "\"is_audio\": true, "
-           << "\"is_muxed\": false"
-           << "}";
+        options.push_back({
+            {"label", label},
+            {"quality", YouTubeEngine::format_bitrate(af.bitrate)},
+            {"fps", 0},
+            {"container", af.container},
+            {"itag", af.itag},
+            {"size", af.content_length},
+            {"size_str", size_str},
+            {"url", af.url},
+            {"user_agent", af.user_agent},
+            {"is_audio", true},
+            {"is_muxed", false}
+        });
     }
 
-    ss << "]}";
-    return ss.str();
+    root["options"] = std::move(options);
+    return root.dump(2);
 }
 
 std::string IpcServer::handle_request(const std::string& request) {
@@ -803,8 +1000,7 @@ std::string IpcServer::handle_request(const std::string& request) {
             uint64_t file_size = 0;
             std::string resp_headers = extract_tonec_field(req, 13);
             if (!resp_headers.empty()) {
-                std::string lower_h = resp_headers;
-                std::transform(lower_h.begin(), lower_h.end(), lower_h.begin(), ::tolower);
+                std::string lower_h = sys::ascii_tolower(resp_headers);
                 size_t cl_pos = lower_h.find("content-length:");
                 if (cl_pos != std::string::npos) {
                     size_t val_start = cl_pos + 15;
@@ -885,8 +1081,7 @@ std::string IpcServer::handle_request(const std::string& request) {
             bool is_attachment = false;
             std::string content_type;
             if (!resp_headers.empty()) {
-                std::string lower_h = resp_headers;
-                std::transform(lower_h.begin(), lower_h.end(), lower_h.begin(), ::tolower);
+                std::string lower_h = sys::ascii_tolower(resp_headers);
 
                 size_t cd_pos = lower_h.find("content-disposition:");
                 if (cd_pos != std::string::npos) {
@@ -974,12 +1169,12 @@ std::string IpcServer::handle_request(const std::string& request) {
                     pending_prompts_.push_back(prompt_info);
                 }
                 std::cout << "OpenDM IPC: Intercepted download from browser, prompting user: " << url << " (" << filename << ", size: " << file_size << ")" << std::endl;
-                return "{\"status\": \"prompting\", \"filename\": \"" + filename + "\"}";
+                return json({{"status", "prompting"}, {"filename", filename}}).dump(2);
             } else {
                 std::string path = get_default_downloads_folder();
-                std::string dest_file = path + "/" + filename;
-                static uint64_t counter = 1;
-                std::string id = "ext_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+                std::string dest_file = sys::path_to_utf8(sys::path_from_utf8(path) / sys::path_from_utf8(filename));
+                static std::atomic<uint64_t> counter{1};
+                std::string id = "ext_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter.fetch_add(1));
 
                 auto session = std::make_shared<DownloadSession>(id, url, dest_file);
                 if (!audio_url.empty()) {
@@ -992,28 +1187,45 @@ std::string IpcServer::handle_request(const std::string& request) {
 
                 QueueManager::instance().get_main_queue().add_session(session, true);
                 std::cout << "OpenDM IPC: Headless intercepted download from browser: " << url << " -> " << dest_file << std::endl;
-                return "{\"status\": \"ok\", \"id\": \"" + id + "\", \"filename\": \"" + filename + "\"}";
+                return json({{"status", "ok"}, {"id", id}, {"filename", filename}}).dump(2);
             }
         }
     }
 
-    std::string action = extract_json_field(req, "action");
+    json jreq;
+    try {
+        jreq = json::parse(req);
+    } catch (...) {
+        try {
+            jreq = json::parse(request);
+        } catch (...) {
+            return json({{"status", "error"}, {"message", "Invalid JSON request"}}).dump(2);
+        }
+    }
+    if (!jreq.is_object()) {
+        return json({{"status", "error"}, {"message", "JSON request must be an object"}}).dump(2);
+    }
+
+    std::string action = json_get_str(jreq, "action");
     if (action == "ping") {
-        return "{\"status\": \"ok\", \"message\": \"pong\"}";
+        return json({{"status", "ok"}, {"message", "pong"}}).dump(2);
     }
 
     if (action == "download") {
-        std::string raw_url = extract_json_field(request, "url");
-        std::string path = extract_json_field(request, "path");
-        std::string filename = extract_json_field(request, "filename");
-        std::string queue_name = extract_json_field(request, "queue");
-        std::string add_only_str = extract_json_field(request, "add_only");
-        std::string no_prompt_str = extract_json_field(request, "no_prompt");
-        std::string req_audio = extract_json_field(request, "audio_url");
-        std::string user_agent = extract_json_field(request, "user_agent");
+        std::string raw_url = json_get_str(jreq, "url");
+        std::string path = json_get_str(jreq, "path");
+        std::string filename = json_get_str(jreq, "filename");
+        std::string queue_name = json_get_str(jreq, "queue");
+        (void)queue_name;
+        std::string add_only_str = json_get_str(jreq, "add_only");
+        std::string no_prompt_str = json_get_str(jreq, "no_prompt");
+        std::string req_audio = json_get_str(jreq, "audio_url");
+        std::string user_agent = json_get_str(jreq, "user_agent");
+        std::string referer = json_get_str(jreq, "referer");
+        std::string cookies = json_get_str(jreq, "cookies");
 
         if (raw_url.empty()) {
-            return "{\"status\": \"error\", \"message\": \"Missing URL\"}";
+            return json({{"status", "error"}, {"message", "Missing URL"}}).dump(2);
         }
 
         auto [video_url, audio_url] = split_dual_stream_url(raw_url);
@@ -1026,12 +1238,12 @@ std::string IpcServer::handle_request(const std::string& request) {
         if ((video_url.find("googlevideo.com") != std::string::npos || video_url.find("videoplayback") != std::string::npos) &&
             (video_url.find("sabr=1") != std::string::npos || video_url.find("sabr=2") != std::string::npos)) {
             std::cout << "OpenDM IPC: Ignored YouTube SABR video stream: " << video_url << std::endl;
-            return "{\"status\": \"ignored\", \"reason\": \"youtube_sabr_stream_not_downloadable\"}";
+            return json({{"status", "ignored"}, {"reason", "youtube_sabr_stream_not_downloadable"}}).dump(2);
         }
         if (!audio_url.empty() && (audio_url.find("googlevideo.com") != std::string::npos || audio_url.find("videoplayback") != std::string::npos) &&
             (audio_url.find("sabr=1") != std::string::npos || audio_url.find("sabr=2") != std::string::npos)) {
             std::cout << "OpenDM IPC: Ignored YouTube SABR audio stream: " << audio_url << std::endl;
-            return "{\"status\": \"ignored\", \"reason\": \"youtube_sabr_stream_not_downloadable\"}";
+            return json({{"status", "ignored"}, {"reason", "youtube_sabr_stream_not_downloadable"}}).dump(2);
         }
         std::string url = video_url;
 
@@ -1050,6 +1262,8 @@ std::string IpcServer::handle_request(const std::string& request) {
             prompt_info.destination_dir = path;
             prompt_info.category = QueueManager::detect_category(filename);
             prompt_info.user_agent = user_agent;
+            prompt_info.referer = referer;
+            prompt_info.cookies = cookies;
 
             std::lock_guard<std::mutex> lock(prompt_mutex_);
             if (prompt_callback_) {
@@ -1057,16 +1271,16 @@ std::string IpcServer::handle_request(const std::string& request) {
             } else {
                 pending_prompts_.push_back(prompt_info);
             }
-            return "{\"status\": \"prompting\", \"filename\": \"" + filename + "\"}";
+            return json({{"status", "prompting"}, {"filename", filename}}).dump(2);
         }
 
         if (path.empty()) {
             path = get_default_downloads_folder();
         }
 
-        std::string dest_file = path + "/" + filename;
-        static uint64_t counter = 1;
-        std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter++);
+        std::string dest_file = sys::path_to_utf8(sys::path_from_utf8(path) / sys::path_from_utf8(filename));
+        static std::atomic<uint64_t> counter{1};
+        std::string id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter.fetch_add(1));
 
         auto session = std::make_shared<DownloadSession>(id, url, dest_file);
         if (!audio_url.empty()) {
@@ -1075,15 +1289,21 @@ std::string IpcServer::handle_request(const std::string& request) {
         if (!user_agent.empty()) {
             session->set_header("User-Agent", user_agent);
         }
+        if (!referer.empty()) {
+            session->set_header("Referer", referer);
+        }
+        if (!cookies.empty()) {
+            session->set_header("Cookie", cookies);
+        }
         SiteLogonManager::instance().apply_to_session(*session, url);
 
-        std::string connections_str = extract_json_field(request, "connections");
+        std::string connections_str = json_get_str(jreq, "connections");
         if (!connections_str.empty()) {
             try {
                 session->set_max_connections(std::stoul(connections_str));
             } catch (...) {}
         }
-        std::string speed_limit_str = extract_json_field(request, "speed_limit");
+        std::string speed_limit_str = json_get_str(jreq, "speed_limit");
         if (!speed_limit_str.empty()) {
             try {
                 uint64_t limit_kb = std::stoull(speed_limit_str);
@@ -1097,131 +1317,151 @@ std::string IpcServer::handle_request(const std::string& request) {
         bool start_now = (add_only_str != "true");
         QueueManager::instance().get_main_queue().add_session(session, start_now);
 
-        return "{\"status\": \"ok\", \"id\": \"" + id + "\", \"filename\": \"" + filename + "\"}";
+        return json({{"status", "ok"}, {"id", id}, {"filename", filename}}).dump(2);
     } else if (action == "start_queue") {
         QueueManager::instance().get_main_queue().start_queue();
-        return "{\"status\": \"ok\", \"message\": \"Queue started\"}";
+        return json({{"status", "ok"}, {"message", "Queue started"}}).dump(2);
     } else if (action == "stop_queue") {
         QueueManager::instance().get_main_queue().stop_queue();
-        return "{\"status\": \"ok\", \"message\": \"Queue stopped\"}";
+        return json({{"status", "ok"}, {"message", "Queue stopped"}}).dump(2);
     } else if (action == "pause") {
-        std::string id = extract_json_field(request, "id");
+        std::string id = json_get_str(jreq, "id");
         auto s = QueueManager::instance().find_session(id);
         if (s) {
             s->pause();
-            return "{\"status\": \"ok\", \"message\": \"Session paused\"}";
+            return json({{"status", "ok"}, {"message", "Session paused"}}).dump(2);
         }
-        return "{\"status\": \"error\", \"message\": \"Session not found\"}";
+        return json({{"status", "error"}, {"message", "Session not found"}}).dump(2);
     } else if (action == "resume") {
-        std::string id = extract_json_field(request, "id");
+        std::string id = json_get_str(jreq, "id");
         auto s = QueueManager::instance().find_session(id);
         if (s) {
             s->resume();
-            return "{\"status\": \"ok\", \"message\": \"Session resumed\"}";
+            return json({{"status", "ok"}, {"message", "Session resumed"}}).dump(2);
         }
-        return "{\"status\": \"error\", \"message\": \"Session not found\"}";
+        return json({{"status", "error"}, {"message", "Session not found"}}).dump(2);
     } else if (action == "cancel") {
-        std::string id = extract_json_field(request, "id");
+        std::string id = json_get_str(jreq, "id");
         if (QueueManager::instance().get_main_queue().remove_session(id)) {
-            return "{\"status\": \"ok\", \"message\": \"Session cancelled\"}";
+            return json({{"status", "ok"}, {"message", "Session cancelled"}}).dump(2);
         }
-        return "{\"status\": \"error\", \"message\": \"Session not found\"}";
+        return json({{"status", "error"}, {"message", "Session not found"}}).dump(2);
     } else if (action == "mux") {
-        std::string video = extract_json_field(request, "video");
-        std::string audio = extract_json_field(request, "audio");
-        std::string output = extract_json_field(request, "output");
+        std::string video = json_get_str(jreq, "video");
+        std::string audio = json_get_str(jreq, "audio");
+        std::string output = json_get_str(jreq, "output");
         if (video.empty() || audio.empty() || output.empty()) {
-            return "{\"status\": \"error\", \"message\": \"Missing video, audio, or output parameters\"}";
+            return json({{"status", "error"}, {"message", "Missing video, audio, or output parameters"}}).dump(2);
         }
         std::string mux_err;
         if (MediaMuxer::mux_mp4_and_mp4(video, audio, output, nullptr, &mux_err)) {
-            return "{\"status\": \"ok\", \"output\": \"" + output + "\"}";
+            return json({{"status", "ok"}, {"output", output}}).dump(2);
         } else {
-            return "{\"status\": \"error\", \"message\": \"" + mux_err + "\"}";
+            return json({{"status", "error"}, {"message", mux_err}}).dump(2);
         }
     } else if (action == "status") {
         auto sessions = QueueManager::instance().get_main_queue().get_all_sessions();
-        std::ostringstream ss;
-        ss << "{\"status\": \"ok\", \"count\": " << sessions.size() << ", \"downloads\": [";
-        for (size_t i = 0; i < sessions.size(); ++i) {
-            if (i > 0) ss << ", ";
-            auto prog = sessions[i]->get_progress();
-            ss << "{\"id\": \"" << sessions[i]->get_id() << "\", "
-               << "\"filename\": \"" << sessions[i]->get_filename() << "\", "
-               << "\"total_size\": " << prog.total_size << ", "
-               << "\"downloaded\": " << prog.downloaded_bytes << ", "
-               << "\"speed\": " << prog.speed_bytes_per_sec << ", "
-               << "\"progress\": " << prog.progress_fraction << "}";
+        json dl_arr = json::array();
+        for (const auto& s : sessions) {
+            auto prog = s->get_progress();
+            dl_arr.push_back({
+                {"id", s->get_id()},
+                {"filename", s->get_filename()},
+                {"total_size", prog.total_size},
+                {"downloaded", prog.downloaded_bytes},
+                {"speed", prog.speed_bytes_per_sec},
+                {"progress", prog.progress_fraction}
+            });
         }
-        ss << "]}";
-        return ss.str();
+        return json({{"status", "ok"}, {"count", sessions.size()}, {"downloads", dl_arr}}).dump(2);
     } else if (action == "extract_youtube") {
-        std::string url = extract_json_field(request, "url");
+        std::string url = json_get_str(jreq, "url");
         if (url.empty()) {
-            std::string video_id = extract_json_field(request, "videoId");
+            std::string video_id = json_get_str(jreq, "videoId");
             if (!video_id.empty()) {
                 url = "https://www.youtube.com/watch?v=" + video_id;
             }
         }
         if (url.empty()) {
-            return "{\"status\": \"error\", \"message\": \"Missing url parameter\"}";
+            return json({{"status", "error"}, {"message", "Missing url parameter"}}).dump(2);
         }
 
         YouTubeVideoInfo info;
         std::string err;
         bool ok = YouTubeEngine::extract_video_info(url, info, &err);
         if (!ok || !info.has_playable_formats()) {
-            return "{\"status\": \"error\", \"message\": \"" + (err.empty() ? "No playable formats found" : err) + "\"}";
+            return json({{"status", "error"}, {"message", err.empty() ? "No playable formats found" : err}}).dump(2);
         }
         return build_youtube_extract_json(info);
     }
 
-    return "{\"status\": \"error\", \"message\": \"Unknown action\"}";
+    return json({{"status", "error"}, {"message", "Unknown action"}}).dump(2);
 }
 
 std::string IpcServer::send_command(const std::string& json_request, const std::string& socket_path) {
 #ifdef _WIN32
     std::string pipe_name = socket_path;
     if (pipe_name.rfind("\\\\.\\pipe\\", 0) != 0) {
-        std::string stem = std::filesystem::path(pipe_name).stem().string();
+        std::string stem = sys::path_from_utf8(pipe_name).stem().string();
         if (stem.empty()) stem = "opendm_pipe";
         pipe_name = "\\\\.\\pipe\\" + stem;
     }
 
-    std::wstring wpipe(pipe_name.begin(), pipe_name.end());
-    std::string req = json_request + "\n";
-    char buffer[16384] = {0};
-    DWORD bytesRead = 0;
-
-    BOOL ok = FALSE;
-    for (int retry = 0; retry < 15; ++retry) {
-        ok = CallNamedPipeW(
-            wpipe.c_str(),
-            (LPVOID)req.c_str(),
-            static_cast<DWORD>(req.length()),
-            buffer,
-            sizeof(buffer) - 1,
-            &bytesRead,
-            2000
-        );
-        if (ok) break;
-        if (GetLastError() == ERROR_PIPE_BUSY) {
+    std::wstring wpipe = sys::utf8_to_wide(pipe_name);
+    HANDLE hPipe = INVALID_HANDLE_VALUE;
+    for (int retry = 0; retry < 20; ++retry) {
+        hPipe = CreateFileW(wpipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (hPipe != INVALID_HANDLE_VALUE) break;
+        DWORD err = GetLastError();
+        if (err == ERROR_PIPE_BUSY) {
             WaitNamedPipeW(wpipe.c_str(), 500);
         } else {
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
     }
 
-    if (!ok) {
-        return "{\"status\": \"error\", \"message\": \"Could not connect to OpenDM socket\"}";
+    if (hPipe == INVALID_HANDLE_VALUE) {
+        return json({{"status", "error"}, {"message", "Could not connect to OpenDM socket"}}).dump(2);
     }
 
-    buffer[bytesRead] = '\0';
-    return std::string(buffer, bytesRead);
+    DWORD mode = PIPE_READMODE_MESSAGE;
+    SetNamedPipeHandleState(hPipe, &mode, nullptr, nullptr);
+
+    std::string req = json_request + "\n";
+    DWORD total_written = 0;
+    while (total_written < req.size()) {
+        DWORD chunk_written = 0;
+        if (!WriteFile(hPipe, req.data() + total_written,
+                       static_cast<DWORD>(req.size() - total_written), &chunk_written, nullptr)) {
+            CloseHandle(hPipe);
+            return json({{"status", "error"}, {"message", "Failed writing to OpenDM pipe"}}).dump(2);
+        }
+        total_written += chunk_written;
+    }
+
+    std::string response;
+    std::vector<char> chunk(PIPE_IO_BUF_SIZE);
+    while (response.size() < MAX_IPC_MSG_BYTES) {
+        DWORD bytesRead = 0;
+        BOOL ok = ReadFile(hPipe, chunk.data(), PIPE_IO_BUF_SIZE, &bytesRead, nullptr);
+        DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+        if (bytesRead > 0) {
+            response.append(chunk.data(), bytesRead);
+        }
+        if (ok || err != ERROR_MORE_DATA) {
+            break;
+        }
+    }
+
+    CloseHandle(hPipe);
+    if (response.empty()) {
+        return json({{"status", "error"}, {"message", "Empty response from OpenDM pipe"}}).dump(2);
+    }
+    return response;
 #else
     int client_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (client_fd < 0) {
-        return "{\"status\": \"error\", \"message\": \"Failed to create client socket\"}";
+        return json({{"status", "error"}, {"message", "Failed to create client socket"}}).dump(2);
     }
 
     struct sockaddr_un addr;
@@ -1231,19 +1471,24 @@ std::string IpcServer::send_command(const std::string& json_request, const std::
 
     if (connect(client_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         close(client_fd);
-        return "{\"status\": \"error\", \"message\": \"Could not connect to OpenDM socket\"}";
+        return json({{"status", "error"}, {"message", "Could not connect to OpenDM socket"}}).dump(2);
     }
 
     std::string req = json_request + "\n";
-    (void)write(client_fd, req.c_str(), req.length());
+    size_t total_written = 0;
+    while (total_written < req.size()) {
+        ssize_t w = write(client_fd, req.data() + total_written, req.size() - total_written);
+        if (w <= 0) break;
+        total_written += static_cast<size_t>(w);
+    }
+    shutdown(client_fd, SHUT_WR);
 
     std::string response;
-    char buffer[4096];
+    char buffer[8192];
     ssize_t bytes_read = 0;
-    while ((bytes_read = read(client_fd, buffer, sizeof(buffer) - 1)) > 0) {
-        buffer[bytes_read] = '\0';
-        response.append(buffer, bytes_read);
-        if (response.find('\n') != std::string::npos) break;
+    while ((bytes_read = read(client_fd, buffer, sizeof(buffer))) > 0) {
+        response.append(buffer, static_cast<size_t>(bytes_read));
+        if (is_complete_ipc_frame(response)) break;
     }
 
     close(client_fd);

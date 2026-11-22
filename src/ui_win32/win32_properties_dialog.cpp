@@ -1,41 +1,16 @@
 #include "win32_properties_dialog.hpp"
+#include "win32_dialogs_common.hpp"
 #include "dpi_helper.hpp"
-#include <iomanip>
-#include <sstream>
+#include "../core/win32_unicode.hpp"
 
 namespace opendm {
 namespace win32 {
 
 namespace {
 
-std::wstring utf8_to_wide(const std::string& str) {
-    if (str.empty()) return std::wstring();
-    int needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
-    if (needed <= 0) return std::wstring(str.begin(), str.end());
-    std::wstring out(needed, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), out.data(), needed);
-    return out;
-}
-
-std::string format_bytes(int64_t bytes) {
-    if (bytes < 0) return "Unknown";
-    constexpr double KB = 1024.0;
-    constexpr double MB = 1024.0 * KB;
-    constexpr double GB = 1024.0 * MB;
-
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(2);
-    if (bytes >= GB) {
-        ss << (bytes / GB) << " GB";
-    } else if (bytes >= MB) {
-        ss << (bytes / MB) << " MB";
-    } else if (bytes >= KB) {
-        ss << (bytes / KB) << " KB";
-    } else {
-        ss << bytes << " Bytes";
-    }
-    ss << " (" << bytes << " bytes)";
-    return ss.str();
+inline std::wstring utf8_to_wide(const std::string& str) { return sys::utf8_to_wide(str); }
+inline std::string format_bytes(int64_t bytes) {
+    return sys::format_bytes(bytes) + (bytes >= 0 ? (" (" + std::to_string(bytes) + " bytes)") : "");
 }
 
 struct PropDialogState {
@@ -110,7 +85,7 @@ void Win32PropertiesDialog::show(HWND parent, std::shared_ptr<DownloadSession> s
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlg_h) / 2;
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        WS_EX_DLGMODALFRAME,
         className, L"Download Properties",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         x, y, dlg_w, dlg_h,
@@ -175,20 +150,7 @@ void Win32PropertiesDialog::show(HWND parent, std::shared_ptr<DownloadSession> s
     SendMessageW(hBtnOk, WM_SETFONT, (WPARAM)state.hFont, TRUE);
     SetFocus(hBtnOk);
 
-    if (parent) EnableWindow(parent, FALSE);
-
-    MSG msg;
-    while (!state.done && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (!IsDialogMessageW(hwnd, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    if (parent) {
-        EnableWindow(parent, TRUE);
-        SetForegroundWindow(parent);
-    }
+    run_modal_loop(hwnd, parent, state.done);
 
     if (state.hFont) DeleteObject(state.hFont);
     if (state.hFontBold) DeleteObject(state.hFontBold);

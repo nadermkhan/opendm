@@ -1,5 +1,6 @@
 #include "../src/core/zip_previewer.hpp"
 #include "../src/core/site_grabber.hpp"
+#include "../src/core/dash_parser.hpp"
 #include <iostream>
 #include <cassert>
 #include <fstream>
@@ -11,14 +12,35 @@ void test_site_grabber_helpers() {
 
     assert(opendm::SiteGrabber::extract_host("https://www.example.com/path/file.html") == "www.example.com");
     assert(opendm::SiteGrabber::extract_host("http://sub.domain.org:8080/index.php") == "sub.domain.org");
+    assert(opendm::SiteGrabber::extract_host("http://user:pass@Sub.Example.COM:8443/path?q=1") == "sub.example.com");
 
-    // Relative URL resolutions
+    // Relative URL resolutions & non-network scheme filtering
     assert(opendm::SiteGrabber::resolve_url("https://example.com/dir/page.html", "sub/file.zip") == "https://example.com/dir/sub/file.zip");
     assert(opendm::SiteGrabber::resolve_url("https://example.com/dir/page.html", "/root.zip") == "https://example.com/root.zip");
     assert(opendm::SiteGrabber::resolve_url("https://example.com/dir/page.html", "https://other.com/a.mp4") == "https://other.com/a.mp4");
     assert(opendm::SiteGrabber::resolve_url("https://example.com/page.html", "//cdn.com/lib.js") == "https://cdn.com/lib.js");
+    assert(opendm::SiteGrabber::resolve_url("https://example.com/page.html", "javascript:void(0)") == "");
+    assert(opendm::SiteGrabber::resolve_url("https://example.com/page.html", "mailto:user@example.com") == "");
 
-    std::cout << "  ✓ URL extraction and resolution verified" << std::endl;
+    // DashParser per-Representation isolation inside a single AdaptationSet
+    std::string mixed_mpd =
+        "<MPD mediaPresentationDuration=\"PT10S\">"
+        "<Period>"
+        "<AdaptationSet id=\"0\">"
+        "<Representation id=\"137\" mimeType=\"video/mp4\" width=\"1920\" height=\"1080\" bandwidth=\"4000000\"><BaseURL>v1080.mp4</BaseURL></Representation>"
+        "<Representation id=\"140\" mimeType=\"audio/mp4\" bandwidth=\"128000\"><BaseURL>a128.m4a</BaseURL></Representation>"
+        "</AdaptationSet>"
+        "</Period>"
+        "</MPD>";
+    opendm::DashManifest manifest;
+    std::string derr;
+    assert(opendm::DashParser::parse_mpd_xml(mixed_mpd, "https://cdn.example.com/dash/manifest.mpd", manifest, &derr));
+    assert(manifest.video_streams.size() == 1);
+    assert(manifest.audio_streams.size() == 1);
+    assert(manifest.video_streams[0].base_url == "https://cdn.example.com/dash/v1080.mp4");
+    assert(manifest.audio_streams[0].base_url == "https://cdn.example.com/dash/a128.m4a");
+
+    std::cout << "  ✓ URL extraction, scheme filtering, and DASH representation parsing verified" << std::endl;
 }
 
 void test_remote_zip_inspection_and_extraction() {

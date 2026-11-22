@@ -1,40 +1,27 @@
 #include "win32_zip_preview_dialog.hpp"
+#include "win32_dialogs_common.hpp"
 #include "dpi_helper.hpp"
 #include "../core/zip_previewer.hpp"
+#include "../core/win32_unicode.hpp"
 #include <commctrl.h>
 #include <shlobj.h>
 #include <thread>
 #include <atomic>
+#include <memory>
 #include <vector>
-#include <iomanip>
-#include <sstream>
 
 namespace opendm {
 namespace win32 {
 
 namespace {
 
-std::string format_bytes(int64_t bytes) {
-    if (bytes < 0) return "Unknown";
-    constexpr double KB = 1024.0;
-    constexpr double MB = 1024.0 * KB;
-    constexpr double GB = 1024.0 * MB;
+constexpr UINT WM_ZIP_FETCHED = WM_USER + 201;
+constexpr UINT WM_ZIP_EXTRACTED = WM_USER + 202;
 
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(2);
-    if (bytes >= GB) {
-        ss << (bytes / GB) << " GB";
-    } else if (bytes >= MB) {
-        ss << (bytes / MB) << " MB";
-    } else if (bytes >= KB) {
-        ss << (bytes / KB) << " KB";
-    } else {
-        ss << bytes << " Bytes";
-    }
-    return ss.str();
-}
-
-#define WM_ZIP_FETCHED (WM_USER + 201)
+struct ZipExtractResult {
+    bool ok{false};
+    std::string error;
+};
 
 struct ZipDialogState {
     HWND hwnd{nullptr};
@@ -50,9 +37,8 @@ struct ZipDialogState {
 
     std::string current_url;
     std::vector<ZipEntry> entries;
-    ZipPreviewer previewer;
     bool done{false};
-    std::atomic<bool> destroyed{false};
+    std::shared_ptr<std::atomic<bool>> alive{std::make_shared<std::atomic<bool>>(true)};
 };
 
 LRESULT CALLBACK ZipWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -69,7 +55,7 @@ LRESULT CALLBACK ZipWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         case WM_ZIP_FETCHED: {
             auto* p_entries = reinterpret_cast<std::vector<ZipEntry>*>(lParam);
             if (p_entries) {
-                if (state && !state->destroyed) {
+                if (state && state->alive && state->alive->load()) {
                     state->entries = std::move(*p_entries);
                     EnableWindow(state->hBtnFetch, TRUE);
                     ListView_DeleteAllItems(state->hListView);
@@ -83,18 +69,16 @@ LRESULT CALLBACK ZipWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
                         for (size_t i = 0; i < state->entries.size(); ++i) {
                             const auto& e = state->entries[i];
-                            std::wstring wfn(e.filename.begin(), e.filename.end());
-                            std::string sz = format_bytes(e.uncompressed_size);
-                            std::wstring wsz(sz.begin(), sz.end());
-                            std::string csz = format_bytes(e.compressed_size);
-                            std::wstring wcsz(csz.begin(), csz.end());
+                            std::wstring wfn = sys::utf8_to_wide(e.filename);
+                            std::wstring wsz = sys::utf8_to_wide(sys::format_bytes(static_cast<int64_t>(e.uncompressed_size)));
+                            std::wstring wcsz = sys::utf8_to_wide(sys::format_bytes(static_cast<int64_t>(e.compressed_size)));
 
                             LVITEMW lvi = {LVIF_TEXT};
                             lvi.iItem = static_cast<int>(i);
-                            lvi.pszText = (LPWSTR)wfn.c_str();
+                            lvi.pszText = const_cast<LPWSTR>(wfn.c_str());
                             ListView_InsertItem(state->hListView, &lvi);
-                            ListView_SetItemText(state->hListView, static_cast<int>(i), 1, (LPWSTR)wsz.c_str());
-                            ListView_SetItemText(state->hListView, static_cast<int>(i), 2, (LPWSTR)wcsz.c_str());
+                            ListView_SetItemText(state->hListView, static_cast<int>(i), 1, const_cast<LPWSTR>(wsz.c_str()));
+                            ListView_SetItemText(state->hListView, static_cast<int>(i), 2, const_cast<LPWSTR>(wcsz.c_str()));
                         }
                         EnableWindow(state->hBtnExtract, TRUE);
                     }
@@ -103,19 +87,34 @@ LRESULT CALLBACK ZipWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
         }
+        case WM_ZIP_EXTRACTED: {
+            auto* res = reinterpret_cast<ZipExtractResult*>(lParam);
+            if (res) {
+                if (state && state->alive && state->alive->load()) {
+                    EnableWindow(state->hBtnExtract, TRUE);
+                    SetWindowTextW(state->hStaticStatus,
+                        res->ok ? L"Extraction complete." : L"Extraction failed.");
+                    std::wstring msg = res->ok
+                        ? L"File extracted successfully!"
+                        : sys::utf8_to_wide(res->error.empty() ? "Failed to extract file." : ("Failed to extract file:\n" + res->error));
+                    MessageBoxW(hwnd, msg.c_str(), L"ZIP Preview",
+                        res->ok ? (MB_OK | MB_ICONINFORMATION) : (MB_OK | MB_ICONERROR));
+                }
+                delete res;
+            }
+            return 0;
+        }
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             if (id == 701) { // Fetch Directory
-                wchar_t buf[2048] = {0};
-                GetWindowTextW(state->hEditUrl, buf, 2048);
-                std::wstring wu(buf);
-                if (wu.empty()) return 0;
-                state->current_url.assign(wu.begin(), wu.end());
+                std::string url = get_window_text_utf8(state->hEditUrl);
+                if (url.empty()) return 0;
+                state->current_url = url;
 
                 EnableWindow(state->hBtnFetch, FALSE);
                 SetWindowTextW(state->hStaticStatus, L"Connecting and fetching ZIP central directory...");
 
-                std::thread([hwnd, url = state->current_url]() {
+                std::thread([hwnd, alive = state->alive, url]() {
                     auto* result = new std::vector<ZipEntry>();
                     std::string err;
                     ZipPreviewer prev;
@@ -123,7 +122,7 @@ LRESULT CALLBACK ZipWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                     if (!ok) {
                         result->clear();
                     }
-                    if (IsWindow(hwnd)) {
+                    if (alive->load() && IsWindow(hwnd)) {
                         if (!PostMessageW(hwnd, WM_ZIP_FETCHED, ok ? 1 : 0, reinterpret_cast<LPARAM>(result))) {
                             delete result;
                         }
@@ -138,33 +137,37 @@ LRESULT CALLBACK ZipWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (sel >= 0 && sel < static_cast<int>(state->entries.size())) {
                     const auto entry = state->entries[sel];
 
-                    wchar_t szFile[MAX_PATH] = {0};
+                    std::vector<wchar_t> szFile(4096, L'\0');
                     std::string def_fn = entry.filename;
                     size_t slash = def_fn.find_last_of("/\\");
                     if (slash != std::string::npos) def_fn = def_fn.substr(slash + 1);
-                    std::wstring wdfn(def_fn.begin(), def_fn.end());
-                    wcsncpy(szFile, wdfn.c_str(), MAX_PATH - 1);
+                    std::wstring wdfn = sys::utf8_to_wide(def_fn);
+                    wcsncpy(szFile.data(), wdfn.c_str(), szFile.size() - 1);
 
                     OPENFILENAMEW ofn = {sizeof(OPENFILENAMEW)};
                     ofn.hwndOwner = hwnd;
-                    ofn.lpstrFile = szFile;
-                    ofn.nMaxFile = MAX_PATH;
+                    ofn.lpstrFile = szFile.data();
+                    ofn.nMaxFile = static_cast<DWORD>(szFile.size());
                     ofn.lpstrFilter = L"All Files (*.*)\0*.*\0";
                     ofn.nFilterIndex = 1;
                     ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT;
 
                     if (GetSaveFileNameW(&ofn)) {
-                        std::wstring chosen(szFile);
-                        std::string out_path(chosen.begin(), chosen.end());
+                        std::string out_path = sys::wide_to_utf8(szFile.data());
 
+                        EnableWindow(state->hBtnExtract, FALSE);
                         SetWindowTextW(state->hStaticStatus, L"Extracting file...");
-                        std::thread([hwnd, url = state->current_url, entry, out_path]() {
+                        std::thread([hwnd, alive = state->alive, url = state->current_url, entry, out_path]() {
                             std::string err;
                             ZipPreviewer prev;
                             bool ok = prev.extract_entry(url, entry, out_path, err);
-                            if (IsWindow(hwnd)) {
-                                std::wstring msg = ok ? L"File extracted successfully!" : L"Failed to extract file.";
-                                MessageBoxW(hwnd, msg.c_str(), L"ZIP Preview", ok ? MB_OK | MB_ICONINFORMATION : MB_OK | MB_ICONERROR);
+                            auto* res = new ZipExtractResult{ok, err};
+                            if (alive->load() && IsWindow(hwnd)) {
+                                if (!PostMessageW(hwnd, WM_ZIP_EXTRACTED, 0, reinterpret_cast<LPARAM>(res))) {
+                                    delete res;
+                                }
+                            } else {
+                                delete res;
                             }
                         }).detach();
                     }
@@ -184,7 +187,7 @@ LRESULT CALLBACK ZipWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             return 0;
         }
         case WM_DESTROY: {
-            state->destroyed = true;
+            if (state && state->alive) state->alive->store(false);
             return 0;
         }
         default:
@@ -219,17 +222,11 @@ void Win32ZipPreviewDialog::show(HWND parent, const std::string& initial_url) {
     int dlg_w = DpiHelper::scale(620, dpi);
     int dlg_h = DpiHelper::scale(440, dpi);
 
-    RECT rcParent;
-    if (parent && GetWindowRect(parent, &rcParent)) {
-        // center
-    } else {
-        GetWindowRect(GetDesktopWindow(), &rcParent);
-    }
-    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlg_w) / 2;
-    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlg_h) / 2;
+    int x = 0, y = 0;
+    compute_centered_pos(parent, dlg_w, dlg_h, x, y);
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        WS_EX_DLGMODALFRAME,
         className, L"Preview Remote ZIP Archive",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         x, y, dlg_w, dlg_h,
@@ -254,7 +251,7 @@ void Win32ZipPreviewDialog::show(HWND parent, const std::string& initial_url) {
         hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
     SendMessageW(state.hEditUrl, WM_SETFONT, (WPARAM)state.hFont, TRUE);
     if (!initial_url.empty()) {
-        std::wstring wu(initial_url.begin(), initial_url.end());
+        std::wstring wu = sys::utf8_to_wide(initial_url);
         SetWindowTextW(state.hEditUrl, wu.c_str());
     }
 
@@ -323,20 +320,7 @@ void Win32ZipPreviewDialog::show(HWND parent, const std::string& initial_url) {
         PostMessageW(hwnd, WM_COMMAND, MAKEWPARAM(701, BN_CLICKED), (LPARAM)state.hBtnFetch);
     }
 
-    if (parent) EnableWindow(parent, FALSE);
-
-    MSG msg;
-    while (!state.done && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (!IsDialogMessageW(hwnd, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    if (parent) {
-        EnableWindow(parent, TRUE);
-        SetForegroundWindow(parent);
-    }
+    run_modal_loop(hwnd, parent, state.done);
 
     if (state.hFont) DeleteObject(state.hFont);
     if (state.hFontBold) DeleteObject(state.hFontBold);

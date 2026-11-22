@@ -13,6 +13,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_package(Threads REQUIRED)
 find_package(CURL REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(nlohmann_json QUIET)
+if(NOT nlohmann_json_FOUND)
+    find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp REQUIRED)
+endif()
 
 if(WIN32)
     set(OPENDM_WIN32_LIBS
@@ -37,9 +41,14 @@ include_directories(
     ${CURL_INCLUDE_DIRS}
     ${ZLIB_INCLUDE_DIRS}
 )
+if(NLOHMANN_JSON_INCLUDE_DIR)
+    include_directories(${NLOHMANN_JSON_INCLUDE_DIR})
+endif()
 
 # Core engine library
 add_library(opendm_core STATIC
+    src/core/win32_unicode.cpp
+    src/core/curl_utils.cpp
     src/core/chunk_manager.cpp
     src/core/speed_limiter.cpp
     src/core/download_session.cpp
@@ -61,16 +70,20 @@ target_link_libraries(opendm_core PUBLIC
     ZLIB::ZLIB
     Threads::Threads
 )
+if(TARGET nlohmann_json::nlohmann_json)
+    target_link_libraries(opendm_core PUBLIC nlohmann_json::nlohmann_json)
+endif()
 
 if(WIN32)
-    target_link_libraries(opendm_core PUBLIC ws2_32 shlwapi)
+    target_link_libraries(opendm_core PUBLIC ws2_32 shlwapi ole32)
 endif()
 
 # Main executable
 if(WIN32)
-    add_executable(opendm
+    add_executable(opendm WIN32
         src/ui_win32/dpi_helper.cpp
         src/ui_win32/win32_assets.cpp
+        src/ui_win32/win32_dialogs_common.cpp
         src/ui_win32/win32_add_url_dialog.cpp
         src/ui_win32/win32_download_info_dialog.cpp
         src/ui_win32/win32_download_complete_dialog.cpp
@@ -90,6 +103,10 @@ if(WIN32)
         opendm_core
         ${OPENDM_WIN32_LIBS}
     )
+
+    if(MSVC)
+        set_target_properties(opendm PROPERTIES LINK_FLAGS "/ENTRY:mainCRTStartup")
+    endif()
 
     # Copy data directory into build directory for easy local running
     add_custom_command(TARGET opendm POST_BUILD

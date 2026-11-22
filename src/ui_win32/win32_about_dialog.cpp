@@ -1,7 +1,9 @@
 #include "win32_about_dialog.hpp"
+#include "win32_dialogs_common.hpp"
 #include "dpi_helper.hpp"
 #include "win32_assets.hpp"
 #include "resource.h"
+#include "../core/win32_unicode.hpp"
 #include <shellapi.h>
 #include <gdiplus.h>
 #include <vector>
@@ -10,24 +12,6 @@ namespace opendm {
 namespace win32 {
 
 namespace {
-
-int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
-    UINT num = 0, size = 0;
-    Gdiplus::GetImageEncodersSize(&num, &size);
-    if (size == 0) return -1;
-
-    std::vector<BYTE> memory(size);
-    Gdiplus::ImageCodecInfo* pImageCodecInfo = (Gdiplus::ImageCodecInfo*)memory.data();
-    Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
-
-    for (UINT j = 0; j < num; ++j) {
-        if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
-            *pClsid = pImageCodecInfo[j].Clsid;
-            return j;
-        }
-    }
-    return -1;
-}
 
 struct AboutDialogState {
     HWND hwnd{nullptr};
@@ -103,17 +87,11 @@ void Win32AboutDialog::show(HWND parent) {
     int dlg_w = DpiHelper::scale(440, dpi);
     int dlg_h = DpiHelper::scale(260, dpi);
 
-    RECT rcParent;
-    if (parent && GetWindowRect(parent, &rcParent)) {
-        // center
-    } else {
-        GetWindowRect(GetDesktopWindow(), &rcParent);
-    }
-    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlg_w) / 2;
-    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlg_h) / 2;
+    int x = 0, y = 0;
+    compute_centered_pos(parent, dlg_w, dlg_h, x, y);
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        WS_EX_DLGMODALFRAME,
         className,
         L"About OpenDM",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
@@ -172,20 +150,7 @@ void Win32AboutDialog::show(HWND parent) {
 
     SetFocus(hBtnOk);
 
-    if (parent) EnableWindow(parent, FALSE);
-
-    MSG msg;
-    while (!state.done && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (!IsDialogMessageW(hwnd, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    if (parent) {
-        EnableWindow(parent, TRUE);
-        SetForegroundWindow(parent);
-    }
+    run_modal_loop(hwnd, parent, state.done);
 
     if (state.hFont) DeleteObject(state.hFont);
     if (state.hFontBold) DeleteObject(state.hFontBold);
@@ -299,10 +264,12 @@ bool Win32AboutDialog::save_snapshot(HWND parent, const std::string& filename) {
 
     Win32Assets::init_gdiplus();
     Gdiplus::Bitmap gdiBmp(hBitmap, nullptr);
-    CLSID pngClsid;
-    GetEncoderClsid(L"image/png", &pngClsid);
-    std::wstring wpath(filename.begin(), filename.end());
-    Gdiplus::Status st = gdiBmp.Save(wpath.c_str(), &pngClsid, nullptr);
+    CLSID pngClsid{};
+    Gdiplus::Status st = Gdiplus::GenericError;
+    if (get_gdiplus_encoder_clsid(L"image/png", &pngClsid) >= 0) {
+        std::wstring wpath = sys::path_from_utf8(filename).wstring();
+        st = gdiBmp.Save(wpath.c_str(), &pngClsid, nullptr);
+    }
 
     SelectObject(hdcMem, hOld);
     DeleteObject(hBitmap);

@@ -1,5 +1,7 @@
 #include "win32_add_url_dialog.hpp"
+#include "win32_dialogs_common.hpp"
 #include "dpi_helper.hpp"
+#include "../core/win32_unicode.hpp"
 #include <commctrl.h>
 #include <vector>
 
@@ -7,24 +9,6 @@ namespace opendm {
 namespace win32 {
 
 namespace {
-
-std::wstring utf8_to_wide(const std::string& str) {
-    if (str.empty()) return std::wstring();
-    int needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
-    if (needed <= 0) return std::wstring(str.begin(), str.end());
-    std::wstring out(needed, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), out.data(), needed);
-    return out;
-}
-
-std::string wide_to_utf8(const std::wstring& wstr) {
-    if (wstr.empty()) return std::string();
-    int needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
-    if (needed <= 0) return std::string(wstr.begin(), wstr.end());
-    std::string out(needed, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), out.data(), needed, nullptr, nullptr);
-    return out;
-}
 
 std::string get_clipboard_url() {
     if (!OpenClipboard(nullptr)) return "";
@@ -48,7 +32,7 @@ std::string get_clipboard_url() {
             while (!wstr.empty() && (wstr.back() == L' ' || wstr.back() == L'\r' || wstr.back() == L'\n' || wstr.back() == L'\t')) {
                 wstr.pop_back();
             }
-            res = wide_to_utf8(wstr);
+            res = sys::wide_to_utf8(wstr);
         }
     } else {
         CloseClipboard();
@@ -92,27 +76,19 @@ LRESULT CALLBACK AddUrlWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                 return 0;
             }
             if (id == IDOK) {
-                wchar_t buf[2048] = {0};
-                GetWindowTextW(state->hEditUrl, buf, 2048);
-                std::wstring wurl(buf);
-                // Trim leading whitespace
-                size_t start = wurl.find_first_not_of(L" \t\r\n");
-                if (start != std::wstring::npos) {
-                    size_t end = wurl.find_last_not_of(L" \t\r\n");
-                    wurl = wurl.substr(start, end - start + 1);
+                std::string url_str = get_window_text_utf8(state->hEditUrl);
+                size_t start = url_str.find_first_not_of(" \t\r\n");
+                if (start != std::string::npos) {
+                    size_t end = url_str.find_last_not_of(" \t\r\n");
+                    url_str = url_str.substr(start, end - start + 1);
                 } else {
-                    wurl.clear();
+                    url_str.clear();
                 }
-                if (!wurl.empty()) {
-                    state->result.url = wide_to_utf8(wurl);
+                if (!url_str.empty()) {
+                    state->result.url = std::move(url_str);
                     if (SendMessageW(state->hChkAuth, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-                        GetWindowTextW(state->hEditUser, buf, 2048);
-                        std::wstring wu(buf);
-                        state->result.username = wide_to_utf8(wu);
-
-                        GetWindowTextW(state->hEditPass, buf, 2048);
-                        std::wstring wp(buf);
-                        state->result.password = wide_to_utf8(wp);
+                        state->result.username = get_window_text_utf8(state->hEditUser);
+                        state->result.password = get_window_text_utf8(state->hEditPass);
                     }
                     state->result.accepted = true;
                 }
@@ -174,7 +150,7 @@ AddUrlResult Win32AddUrlDialog::show(HWND parent, const std::string& default_url
     int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlg_h) / 2;
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        WS_EX_DLGMODALFRAME,
         className,
         L"Enter new address to download",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
@@ -212,7 +188,7 @@ AddUrlResult Win32AddUrlDialog::show(HWND parent, const std::string& default_url
         initial_url = get_clipboard_url();
     }
     if (!initial_url.empty()) {
-        std::wstring wurl = utf8_to_wide(initial_url);
+        std::wstring wurl = sys::utf8_to_wide(initial_url);
         SetWindowTextW(state.hEditUrl, wurl.c_str());
         SendMessageW(state.hEditUrl, EM_SETSEL, 0, -1);
     }
@@ -287,21 +263,7 @@ AddUrlResult Win32AddUrlDialog::show(HWND parent, const std::string& default_url
 
     SetFocus(state.hEditUrl);
 
-    // Modal message loop
-    if (parent) EnableWindow(parent, FALSE);
-
-    MSG msg;
-    while (!state.done && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (!IsDialogMessageW(hwnd, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    if (parent) {
-        EnableWindow(parent, TRUE);
-        SetForegroundWindow(parent);
-    }
+    run_modal_loop(hwnd, parent, state.done);
 
     if (state.hFont) DeleteObject(state.hFont);
     if (state.hFontBold) DeleteObject(state.hFontBold);

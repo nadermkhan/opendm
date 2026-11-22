@@ -7,6 +7,7 @@
 #include <memory>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -79,6 +80,10 @@ private:
     std::mutex prompt_mutex_;
     DownloadPromptCallback prompt_callback_;
     std::vector<DownloadPromptInfo> pending_prompts_;
+
+    std::mutex workers_mutex_;
+    std::condition_variable workers_cv_;
+    size_t active_workers_{0};
 };
 
 struct MsgHeader {

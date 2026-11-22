@@ -1,86 +1,20 @@
 #include "win32_progress_dialog.hpp"
 #include "win32_download_complete_dialog.hpp"
+#include "win32_dialogs_common.hpp"
 #include "../core/download_queue.hpp"
+#include "../core/win32_unicode.hpp"
 #include "dpi_helper.hpp"
 #include "win32_assets.hpp"
 #include <gdiplus.h>
-#include <iomanip>
-#include <sstream>
 #include <algorithm>
+#include <vector>
 
 namespace opendm {
 namespace win32 {
 
 namespace {
 
-std::wstring utf8_to_wide(const std::string& str) {
-    if (str.empty()) return std::wstring();
-    int needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
-    if (needed <= 0) return std::wstring(str.begin(), str.end());
-    std::wstring out(needed, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), out.data(), needed);
-    return out;
-}
-
-std::string format_bytes(int64_t bytes) {
-    if (bytes < 0) return "Unknown";
-    constexpr double KB = 1024.0;
-    constexpr double MB = 1024.0 * KB;
-    constexpr double GB = 1024.0 * MB;
-
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(2);
-    if (bytes >= GB) {
-        ss << (bytes / GB) << " GB";
-    } else if (bytes >= MB) {
-        ss << (bytes / MB) << " MB";
-    } else if (bytes >= KB) {
-        ss << (bytes / KB) << " KB";
-    } else {
-        ss << bytes << " Bytes";
-    }
-    return ss.str();
-}
-
-std::string format_speed(uint64_t bytes_per_sec) {
-    if (bytes_per_sec == 0) return "0.00 KB/s";
-    return format_bytes(bytes_per_sec) + "/s";
-}
-
-std::string format_eta(int64_t eta_sec) {
-    if (eta_sec <= 0) return "--:--";
-    int64_t hours = eta_sec / 3600;
-    int64_t mins = (eta_sec % 3600) / 60;
-    int64_t secs = eta_sec % 60;
-
-    std::ostringstream ss;
-    if (hours > 0) {
-        ss << hours << "h " << mins << "m " << secs << "s";
-    } else if (mins > 0) {
-        ss << mins << "m " << secs << "s";
-    } else {
-        ss << secs << "s";
-    }
-    return ss.str();
-}
-
-int GetEncoderClsid(const WCHAR* format, CLSID* pClsid) {
-    UINT num = 0, size = 0;
-    Gdiplus::GetImageEncodersSize(&num, &size);
-    if (size == 0) return -1;
-
-    std::vector<BYTE> memory(size);
-    Gdiplus::ImageCodecInfo* pImageCodecInfo = (Gdiplus::ImageCodecInfo*)memory.data();
-    Gdiplus::GetImageEncoders(num, size, pImageCodecInfo);
-
-    for (UINT j = 0; j < num; ++j) {
-        if (wcscmp(pImageCodecInfo[j].MimeType, format) == 0) {
-            *pClsid = pImageCodecInfo[j].Clsid;
-            return j;
-        }
-    }
-    return -1;
-}
+constexpr UINT WM_APP_PROGRESS_COMPLETED = WM_APP + 201;
 
 } // namespace
 
@@ -133,17 +67,11 @@ void Win32ProgressDialog::setup_ui() {
     int dlg_w = DpiHelper::scale(560, dpi_);
     int dlg_h = DpiHelper::scale(420, dpi_);
 
-    RECT rcParent;
-    if (parent_ && GetWindowRect(parent_, &rcParent)) {
-        // center
-    } else {
-        GetWindowRect(GetDesktopWindow(), &rcParent);
-    }
-    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlg_w) / 2;
-    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlg_h) / 2;
+    int x = 0, y = 0;
+    compute_centered_pos(parent_, dlg_w, dlg_h, x, y);
 
     std::string title = session_ ? (std::to_string(static_cast<int>(session_->get_progress().progress_fraction * 100)) + "% of " + session_->get_filename()) : "Download Progress";
-    std::wstring wtitle = utf8_to_wide(title);
+    std::wstring wtitle = sys::utf8_to_wide(title);
 
     hwnd_ = CreateWindowExW(
         WS_EX_APPWINDOW,
@@ -275,27 +203,45 @@ void Win32ProgressDialog::close() {
 }
 
 void Win32ProgressDialog::update_ui() {
-    if (!session_) return;
+    if (!session_ || !hwnd_ || !IsWindow(hwnd_)) return;
     auto prog = session_->get_progress();
 
-    // Check completion
+    // Check completion: stop timer immediately and let parent show FIFO completion modal safely
     if (prog.status == SessionStatus::COMPLETED) {
         if (!completed_notified_) {
             completed_notified_ = true;
-            HWND parent_wnd = parent_ ? parent_ : GetDesktopWindow();
+            if (timer_id_) {
+                KillTimer(hwnd_, timer_id_);
+                timer_id_ = 0;
+            }
+            std::string sid = session_->get_id();
             std::string dest_path = session_->get_destination_path();
-            int64_t total_sz = prog.total_size;
+            uint64_t total_sz = prog.total_size > 0 ? static_cast<uint64_t>(prog.total_size) : 0;
+            HWND parent_wnd = parent_;
             close();
-            Win32DownloadCompleteDialog::show(parent_wnd, dest_path, total_sz > 0 ? static_cast<uint64_t>(total_sz) : 0);
+            if (parent_wnd && IsWindow(parent_wnd)) {
+                auto* pid = new std::string(sid);
+                if (!PostMessageW(parent_wnd, WM_APP_PROGRESS_COMPLETED, 0, reinterpret_cast<LPARAM>(pid))) {
+                    delete pid;
+                }
+            } else {
+                Win32DownloadCompleteDialog::show(GetDesktopWindow(), dest_path, total_sz);
+            }
             return;
         }
     }
 
+    auto set_if_changed = [](HWND h, std::string& cache, const std::string& val) {
+        if (cache != val) {
+            cache = val;
+            std::wstring wv = sys::utf8_to_wide(val);
+            SetWindowTextW(h, wv.c_str());
+        }
+    };
+
     // Title
-    int pct = static_cast<int>(prog.progress_fraction * 100);
-    std::string title = std::to_string(pct) + "% of " + session_->get_filename();
-    std::wstring wtitle = utf8_to_wide(title);
-    SetWindowTextW(hwnd_, wtitle.c_str());
+    int pct = std::clamp(static_cast<int>(prog.progress_fraction * 100.0 + 0.5), 0, 100);
+    set_if_changed(hwnd_, last_title_, std::to_string(pct) + "% of " + session_->get_filename());
 
     // Status text
     std::string st_str = "Downloading...";
@@ -305,41 +251,40 @@ void Win32ProgressDialog::update_ui() {
     else if (prog.status == SessionStatus::COMPLETED) st_str = "Complete";
     else if (prog.status == SessionStatus::ASSEMBLING) st_str = "Assembling file segments...";
     else if (prog.status == SessionStatus::ERROR) st_str = "Error: " + prog.error_message;
-    std::wstring wst = utf8_to_wide(st_str);
-    SetWindowTextW(hStaticStatus_, wst.c_str());
+    set_if_changed(hStaticStatus_, last_status_, st_str);
 
-    // Size
-    std::string sz_str = format_bytes(prog.total_size);
-    std::wstring wsz(sz_str.begin(), sz_str.end());
-    SetWindowTextW(hStaticSize_, wsz.c_str());
+    // Size, Downloaded, Speed, ETA
+    set_if_changed(hStaticSize_, last_size_, sys::format_bytes(prog.total_size));
+    set_if_changed(hStaticDownloaded_, last_dl_, sys::format_bytes(prog.downloaded_bytes) + " (" + std::to_string(pct) + "%)");
+    set_if_changed(hStaticSpeed_, last_speed_, sys::format_speed(prog.speed_bytes_per_sec));
+    set_if_changed(hStaticEta_, last_eta_, sys::format_eta(prog.eta_seconds));
 
-    // Downloaded
-    std::string dl_str = format_bytes(prog.downloaded_bytes) + " (" + std::to_string(pct) + "%)";
-    std::wstring wdl(dl_str.begin(), dl_str.end());
-    SetWindowTextW(hStaticDownloaded_, wdl.c_str());
-
-    // Speed
-    std::string spd_str = format_speed(prog.speed_bytes_per_sec);
-    std::wstring wspd(spd_str.begin(), spd_str.end());
-    SetWindowTextW(hStaticSpeed_, wspd.c_str());
-
-    // ETA
-    std::string eta_str = format_eta(prog.eta_seconds);
-    std::wstring weta(eta_str.begin(), eta_str.end());
-    SetWindowTextW(hStaticEta_, weta.c_str());
-
-    // Resume
-    SetWindowTextW(hStaticResume_, session_->supports_ranges() ? L"Yes" : L"No");
-
-    // Progress bar
-    SendMessageW(hProgressBar_, PBM_SETPOS, static_cast<WPARAM>(pct * 10), 0);
-
-    // Pause / Resume button label
-    if (prog.status == SessionStatus::PAUSED) {
-        SetWindowTextW(hBtnPauseResume_, L"Resume");
-    } else {
-        SetWindowTextW(hBtnPauseResume_, L"Pause");
+    // Resume support
+    int res_flag = session_->supports_ranges() ? 1 : 0;
+    if (last_resume_ != res_flag) {
+        last_resume_ = res_flag;
+        SetWindowTextW(hStaticResume_, res_flag ? L"Yes" : L"No");
     }
+
+    // 0.1% Progress bar resolution (0..1000)
+    int pbar_pos = std::clamp(static_cast<int>(prog.progress_fraction * 1000.0 + 0.5), 0, 1000);
+    if (last_pbar_pos_ != pbar_pos) {
+        last_pbar_pos_ = pbar_pos;
+        SendMessageW(hProgressBar_, PBM_SETPOS, static_cast<WPARAM>(pbar_pos), 0);
+    }
+
+    // Pause / Resume / Retry button state & label
+    std::string btn_label = "Pause";
+    BOOL btn_enabled = TRUE;
+    if (prog.status == SessionStatus::PAUSED || prog.status == SessionStatus::IDLE) {
+        btn_label = "Resume";
+    } else if (prog.status == SessionStatus::ERROR) {
+        btn_label = "Retry";
+    } else if (prog.status == SessionStatus::ASSEMBLING || prog.status == SessionStatus::COMPLETED) {
+        btn_enabled = FALSE;
+    }
+    EnableWindow(hBtnPauseResume_, btn_enabled);
+    set_if_changed(hBtnPauseResume_, last_btn_label_, btn_label);
 
     // Refresh visualizer
     if (hVisualizer_) {
@@ -355,25 +300,24 @@ void Win32ProgressDialog::update_ui() {
     }
     for (size_t i = 0; i < chunks.size(); ++i) {
         std::wstring cname = L"Connection " + std::to_wstring(i + 1);
-        std::string dl_c = format_bytes(chunks[i].downloaded_bytes);
-        std::wstring wdl_c(dl_c.begin(), dl_c.end());
+        std::wstring wdl_c = sys::utf8_to_wide(sys::format_bytes(chunks[i].downloaded_bytes));
 
         std::string c_st = "Downloading";
         if (chunks[i].status == ChunkStatus::COMPLETED) c_st = "Completed";
         else if (chunks[i].status == ChunkStatus::PENDING) c_st = "Pending";
         c_st += " [" + std::to_string(chunks[i].start_offset) + " - " + std::to_string(chunks[i].end_offset) + "]";
-        std::wstring wc_st(c_st.begin(), c_st.end());
+        std::wstring wc_st = sys::utf8_to_wide(c_st);
 
         if (static_cast<int>(i) >= cur_count) {
             LVITEMW lvi = {LVIF_TEXT};
             lvi.iItem = static_cast<int>(i);
-            lvi.pszText = (LPWSTR)cname.c_str();
+            lvi.pszText = const_cast<LPWSTR>(cname.c_str());
             ListView_InsertItem(hListConns_, &lvi);
         } else {
-            ListView_SetItemText(hListConns_, static_cast<int>(i), 0, (LPWSTR)cname.c_str());
+            ListView_SetItemText(hListConns_, static_cast<int>(i), 0, const_cast<LPWSTR>(cname.c_str()));
         }
-        ListView_SetItemText(hListConns_, static_cast<int>(i), 1, (LPWSTR)wdl_c.c_str());
-        ListView_SetItemText(hListConns_, static_cast<int>(i), 2, (LPWSTR)wc_st.c_str());
+        ListView_SetItemText(hListConns_, static_cast<int>(i), 1, const_cast<LPWSTR>(wdl_c.c_str()));
+        ListView_SetItemText(hListConns_, static_cast<int>(i), 2, const_cast<LPWSTR>(wc_st.c_str()));
     }
 }
 
@@ -416,10 +360,16 @@ bool Win32ProgressDialog::save_snapshot(const std::string& filename) {
     Win32Assets::init_gdiplus();
     Gdiplus::Bitmap gdiBmp(hBitmap, nullptr);
 
-    CLSID pngClsid;
-    GetEncoderClsid(L"image/png", &pngClsid);
+    CLSID pngClsid{};
+    if (get_gdiplus_encoder_clsid(L"image/png", &pngClsid) < 0) {
+        SelectObject(hdcMem, hOld);
+        DeleteObject(hBitmap);
+        DeleteDC(hdcMem);
+        ReleaseDC(hwnd_, hdcWin);
+        return false;
+    }
 
-    std::wstring wpath(filename.begin(), filename.end());
+    std::wstring wpath = sys::path_from_utf8(filename).wstring();
     Gdiplus::Status st = gdiBmp.Save(wpath.c_str(), &pngClsid, nullptr);
 
     SelectObject(hdcMem, hOld);

@@ -3,6 +3,7 @@
 #include "zip_preview_dialog.hpp"
 #include "../core/download_queue.hpp"
 #include "../core/site_logon.hpp"
+#include "../core/curl_utils.hpp"
 #include <curl/curl.h>
 #include <filesystem>
 #include <fstream>
@@ -562,6 +563,7 @@ void DownloadInfoDialog::probe_remote_info() {
 
         if (curl) {
             curl_easy_setopt(curl, CURLOPT_URL, ctx->url.c_str());
+            net::configure_curl_ssl(curl);
             curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
             curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
             curl_easy_setopt(curl, CURLOPT_TIMEOUT, 6L);

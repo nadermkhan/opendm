@@ -1,14 +1,69 @@
 #include "download_queue.hpp"
+#include "win32_unicode.hpp"
+
+#include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
-#include <ctime>
-#include <iostream>
 #include <cstdlib>
-#include <fstream>
-#include <sstream>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <regex>
+#include <sstream>
+
+namespace fs = std::filesystem;
 
 namespace opendm {
+
+namespace {
+
+// Targeted repair helper for legacy downloads.json files written with unescaped Windows backslashes
+// and unescaped HTTP ETag quotes ("etag": ""abc"").
+std::string sanitize_legacy_downloads_json(const std::string& raw) {
+    std::istringstream in(raw);
+    std::ostringstream out;
+    std::string line;
+    bool first = true;
+
+    while (std::getline(in, line)) {
+        if (!first) out << "\n";
+        first = false;
+
+        // Trim leading whitespace to inspect "key": "value" lines
+        size_t indent_end = line.find_first_not_of(" \t\r");
+        if (indent_end == std::string::npos) {
+            out << line;
+            continue;
+        }
+
+        size_t colon = line.find("\": \"", indent_end);
+        if (colon != std::string::npos && line[indent_end] == '"') {
+            std::string key = line.substr(indent_end + 1, colon - (indent_end + 1));
+            size_t val_start = colon + 4;
+            bool has_comma = false;
+            size_t rtrim = line.find_last_not_of(" \t\r");
+            if (rtrim != std::string::npos && rtrim > val_start) {
+                if (line[rtrim] == ',' && line[rtrim - 1] == '"') {
+                    has_comma = true;
+                    rtrim--;
+                }
+                if (line[rtrim] == '"' && rtrim >= val_start) {
+                    std::string val = line.substr(val_start, rtrim - val_start);
+                    // Re-encode safely using nlohmann::json
+                    nlohmann::json jv = val;
+                    out << line.substr(0, indent_end) << "\"" << key << "\": " << jv.dump();
+                    if (has_comma) out << ",";
+                    continue;
+                }
+            }
+        }
+        out << line;
+    }
+    return out.str();
+}
+
+} // namespace
 
 DownloadQueue::DownloadQueue(const std::string& id, const std::string& name, size_t max_concurrent)
     : id_(id), name_(name), max_concurrent_(max_concurrent) {
@@ -23,6 +78,17 @@ DownloadQueue::~DownloadQueue() {
     }
 }
 
+void DownloadQueue::fire_update_callback() {
+    QueueUpdatedCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cb = update_callback_;
+    }
+    if (cb) {
+        cb();
+    }
+}
+
 void DownloadQueue::set_max_concurrent(size_t max_concurrent) {
     std::lock_guard<std::mutex> lock(mutex_);
     max_concurrent_ = std::clamp<size_t>(max_concurrent, 1, 16);
@@ -33,17 +99,16 @@ size_t DownloadQueue::get_max_concurrent() const {
     return max_concurrent_;
 }
 
-void DownloadQueue::add_session(std::shared_ptr<DownloadSession> session, bool start_now) {
+void DownloadQueue::add_session(std::shared_ptr<DownloadSession> session, bool start_now, bool persist) {
     if (!session) return;
 
-    if (QueueManager::instance().is_global_speed_limit_enabled()) {
-        session->set_speed_limit(QueueManager::instance().get_global_speed_limit());
-        session->enable_speed_limit(true);
-    }
+    session->set_global_speed_limiter(QueueManager::instance().get_global_speed_limiter());
+    session->set_dirty_callback([]() {
+        QueueManager::instance().mark_dirty();
+    });
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        // Check if already in queue
         auto it = std::find_if(items_.begin(), items_.end(),
             [&session](const std::shared_ptr<DownloadSession>& s) {
                 return s->get_id() == session->get_id();
@@ -57,11 +122,11 @@ void DownloadQueue::add_session(std::shared_ptr<DownloadSession> session, bool s
         session->start();
     }
 
-    QueueManager::instance().save_to_file();
-
-    if (update_callback_) {
-        update_callback_();
+    if (persist) {
+        QueueManager::instance().save_to_file();
     }
+
+    fire_update_callback();
 }
 
 bool DownloadQueue::remove_session(const std::string& session_id, bool persist) {
@@ -80,8 +145,6 @@ bool DownloadQueue::remove_session(const std::string& session_id, bool persist) 
     }
 
     if (to_cancel) {
-        // Mark permanently stopped first so a concurrent scheduler tick cannot
-        // restart it, then join threads + delete temp files off the caller's thread.
         to_cancel->request_stop(true);
         QueueManager::instance().cancel_session_async(std::move(to_cancel));
     }
@@ -90,9 +153,7 @@ bool DownloadQueue::remove_session(const std::string& session_id, bool persist) 
         QueueManager::instance().save_to_file();
     }
 
-    if (update_callback_) {
-        update_callback_();
-    }
+    fire_update_callback();
     return true;
 }
 
@@ -121,9 +182,7 @@ void DownloadQueue::move_item_up(const std::string& session_id) {
             }
         }
     }
-    if (update_callback_) {
-        update_callback_();
-    }
+    fire_update_callback();
 }
 
 void DownloadQueue::move_item_down(const std::string& session_id) {
@@ -136,31 +195,27 @@ void DownloadQueue::move_item_down(const std::string& session_id) {
             }
         }
     }
-    if (update_callback_) {
-        update_callback_();
-    }
+    fire_update_callback();
 }
 
 void DownloadQueue::clear() {
     std::vector<std::shared_ptr<DownloadSession>> to_cancel;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        to_cancel = items_;
-        items_.clear();
+        to_cancel.swap(items_);
     }
     for (auto& s : to_cancel) {
-        if (s) s->cancel();
+        if (s) {
+            s->request_stop(true);
+            QueueManager::instance().cancel_session_async(std::move(s));
+        }
     }
-    if (update_callback_) {
-        update_callback_();
-    }
+    fire_update_callback();
 }
 
 void DownloadQueue::start_queue() {
     status_ = QueueStatus::RUNNING;
-    if (update_callback_) {
-        update_callback_();
-    }
+    fire_update_callback();
 }
 
 void DownloadQueue::stop_queue() {
@@ -170,8 +225,8 @@ void DownloadQueue::stop_queue() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (auto& s : items_) {
-            if (s->get_status() == SessionStatus::DOWNLOADING ||
-                s->get_status() == SessionStatus::PROBING) {
+            auto st = s->get_status();
+            if (st == SessionStatus::DOWNLOADING || st == SessionStatus::PROBING) {
                 active_sessions.push_back(s);
             }
         }
@@ -181,9 +236,7 @@ void DownloadQueue::stop_queue() {
         s->pause();
     }
 
-    if (update_callback_) {
-        update_callback_();
-    }
+    fire_update_callback();
 }
 
 bool DownloadQueue::is_running() const {
@@ -205,6 +258,7 @@ SchedulerConfig DownloadQueue::get_scheduler() const {
 }
 
 void DownloadQueue::set_update_callback(QueueUpdatedCallback cb) {
+    std::lock_guard<std::mutex> lock(mutex_);
     update_callback_ = std::move(cb);
 }
 
@@ -219,25 +273,29 @@ void DownloadQueue::check_schedule_triggers() {
 
     auto now = std::chrono::system_clock::now();
     std::time_t now_c = std::chrono::system_clock::to_time_t(now);
-    std::tm now_tm;
+    std::tm now_tm{};
 #ifdef _WIN32
     localtime_s(&now_tm, &now_c);
 #else
     localtime_r(&now_c, &now_tm);
 #endif
 
-    // Check Start Trigger
+    const int minute_key = now_tm.tm_yday * 1440 + now_tm.tm_hour * 60 + now_tm.tm_min;
+
     if (cfg.start_hour >= 0 && cfg.start_minute >= 0) {
-        if (now_tm.tm_hour == cfg.start_hour && now_tm.tm_min == cfg.start_minute && now_tm.tm_sec <= 2) {
+        if (now_tm.tm_hour == cfg.start_hour && now_tm.tm_min == cfg.start_minute &&
+            last_start_trigger_key_ != minute_key) {
+            last_start_trigger_key_ = minute_key;
             if (status_ != QueueStatus::RUNNING) {
                 start_queue();
             }
         }
     }
 
-    // Check Stop Trigger
     if (cfg.stop_hour >= 0 && cfg.stop_minute >= 0) {
-        if (now_tm.tm_hour == cfg.stop_hour && now_tm.tm_min == cfg.stop_minute && now_tm.tm_sec <= 2) {
+        if (now_tm.tm_hour == cfg.stop_hour && now_tm.tm_min == cfg.stop_minute &&
+            last_stop_trigger_key_ != minute_key) {
+            last_stop_trigger_key_ = minute_key;
             if (status_ == QueueStatus::RUNNING) {
                 stop_queue();
             }
@@ -272,8 +330,7 @@ void DownloadQueue::process_pending_items() {
             if (!next_candidate && active_count < max_conns) {
                 next_candidate = s;
             }
-        } else if (st == SessionStatus::PAUSED) {
-            // Paused downloads are explicitly held; do not auto-start
+        } else if (st == SessionStatus::PAUSED || st == SessionStatus::ERROR) {
             all_finished = false;
         }
     }
@@ -282,7 +339,6 @@ void DownloadQueue::process_pending_items() {
         next_candidate->start();
     }
 
-    // Handle post-completion action if everything finished while queue was running
     if (all_finished && !snapshot.empty() && status_ == QueueStatus::RUNNING) {
         status_ = QueueStatus::STOPPED;
         SchedulerConfig cfg;
@@ -293,16 +349,18 @@ void DownloadQueue::process_pending_items() {
 
         if (cfg.enabled) {
             if (!cfg.post_download_command.empty()) {
-                std::system(cfg.post_download_command.c_str());
+                (void)std::system(cfg.post_download_command.c_str());
             }
             if (cfg.shutdown_on_completion) {
-                std::system("shutdown -h now");
+#ifdef _WIN32
+                sys::run_hidden_process("shutdown.exe", {"/s", "/t", "5"});
+#else
+                (void)std::system("shutdown -h now");
+#endif
             }
         }
 
-        if (update_callback_) {
-            update_callback_();
-        }
+        fire_update_callback();
     }
 }
 
@@ -314,7 +372,6 @@ void DownloadQueue::queue_scheduler_loop() {
     }
 }
 
-// QueueManager singleton
 QueueManager& QueueManager::instance() {
     static QueueManager mgr;
     return mgr;
@@ -324,33 +381,35 @@ QueueManager::QueueManager() {
     main_queue_ = std::make_shared<DownloadQueue>("main_queue", "Main Download Queue", 2);
     queues_.push_back(main_queue_);
     storage_path_ = get_default_storage_path();
+    default_save_dir_ = sys::get_downloads_dir_utf8();
 }
 
 DownloadQueue& QueueManager::get_main_queue() {
     return *main_queue_;
 }
 
-void QueueManager::cancel_session_async(std::shared_ptr<DownloadSession> session) {
-    if (!session) return;
-    session->request_stop(false); // never clears a permanent (disposed) flag
-
+void QueueManager::track_background_task(std::future<void> fut) {
     std::lock_guard<std::mutex> lock(teardown_mutex_);
-    // Drop futures of teardowns that already finished
     teardowns_.erase(std::remove_if(teardowns_.begin(), teardowns_.end(),
         [](std::future<void>& f) {
             return !f.valid() || f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
         }), teardowns_.end());
+    teardowns_.push_back(std::move(fut));
+}
+
+void QueueManager::cancel_session_async(std::shared_ptr<DownloadSession> session) {
+    if (!session) return;
+    session->request_stop(false);
 
     try {
-        teardowns_.push_back(std::async(std::launch::async, [s = session]() mutable {
+        track_background_task(std::async(std::launch::async, [s = std::move(session)]() mutable {
             try {
                 s->cancel();
             } catch (...) {
             }
-            s.reset(); // last reference may be released here, off the UI thread
+            s.reset();
         }));
     } catch (...) {
-        // Could not spawn a thread: fall back to synchronous teardown
         if (session) session->cancel();
     }
 }
@@ -364,6 +423,35 @@ void QueueManager::wait_for_pending_teardowns() {
     for (auto& f : pending) {
         if (f.valid()) f.wait();
     }
+}
+
+void QueueManager::shutdown_all_sessions() {
+    std::vector<std::shared_ptr<DownloadSession>> all_sessions;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (const auto& q : queues_) {
+            if (!q) continue;
+            auto q_items = q->get_all_sessions();
+            all_sessions.insert(all_sessions.end(), q_items.begin(), q_items.end());
+        }
+    }
+
+    for (auto& s : all_sessions) {
+        if (!s) continue;
+        auto st = s->get_status();
+        if (st == SessionStatus::DOWNLOADING || st == SessionStatus::PROBING || st == SessionStatus::ASSEMBLING) {
+            s->pause();
+        }
+    }
+
+    for (auto& s : all_sessions) {
+        if (s) {
+            s->wait_for_stop();
+        }
+    }
+
+    wait_for_pending_teardowns();
+    save_to_file();
 }
 
 std::shared_ptr<DownloadQueue> QueueManager::create_queue(const std::string& name, size_t max_concurrent) {
@@ -397,17 +485,14 @@ std::string QueueManager::detect_category(const std::string& filename) {
         return "General";
     }
 
-    std::string ext = filename.substr(dot_pos + 1);
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    std::string ext = sys::ascii_tolower(filename.substr(dot_pos + 1));
 
-    // Compressed
     if (ext == "zip" || ext == "rar" || ext == "7z" || ext == "tar" ||
         ext == "gz" || ext == "bz2" || ext == "xz" || ext == "tgz" ||
         ext == "tbz2" || ext == "iso") {
         return "Compressed";
     }
 
-    // Documents
     if (ext == "pdf" || ext == "doc" || ext == "docx" || ext == "xls" ||
         ext == "xlsx" || ext == "ppt" || ext == "pptx" || ext == "txt" ||
         ext == "odt" || ext == "ods" || ext == "odp" || ext == "rtf" ||
@@ -415,20 +500,17 @@ std::string QueueManager::detect_category(const std::string& filename) {
         return "Documents";
     }
 
-    // Music
     if (ext == "mp3" || ext == "flac" || ext == "wav" || ext == "aac" ||
         ext == "ogg" || ext == "m4a" || ext == "wma" || ext == "opus") {
         return "Music";
     }
 
-    // Programs
     if (ext == "exe" || ext == "msi" || ext == "deb" || ext == "rpm" ||
         ext == "appimage" || ext == "dmg" || ext == "pkg" || ext == "sh" ||
         ext == "bin") {
         return "Programs";
     }
 
-    // Video
     if (ext == "mp4" || ext == "mkv" || ext == "avi" || ext == "webm" ||
         ext == "flv" || ext == "mov" || ext == "wmv" || ext == "ts" ||
         ext == "m4v" || ext == "mpg" || ext == "mpeg" || ext == "3gp") {
@@ -439,33 +521,19 @@ std::string QueueManager::detect_category(const std::string& filename) {
 }
 
 void QueueManager::set_global_speed_limit(uint64_t bytes_per_sec) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    global_limit_bytes_per_sec_ = bytes_per_sec;
-    size_t active_count = 0;
-    for (auto& q : queues_) {
-        for (auto& s : q->get_all_sessions()) {
-            auto st = s->get_status();
-            if (st == SessionStatus::DOWNLOADING || st == SessionStatus::PROBING || st == SessionStatus::ASSEMBLING) {
-                active_count++;
-            }
-        }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        global_limit_bytes_per_sec_ = bytes_per_sec;
     }
-    uint64_t per_session = (active_count > 0) ? (bytes_per_sec / active_count) : bytes_per_sec;
-    for (auto& q : queues_) {
-        for (auto& s : q->get_all_sessions()) {
-            s->set_speed_limit(per_session);
-        }
-    }
+    global_speed_limiter_.set_limit_bytes_per_sec(bytes_per_sec);
 }
 
 void QueueManager::enable_global_speed_limit(bool enable) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    global_limit_enabled_ = enable;
-    for (auto& q : queues_) {
-        for (auto& s : q->get_all_sessions()) {
-            s->enable_speed_limit(enable);
-        }
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        global_limit_enabled_ = enable;
     }
+    global_speed_limiter_.set_enabled(enable);
 }
 
 bool QueueManager::is_global_speed_limit_enabled() const {
@@ -498,28 +566,21 @@ size_t QueueManager::get_default_max_connections() const {
     return default_max_connections_.load(std::memory_order_relaxed);
 }
 
+void QueueManager::set_default_save_dir(const std::string& dir) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    default_save_dir_ = dir.empty() ? sys::get_downloads_dir_utf8() : dir;
+}
+
+std::string QueueManager::get_default_save_dir() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return default_save_dir_.empty() ? sys::get_downloads_dir_utf8() : default_save_dir_;
+}
+
 std::string QueueManager::get_default_storage_path() {
-#ifdef _WIN32
-    const char* appdata = getenv("APPDATA");
-    if (appdata) {
-        std::string p = std::string(appdata) + "/OpenDM";
-        std::error_code ec;
-        std::filesystem::create_directories(p, ec);
-        return p + "/downloads.json";
-    }
-    const char* up = getenv("USERPROFILE");
-    if (up) {
-        std::string p = std::string(up) + "/.opendm";
-        std::error_code ec;
-        std::filesystem::create_directories(p, ec);
-        return p + "/downloads.json";
-    }
-    return "downloads.json";
-#else
-    const char* home = getenv("HOME");
-    std::string base = home ? home : "/home/nader";
-    return base + "/.config/opendm/downloads.json";
-#endif
+    fs::path dir = sys::path_from_utf8(sys::get_appdata_dir_utf8());
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    return sys::path_to_utf8(dir / "downloads.json");
 }
 
 void QueueManager::set_storage_path(const std::string& path) {
@@ -543,56 +604,90 @@ void QueueManager::clear_all() {
     }
 }
 
+void QueueManager::mark_dirty() {
+    dirty_.store(true, std::memory_order_relaxed);
+}
+
+void QueueManager::save_if_dirty() {
+    if (dirty_.exchange(false, std::memory_order_relaxed)) {
+        save_to_file();
+    }
+}
+
 bool QueueManager::save_to_file(const std::string& filepath) const {
     std::string target;
+    bool gl_enabled = false;
+    uint64_t gl_bps = 0;
+    std::string save_dir;
+    std::vector<std::shared_ptr<DownloadQueue>> queues_copy;
+
     {
         std::lock_guard<std::mutex> lock(mutex_);
         target = filepath.empty() ? (storage_path_.empty() ? get_default_storage_path() : storage_path_) : filepath;
-    }
-    std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(target).parent_path(), ec);
-
-    std::ostringstream ss;
-    ss << "{\n";
-    ss << "  \"version\": 1,\n";
-    ss << "  \"default_max_connections\": " << default_max_connections_.load(std::memory_order_relaxed) << ",\n";
-    ss << "  \"queues\": [\n";
-
-    std::vector<std::shared_ptr<DownloadQueue>> queues_copy;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
+        gl_enabled = global_limit_enabled_;
+        gl_bps = global_limit_bytes_per_sec_;
+        save_dir = default_save_dir_;
         queues_copy = queues_;
     }
 
-    for (size_t qi = 0; qi < queues_copy.size(); ++qi) {
-        const auto& q = queues_copy[qi];
-        ss << "    {\n";
-        ss << "      \"name\": \"" << q->get_name() << "\",\n";
-        ss << "      \"items\": [\n";
-        auto items = q->get_all_sessions();
-        for (size_t ii = 0; ii < items.size(); ++ii) {
-            ss << items[ii]->serialize();
-            if (ii + 1 < items.size()) ss << ",\n";
-            else ss << "\n";
-        }
-        ss << "      ]\n";
-        ss << "    }";
-        if (qi + 1 < queues_copy.size()) ss << ",\n";
-        else ss << "\n";
-    }
-    ss << "  ]\n";
-    ss << "}\n";
+    size_t max_conc = main_queue_ ? main_queue_->get_max_concurrent() : 2;
 
-    std::string tmp_file = target + ".tmp";
-    std::ofstream out(tmp_file, std::ios::binary | std::ios::trunc);
+    // Serialize all sessions OUTSIDE mutex_ so slow JSON/disk work does not stall the UI
+    nlohmann::json queues_arr = nlohmann::json::array();
+    for (const auto& q : queues_copy) {
+        if (!q) continue;
+        nlohmann::json items_arr = nlohmann::json::array();
+        for (const auto& s : q->get_all_sessions()) {
+            if (!s) continue;
+            try {
+                items_arr.push_back(nlohmann::json::parse(s->serialize()));
+            } catch (...) {}
+        }
+        queues_arr.push_back({
+            {"name", q->get_name()},
+            {"items", std::move(items_arr)}
+        });
+    }
+
+    nlohmann::json root = {
+        {"version", 1},
+        {"default_max_connections", default_max_connections_.load(std::memory_order_relaxed)},
+        {"settings", {
+            {"default_max_connections", default_max_connections_.load(std::memory_order_relaxed)},
+            {"max_concurrent_downloads", max_conc},
+            {"global_limit_enabled", gl_enabled},
+            {"global_limit_bytes_per_sec", gl_bps},
+            {"default_save_dir", save_dir}
+        }},
+        {"queues", std::move(queues_arr)}
+    };
+
+    fs::path target_p = sys::path_from_utf8(target);
+    std::error_code ec;
+    if (target_p.has_parent_path()) {
+        fs::create_directories(target_p.parent_path(), ec);
+    }
+
+    fs::path tmp_p = sys::path_from_utf8(target + ".tmp");
+    std::ofstream out(tmp_p, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) return false;
-    out << ss.str();
+    out << root.dump(2) << "\n";
+    out.flush();
+    bool write_ok = out.good();
     out.close();
 
-    std::filesystem::remove(target, ec);
-    ec.clear();
-    std::filesystem::rename(tmp_file, target, ec);
-    return !ec;
+    if (!write_ok) {
+        fs::remove(tmp_p, ec);
+        return false;
+    }
+
+    bool replaced = sys::atomic_replace_file(tmp_p, target_p, ec);
+    if (!replaced) {
+        fs::remove(tmp_p, ec);
+    } else {
+        dirty_.store(false, std::memory_order_relaxed);
+    }
+    return replaced;
 }
 
 bool QueueManager::load_from_file(const std::string& filepath) {
@@ -604,9 +699,12 @@ bool QueueManager::load_from_file(const std::string& filepath) {
         }
         target = storage_path_.empty() ? get_default_storage_path() : storage_path_;
     }
-    if (!std::filesystem::exists(target)) return true;
 
-    std::ifstream in(target, std::ios::binary);
+    fs::path target_p = sys::path_from_utf8(target);
+    std::error_code ec;
+    if (!fs::exists(target_p, ec)) return true;
+
+    std::ifstream in(target_p, std::ios::binary);
     if (!in.is_open()) return false;
 
     std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -614,53 +712,58 @@ bool QueueManager::load_from_file(const std::string& filepath) {
 
     if (content.empty()) return true;
 
-    size_t dmc_pos = content.find("\"default_max_connections\":");
-    if (dmc_pos != std::string::npos) {
+    nlohmann::json root;
+    bool migrated = false;
+    try {
+        root = nlohmann::json::parse(content);
+    } catch (...) {
         try {
-            size_t val = static_cast<size_t>(std::stoul(content.substr(dmc_pos + 26)));
-            default_max_connections_.store(std::clamp<size_t>(val, 1, 32), std::memory_order_relaxed);
-        } catch (...) {}
+            std::string repaired = sanitize_legacy_downloads_json(content);
+            root = nlohmann::json::parse(repaired);
+            migrated = true;
+            std::error_code bak_ec;
+            fs::copy_file(target_p, sys::path_from_utf8(target + ".bak"), fs::copy_options::overwrite_existing, bak_ec);
+        } catch (...) {
+            return false;
+        }
     }
 
-    // Scan for session objects: each has '"id": "'
-    size_t cursor = 0;
-    while ((cursor = content.find("\"id\": \"", cursor)) != std::string::npos) {
-        size_t obj_start = content.rfind('{', cursor);
-        if (obj_start == std::string::npos) {
-            cursor += 6;
-            continue;
-        }
+    if (!root.is_object()) return false;
 
-        // Count balanced braces to find end of session object
-        int depth = 0;
-        size_t obj_end = std::string::npos;
-        for (size_t i = obj_start; i < content.length(); ++i) {
-            if (content[i] == '{') depth++;
-            else if (content[i] == '}') {
-                depth--;
-                if (depth == 0) {
-                    obj_end = i;
-                    break;
+    size_t dmc = root.value("default_max_connections", default_max_connections_.load(std::memory_order_relaxed));
+    if (root.contains("settings") && root["settings"].is_object()) {
+        const auto& s = root["settings"];
+        dmc = s.value("default_max_connections", dmc);
+        size_t mconc = s.value("max_concurrent_downloads", size_t{2});
+        bool gl_en = s.value("global_limit_enabled", false);
+        uint64_t gl_bps = s.value("global_limit_bytes_per_sec", uint64_t{0});
+        std::string sdir = s.value("default_save_dir", std::string{});
+
+        if (main_queue_) main_queue_->set_max_concurrent(mconc);
+        enable_global_speed_limit(gl_en);
+        set_global_speed_limit(gl_bps);
+        if (!sdir.empty()) set_default_save_dir(sdir);
+    }
+    default_max_connections_.store(std::clamp<size_t>(dmc, 1, 32), std::memory_order_relaxed);
+
+    if (root.contains("queues") && root["queues"].is_array()) {
+        for (const auto& qobj : root["queues"]) {
+            if (!qobj.is_object() || !qobj.contains("items") || !qobj["items"].is_array()) continue;
+            for (const auto& item : qobj["items"]) {
+                if (!item.is_object()) continue;
+                auto session = DownloadSession::deserialize(item.dump());
+                if (session) {
+                    session->reset_interrupted_assembling();
+                    if (!find_session(session->get_id())) {
+                        main_queue_->add_session(session, false, false);
+                    }
                 }
             }
         }
+    }
 
-        if (obj_end == std::string::npos) break;
-
-        std::string session_json = content.substr(obj_start, obj_end - obj_start + 1);
-        auto session = DownloadSession::deserialize(session_json);
-        if (session) {
-            auto st = session->get_status();
-            if (st == SessionStatus::DOWNLOADING || st == SessionStatus::PROBING || st == SessionStatus::ASSEMBLING) {
-                session->pause();
-            }
-
-            if (!find_session(session->get_id())) {
-                main_queue_->add_session(session, false);
-            }
-        }
-
-        cursor = obj_end + 1;
+    if (migrated) {
+        save_to_file(target);
     }
 
     return true;

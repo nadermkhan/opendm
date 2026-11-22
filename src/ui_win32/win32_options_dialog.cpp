@@ -1,6 +1,8 @@
 #include "win32_options_dialog.hpp"
+#include "win32_dialogs_common.hpp"
 #include "dpi_helper.hpp"
 #include "../core/download_queue.hpp"
+#include "../core/win32_unicode.hpp"
 #include <commctrl.h>
 #include <shlobj.h>
 #include <filesystem>
@@ -14,17 +16,9 @@ namespace win32 {
 namespace {
 
 std::string get_default_downloads_dir() {
-    PWSTR pPath = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &pPath))) {
-        std::wstring ws(pPath);
-        CoTaskMemFree(pPath);
-        return std::string(ws.begin(), ws.end());
-    }
-    const char* userprofile = getenv("USERPROFILE");
-    if (userprofile) {
-        return (fs::path(userprofile) / "Downloads").string();
-    }
-    return "Downloads";
+    std::string configured = QueueManager::instance().get_default_save_dir();
+    if (!configured.empty()) return configured;
+    return sys::get_downloads_dir_utf8();
 }
 
 struct OptionsDialogState {
@@ -106,13 +100,12 @@ LRESULT CALLBACK OptionsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
             if (id == IDOK) {
-                // Apply settings
+                // Apply all persisted settings
                 if (state->hComboMaxConns) {
                     int sel = static_cast<int>(SendMessageW(state->hComboMaxConns, CB_GETCURSEL, 0, 0));
                     int conns_val[] = {1, 2, 4, 8, 16, 24, 32};
                     if (sel >= 0 && sel < 7) {
                         QueueManager::instance().set_default_max_connections(conns_val[sel]);
-                        QueueManager::instance().save_to_file();
                     }
                 }
                 if (state->hChkSpeedLimit) {
@@ -125,6 +118,13 @@ LRESULT CALLBACK OptionsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                         QueueManager::instance().set_global_speed_limit(static_cast<uint64_t>(kb) * 1024);
                     }
                 }
+                if (state->hEditSaveDir) {
+                    std::string save_dir = get_window_text_utf8(state->hEditSaveDir);
+                    if (!save_dir.empty()) {
+                        QueueManager::instance().set_default_save_dir(save_dir);
+                    }
+                }
+                QueueManager::instance().save_to_file();
                 state->done = true;
                 DestroyWindow(hwnd);
                 return 0;
@@ -172,17 +172,11 @@ void Win32OptionsDialog::show(HWND parent, int initial_tab) {
     int dlg_w = DpiHelper::scale(520, dpi);
     int dlg_h = DpiHelper::scale(360, dpi);
 
-    RECT rcParent;
-    if (parent && GetWindowRect(parent, &rcParent)) {
-        // center
-    } else {
-        GetWindowRect(GetDesktopWindow(), &rcParent);
-    }
-    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlg_w) / 2;
-    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlg_h) / 2;
+    int x = 0, y = 0;
+    compute_centered_pos(parent, dlg_w, dlg_h, x, y);
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        WS_EX_DLGMODALFRAME,
         className, L"Options and Preferences",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
         x, y, dlg_w, dlg_h,
@@ -292,7 +286,7 @@ void Win32OptionsDialog::show(HWND parent, int initial_tab) {
     state.tab_controls[3].push_back(hLblSave);
 
     std::string def_dir = get_default_downloads_dir();
-    std::wstring wdef_dir(def_dir.begin(), def_dir.end());
+    std::wstring wdef_dir = sys::utf8_to_wide(def_dir);
     state.hEditSaveDir = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", wdef_dir.c_str(),
         WS_CHILD | ES_AUTOHSCROLL,
         page_x, page_y + DpiHelper::scale(26, dpi), page_w - DpiHelper::scale(40, dpi), DpiHelper::scale(24, dpi),
@@ -330,20 +324,7 @@ void Win32OptionsDialog::show(HWND parent, int initial_tab) {
 
     SetFocus(state.hBtnOk);
 
-    if (parent) EnableWindow(parent, FALSE);
-
-    MSG msg;
-    while (!state.done && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (!IsDialogMessageW(hwnd, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    if (parent) {
-        EnableWindow(parent, TRUE);
-        SetForegroundWindow(parent);
-    }
+    run_modal_loop(hwnd, parent, state.done);
 
     if (state.hFont) DeleteObject(state.hFont);
     if (state.hFontBold) DeleteObject(state.hFontBold);

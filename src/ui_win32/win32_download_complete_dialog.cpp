@@ -1,10 +1,10 @@
 #include "win32_download_complete_dialog.hpp"
+#include "win32_dialogs_common.hpp"
 #include "dpi_helper.hpp"
 #include "win32_assets.hpp"
+#include "../core/win32_unicode.hpp"
 #include <shellapi.h>
 #include <filesystem>
-#include <sstream>
-#include <iomanip>
 
 namespace fs = std::filesystem;
 
@@ -13,42 +13,11 @@ namespace win32 {
 
 namespace {
 
-std::wstring utf8_to_wide(const std::string& str) {
-    if (str.empty()) return std::wstring();
-    int needed = MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), nullptr, 0);
-    if (needed <= 0) return std::wstring(str.begin(), str.end());
-    std::wstring out(needed, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, str.data(), static_cast<int>(str.size()), out.data(), needed);
-    return out;
-}
-
-std::string wide_to_utf8(const std::wstring& wstr) {
-    if (wstr.empty()) return std::string();
-    int needed = WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
-    if (needed <= 0) return std::string(wstr.begin(), wstr.end());
-    std::string out(needed, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wstr.data(), static_cast<int>(wstr.size()), out.data(), needed, nullptr, nullptr);
-    return out;
-}
+inline std::wstring utf8_to_wide(const std::string& str) { return sys::utf8_to_wide(str); }
+inline std::string wide_to_utf8(const std::wstring& wstr) { return sys::wide_to_utf8(wstr); }
 
 std::string format_size(uint64_t bytes) {
-    if (bytes == 0) return "0 Bytes";
-    constexpr double KB = 1024.0;
-    constexpr double MB = 1024.0 * KB;
-    constexpr double GB = 1024.0 * MB;
-
-    std::ostringstream ss;
-    ss << std::fixed << std::setprecision(2);
-    if (bytes >= GB) {
-        ss << (bytes / GB) << " GB";
-    } else if (bytes >= MB) {
-        ss << (bytes / MB) << " MB";
-    } else if (bytes >= KB) {
-        ss << (bytes / KB) << " KB";
-    } else {
-        ss << bytes << " Bytes";
-    }
-    return ss.str();
+    return (bytes == 0) ? "0 Bytes" : sys::format_bytes(static_cast<int64_t>(bytes));
 }
 
 struct CompleteDialogState {
@@ -139,17 +108,11 @@ void Win32DownloadCompleteDialog::show(HWND parent, const std::string& filepath,
     int dlg_w = DpiHelper::scale(480, dpi);
     int dlg_h = DpiHelper::scale(220, dpi);
 
-    RECT rcParent;
-    if (parent && GetWindowRect(parent, &rcParent)) {
-        // center
-    } else {
-        GetWindowRect(GetDesktopWindow(), &rcParent);
-    }
-    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlg_w) / 2;
-    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlg_h) / 2;
+    int x = 0, y = 0;
+    compute_centered_pos(parent, dlg_w, dlg_h, x, y);
 
     HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+        WS_EX_DLGMODALFRAME,
         className,
         L"Download complete",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
@@ -215,20 +178,7 @@ void Win32DownloadCompleteDialog::show(HWND parent, const std::string& filepath,
 
     SetFocus(hBtnOpen);
 
-    if (parent) EnableWindow(parent, FALSE);
-
-    MSG msg;
-    while (!state.done && GetMessageW(&msg, nullptr, 0, 0)) {
-        if (!IsDialogMessageW(hwnd, &msg)) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    if (parent) {
-        EnableWindow(parent, TRUE);
-        SetForegroundWindow(parent);
-    }
+    run_modal_loop(hwnd, parent, state.done);
 
     if (state.hFont) DeleteObject(state.hFont);
     if (state.hFontBold) DeleteObject(state.hFontBold);
