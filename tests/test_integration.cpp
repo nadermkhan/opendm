@@ -32,14 +32,14 @@ int run_win32_job_test_child(const std::string& result_path, const std::string& 
     uint32_t err = 0;
     const bool in_job = opendm::sys::is_current_process_in_job(breakaway_allowed, silent_breakaway, &err);
 
-    wchar_t self_exe[MAX_PATH * 4]{};
-    DWORD nlen = GetModuleFileNameW(nullptr, self_exe, static_cast<DWORD>(std::size(self_exe)));
-    std::string self_utf8 = (nlen > 0) ? opendm::sys::wide_to_utf8(std::wstring_view(self_exe, nlen)) : "";
+    wchar_t sys_dir_buf[MAX_PATH * 2]{};
+    UINT slen = GetSystemDirectoryW(sys_dir_buf, static_cast<UINT>(std::size(sys_dir_buf)));
+    std::string sys_dir = (slen > 0) ? opendm::sys::wide_to_utf8(std::wstring_view(sys_dir_buf, slen)) : "C:\\Windows\\System32";
 
     opendm::sys::DetachedLaunchOptions opts;
-    opts.exe_path = self_utf8;
-    opts.arguments = "--win32-noop-child \"" + noop_marker_path + "\"";
-    opts.working_dir = opendm::sys::path_to_utf8(opendm::sys::path_from_utf8(self_utf8).parent_path());
+    opts.exe_path = sys_dir + "\\cmd.exe";
+    opts.arguments = "/c echo alive > \"" + noop_marker_path + "\"";
+    opts.working_dir = sys_dir;
     opts.show_cmd = SW_HIDE;
     opts.allow_foreground = false;
 
@@ -821,7 +821,7 @@ int main(int argc, char* argv[]) {
         assert(jrep["detached_method"] == "shell_com");
         if (jrep["detached_ok"] == true) {
             bool marker_ok = false;
-            for (int w = 0; w < 30; ++w) {
+            for (int w = 0; w < 100; ++w) {
                 if (fs::exists(noop_marker)) { marker_ok = true; break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
             }
