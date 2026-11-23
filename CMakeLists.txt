@@ -61,6 +61,7 @@ add_library(opendm_core STATIC
     src/core/dash_parser.cpp
     src/core/youtube_engine.cpp
     src/core/post_download.cpp
+    src/core/native_host_setup.cpp
     src/cli/cli_parser.cpp
     src/ipc/ipc_server.cpp
 )
@@ -75,7 +76,7 @@ if(TARGET nlohmann_json::nlohmann_json)
 endif()
 
 if(WIN32)
-    target_link_libraries(opendm_core PUBLIC ws2_32 shlwapi ole32)
+    target_link_libraries(opendm_core PUBLIC ws2_32 shlwapi ole32 advapi32)
 endif()
 
 # Main executable
@@ -227,16 +228,35 @@ if(NOT WIN32)
     install(FILES data/io.github.opendm.OpenDM.metainfo.xml DESTINATION ${CMAKE_INSTALL_DATADIR}/metainfo)
     install(DIRECTORY data/ui_assets/ DESTINATION ${CMAKE_INSTALL_DATADIR}/opendm/ui_assets)
     install(FILES src/ui/style.css DESTINATION ${CMAKE_INSTALL_DATADIR}/opendm)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/opendm_extension.xpi")
-        install(FILES opendm_extension.xpi DESTINATION ${CMAKE_INSTALL_DATADIR}/opendm)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/dist/opendm_extension.xpi")
+        install(FILES dist/opendm_extension.xpi DESTINATION ${CMAKE_INSTALL_DATADIR}/opendm)
     endif()
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/extension_extracted")
-        install(DIRECTORY extension_extracted/ DESTINATION ${CMAKE_INSTALL_DATADIR}/opendm/extension)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/dist/opendm-extension-chromium.zip")
+        install(FILES dist/opendm-extension-chromium.zip DESTINATION ${CMAKE_INSTALL_DATADIR}/opendm)
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/dist/extension")
+        install(DIRECTORY dist/extension/ DESTINATION ${CMAKE_INSTALL_DATADIR}/opendm/extension)
     endif()
 
     # Browser Native Messaging Manifests
     install(FILES data/native-messaging/com.opendm.host.firefox.json
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/mozilla/native-messaging-hosts
+        DESTINATION lib/mozilla/native-messaging-hosts
+        RENAME com.opendm.host.json
+    )
+    install(FILES data/native-messaging/com.opendm.host.chrome.json
+        DESTINATION /etc/opt/chrome/native-messaging-hosts
+        RENAME com.opendm.host.json
+    )
+    install(FILES data/native-messaging/com.opendm.host.chrome.json
+        DESTINATION /etc/chromium/native-messaging-hosts
+        RENAME com.opendm.host.json
+    )
+    install(FILES data/native-messaging/com.opendm.host.chrome.json
+        DESTINATION /etc/opt/edge/native-messaging-hosts
+        RENAME com.opendm.host.json
+    )
+    install(FILES data/native-messaging/com.opendm.host.chrome.json
+        DESTINATION /etc/brave/native-messaging-hosts
         RENAME com.opendm.host.json
     )
 
@@ -266,4 +286,8 @@ else()
         RUNTIME DESTINATION bin
     )
     install(DIRECTORY data/ DESTINATION bin/data)
+    install(FILES scripts/install_native_host.ps1 DESTINATION bin)
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/dist/extension")
+        install(DIRECTORY dist/extension/ DESTINATION bin/extension)
+    endif()
 endif()

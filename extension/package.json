@@ -1,0 +1,5 @@
+{
+  "name": "opendm-extension",
+  "private": true,
+  "type": "module"
+}

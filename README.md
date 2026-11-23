@@ -163,12 +163,14 @@ This installs:
 
 ## Browser Integration
 
-1. **Linux**: Run `./install_desktop.sh` to install the Native Messaging manifests automatically.  
-   **Windows**: Register the Native Messaging host manifest (`data/native-messaging/com.opendm.host.chrome.json` or `com.opendm.host.firefox.json`) pointing to `opendm-native-host.exe` under `HKCU\Software\Google\Chrome\NativeMessagingHosts\com.opendm.host` (or Mozilla's equivalent registry key).
-2. In your Chromium browser (Chrome / Brave / Edge), navigate to `chrome://extensions/`.
-3. Enable **Developer mode** (top-right toggle).
-4. Click **Load unpacked** and select the [`extension_extracted/`](extension_extracted/) directory from this repository.
-5. In Firefox, navigate to `about:debugging#/runtime/this-firefox` and select **Load Temporary Add-on** pointing to `extension_extracted/manifest.json`.
+1. **Linux**: Run `./install_desktop.sh` (or `./install_native_host.sh`) to register the Native Messaging manifests for Chrome, Chromium, Brave, Edge, Vivaldi, Opera, Firefox, and LibreWolf.  
+   **Windows**: Launch `opendm.exe` once (auto-registers under `HKCU`), click **Options -> Register Browser Extension Host**, or run `opendm.exe --register-native-host` / `scripts/install_native_host.ps1`.
+2. Build the cross-browser WebExtension packages:
+   ```bash
+   node extension/scripts/build.mjs
+   ```
+3. In Chromium browsers (Chrome / Brave / Edge / Vivaldi / Opera), navigate to `chrome://extensions/`, enable **Developer mode**, click **Load unpacked**, and select [`dist/extension/chromium/`](dist/extension/chromium/) (pinned ID: `ekehfpkieofbbgakjbmefknbbabjpoog`).
+4. In Firefox, install `dist/opendm_extension.xpi` or load [`dist/extension/firefox/manifest.json`](dist/extension/firefox/manifest.json) via `about:debugging#/runtime/this-firefox`.
 
 ---
 
@@ -209,7 +211,7 @@ opendm/
 │   └── main.cpp            # Cross-platform CLI and GUI application entry point
 ├── data/                   # Application icons, Win32 manifest, and UI assets
 ├── tests/                  # Automated CTest suites (7/7 passing)
-├── extension_extracted/    # Browser WebExtension (Chrome / Edge / Brave / Firefox)
+├── extension/              # Unified OpenDM WebExtension source & target packager
 └── install_desktop.sh      # Linux desktop & native host installation script
 ```
 

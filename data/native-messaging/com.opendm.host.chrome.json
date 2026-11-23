@@ -4,7 +4,6 @@
   "path": "/usr/bin/opendm-native-host",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://ngpampappnmepgilojfohadhhmbhlaek/",
-    "chrome-extension://bgdpgdfcmienfknnkgcfbgjjffmnokch/"
+    "chrome-extension://ekehfpkieofbbgakjbmefknbbabjpoog/"
   ]
 }

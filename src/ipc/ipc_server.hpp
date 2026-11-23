@@ -61,9 +61,37 @@ public:
 
     // Send a command to a running OpenDM instance via UNIX socket / Named Pipe (client mode)
     static std::string send_command(const std::string& json_request,
-                                    const std::string& socket_path = DEFAULT_SOCKET_PATH);
+                                    const std::string& socket_path = DEFAULT_SOCKET_PATH,
+                                    int max_connect_attempts = 20);
+
+    // Run local YouTube format extraction and serialize IPC JSON response
+    static std::string extract_youtube_json(const std::string& url, const std::string& video_id = "");
 
 private:
+    struct InterceptRequest {
+        std::string raw_url;
+        std::string req_audio;
+        std::string filename;
+        std::string dest_dir;
+        uint64_t file_size{0};
+        std::string referer;
+        std::string page_url;
+        std::string page_title;
+        std::string cookies;
+        std::string user_agent;
+        std::string resp_headers;
+        std::string content_type;
+        int status_code{0};
+        bool is_attachment{false};
+        bool is_explicit_user_action{false};
+        bool enforce_web_filter{true};
+        bool no_prompt{false};
+        bool add_only{false};
+        unsigned long connections{0};
+        uint64_t speed_limit_kb{0};
+    };
+
+    std::string handle_intercept_download(const InterceptRequest& req_info);
     void server_loop();
     std::string handle_request(const std::string& request);
 

@@ -1,0 +1,22 @@
+{
+  "permissions_extra": [
+    "webRequestBlocking"
+  ],
+  "background": {
+    "scripts": [
+      "background/index.js"
+    ],
+    "type": "module"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "extension@opendm.org",
+      "strict_min_version": "112.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
+  }
+}

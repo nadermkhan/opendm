@@ -1,0 +1,8 @@
+{
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu5/E0vHrFIynjMhHALhV8EZx6jFXGlinBycpu4CwyUCzo67t9pjlzDJS2HcHyRzbYRQNnW+4QuTuIfS/5nPp/26m53or7ULXONtELKhNHenoBsq+EkmjI7cR6/JqHiKv4qTUatuhyjODoR1fI6EWgxY7zF6MEbWPwVLhfOPtINdRoKoehM6wj2Wynh9mscVlZhqwvbP/gP6S5+a39/Sr+KPubTbrfayttK1FnR9NuEF2DaU5GNS0UX16OGSHa+DJmp8rKdNCjIFciX4/AJf2+rRuQQoxnpKnXsfE95q/VXpmlzB1GE1tTI2JxBF+ntEa+0KtLuzjL8V+c/qYS8Ty2wIDAQAB",
+  "minimum_chrome_version": "116",
+  "background": {
+    "service_worker": "background/index.js",
+    "type": "module"
+  }
+}

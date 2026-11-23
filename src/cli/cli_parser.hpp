@@ -23,6 +23,7 @@ struct CliOptions {
     bool show_appreciation{false};
     bool show_help{false};
     bool show_version{false};
+    bool register_native_host{false};
     bool show_gui{true};
 };
 

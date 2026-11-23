@@ -23,8 +23,39 @@ permissions:
   contents: write
 
 jobs:
+  build-extension:
+    name: Build & Test Browser Extension
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build Extension Packages
+        run: node extension/scripts/build.mjs
+
+      - name: Run Extension Test Suites
+        run: |
+          node --test tests/test_extension_suite.mjs
+          node tests/test_extension_universal_panel.js
+
+      - name: Upload Extension Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-release
+          path: |
+            dist/extension
+            dist/opendm_extension.xpi
+            dist/opendm-extension-chromium.zip
+            dist/opendm-extension-chromium-store.zip
+
   build-windows:
     name: Build Windows (Win32 x64)
+    needs: [build-extension]
     runs-on: windows-latest
     defaults:
       run:
@@ -32,6 +63,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Download Extension Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: extension-release
+          path: dist
 
       - name: Setup MSYS2 MinGW64
         uses: msys2/setup-msys2@v2
@@ -59,12 +96,13 @@ jobs:
       - name: Bundle Windows Portable Release
         run: |
           STAGE_DIR="dist/OpenDM-Windows-x64"
-          mkdir -p "${STAGE_DIR}"
+          mkdir -p "${STAGE_DIR}/extension"
           cp build/opendm.exe "${STAGE_DIR}/"
           cp build/opendm-native-host.exe "${STAGE_DIR}/"
           cp -r data "${STAGE_DIR}/"
-          cp -r extension_extracted "${STAGE_DIR}/"
-          cp opendm_extension.xpi LICENSE NOTICE README.md "${STAGE_DIR}/"
+          cp scripts/install_native_host.ps1 "${STAGE_DIR}/"
+          cp -r dist/extension/* "${STAGE_DIR}/extension/"
+          cp dist/opendm_extension.xpi dist/opendm-extension-chromium.zip LICENSE NOTICE README.md "${STAGE_DIR}/"
 
           # Bundle required MinGW64 runtime DLLs alongside opendm.exe
           ldd build/opendm.exe | awk '/\/mingw64\/bin\// { print $3 }' | sort -u | while read -r dll; do
@@ -89,10 +127,17 @@ jobs:
 
   build-linux:
     name: Build Linux (GTK4 x86_64)
+    needs: [build-extension]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Download Extension Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: extension-release
+          path: dist
 
       - name: Install Build Dependencies
         run: |
@@ -122,13 +167,13 @@ jobs:
           done
 
           STAGE_DIR="dist/OpenDM-Linux-x86_64"
-          mkdir -p "${STAGE_DIR}"
+          mkdir -p "${STAGE_DIR}/extension"
           cp build/opendm "${STAGE_DIR}/"
           cp build/opendm-native-host "${STAGE_DIR}/"
           cp -r data "${STAGE_DIR}/"
           cp src/ui/style.css "${STAGE_DIR}/data/"
-          cp -r extension_extracted "${STAGE_DIR}/"
-          cp install_desktop.sh opendm_extension.xpi LICENSE NOTICE README.md "${STAGE_DIR}/"
+          cp -r dist/extension/* "${STAGE_DIR}/extension/"
+          cp install_desktop.sh install_native_host.sh dist/opendm_extension.xpi dist/opendm-extension-chromium.zip LICENSE NOTICE README.md "${STAGE_DIR}/"
           tar -C dist -czf dist/OpenDM-Linux-x86_64.tar.gz OpenDM-Linux-x86_64
 
       - name: Upload Linux Artifacts
@@ -141,7 +186,7 @@ jobs:
 
   release:
     name: Create GitHub Release
-    needs: [build-windows, build-linux]
+    needs: [build-extension, build-windows, build-linux]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -156,9 +201,14 @@ jobs:
 
       - name: Prepare Release Assets & Checksums
         run: |
-          cp opendm_extension.xpi release-assets/
           cd release-assets
-          sha256sum OpenDM-Windows-x64.zip OpenDM-Linux-amd64.deb OpenDM-Linux-x86_64.tar.gz opendm_extension.xpi > SHA256SUMS.txt
+          sha256sum \
+            OpenDM-Windows-x64.zip \
+            OpenDM-Linux-amd64.deb \
+            OpenDM-Linux-x86_64.tar.gz \
+            opendm_extension.xpi \
+            opendm-extension-chromium.zip \
+            opendm-extension-chromium-store.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Publish GitHub Release
@@ -172,4 +222,6 @@ jobs:
             release-assets/OpenDM-Linux-amd64.deb
             release-assets/OpenDM-Linux-x86_64.tar.gz
             release-assets/opendm_extension.xpi
+            release-assets/opendm-extension-chromium.zip
+            release-assets/opendm-extension-chromium-store.zip
             release-assets/SHA256SUMS.txt

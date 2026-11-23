@@ -2,6 +2,7 @@
 #include "win32_dialogs_common.hpp"
 #include "dpi_helper.hpp"
 #include "../core/download_queue.hpp"
+#include "../core/native_host_setup.hpp"
 #include "../core/win32_unicode.hpp"
 #include <commctrl.h>
 #include <shlobj.h>
@@ -30,6 +31,8 @@ struct OptionsDialogState {
     // General tab controls
     HWND hChkStartup{nullptr};
     HWND hChkClipboard{nullptr};
+    HWND hBtnRegisterExt{nullptr};
+    HWND hLblExtStatus{nullptr};
 
     // Connection tab controls
     HWND hComboMaxConns{nullptr};
@@ -83,6 +86,28 @@ LRESULT CALLBACK OptionsWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         case WM_COMMAND: {
             int id = LOWORD(wParam);
+            if (id == 602) { // Register browser native messaging host
+                auto res = opendm::register_native_messaging_hosts();
+                if (res.ok) {
+                    if (state->hLblExtStatus) {
+                        SetWindowTextW(state->hLblExtStatus,
+                            L"Browser host registered (Chrome, Edge, Brave, Firefox, Opera, Vivaldi).");
+                    }
+                    std::wstring msg = L"Registered OpenDM browser integration for " +
+                                       std::to_wstring(res.registered_targets.size()) +
+                                       L" browser targets.\n\nIf you load the unpacked extension locally, its Chromium ID is:\n"
+                                       L"ekehfpkieofbbgakjbmefknbbabjpoog";
+                    MessageBoxW(hwnd, msg.c_str(), L"OpenDM Browser Integration", MB_OK | MB_ICONINFORMATION);
+                } else {
+                    if (state->hLblExtStatus) {
+                        SetWindowTextW(state->hLblExtStatus, L"Registration failed (opendm-native-host.exe missing).");
+                    }
+                    std::wstring err = L"Could not register browser extension host:\n\n" +
+                                       sys::utf8_to_wide(res.error_message);
+                    MessageBoxW(hwnd, err.c_str(), L"OpenDM Browser Integration", MB_OK | MB_ICONWARNING);
+                }
+                return 0;
+            }
             if (id == 601) { // Browse save directory
                 wchar_t szDir[MAX_PATH] = {0};
                 BROWSEINFOW bi = {};
@@ -222,6 +247,22 @@ void Win32OptionsDialog::show(HWND parent, int initial_tab) {
     SendMessageW(state.hChkClipboard, WM_SETFONT, (WPARAM)state.hFont, TRUE);
     SendMessageW(state.hChkClipboard, BM_SETCHECK, BST_CHECKED, 0);
     state.tab_controls[0].push_back(state.hChkClipboard);
+
+    state.hBtnRegisterExt = CreateWindowExW(0, L"BUTTON", L"Register Browser Extension Host",
+        WS_CHILD | BS_PUSHBUTTON | WS_TABSTOP, page_x, page_y + DpiHelper::scale(68, dpi),
+        DpiHelper::scale(220, dpi), DpiHelper::scale(28, dpi),
+        hwnd, (HMENU)602, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hBtnRegisterExt, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+    state.tab_controls[0].push_back(state.hBtnRegisterExt);
+
+    const wchar_t* ext_status = opendm::is_native_host_registered()
+        ? L"Status: Registered for Chromium & Firefox browsers."
+        : L"Status: Not registered yet. Click above to enable browser integration.";
+    state.hLblExtStatus = CreateWindowExW(0, L"STATIC", ext_status,
+        WS_CHILD, page_x, page_y + DpiHelper::scale(104, dpi), page_w, DpiHelper::scale(36, dpi),
+        hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(state.hLblExtStatus, WM_SETFONT, (WPARAM)state.hFont, TRUE);
+    state.tab_controls[0].push_back(state.hLblExtStatus);
 
     // Tab 1: Connection
     HWND hLblConns = CreateWindowExW(0, L"STATIC", L"Max concurrent connections per download:",

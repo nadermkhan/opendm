@@ -3,6 +3,7 @@
 #include "core/batch_importer.hpp"
 #include "core/site_logon.hpp"
 #include "core/youtube_engine.hpp"
+#include "core/native_host_setup.hpp"
 #include "core/win32_unicode.hpp"
 #include "cli/cli_parser.hpp"
 #include "ipc/ipc_server.hpp"
@@ -101,6 +102,31 @@ int main(int argc, char* argv[]) {
         opendm::CliParser::print_version();
         curl_global_cleanup();
         return 0;
+    }
+
+    if (opts.register_native_host) {
+#ifdef _WIN32
+        ensure_console_attached_if_needed();
+#endif
+        auto reg = opendm::register_native_messaging_hosts();
+        if (reg.ok) {
+            std::cout << "Registered OpenDM native messaging host for "
+                      << reg.registered_targets.size() << " target(s):\n";
+            for (const auto& t : reg.registered_targets) {
+                std::cout << "  - " << t << "\n";
+            }
+            if (!reg.chrome_manifest_path.empty()) {
+                std::cout << "Chromium manifest: " << reg.chrome_manifest_path << "\n";
+            }
+            if (!reg.firefox_manifest_path.empty()) {
+                std::cout << "Firefox manifest:  " << reg.firefox_manifest_path << "\n";
+            }
+        } else {
+            std::cerr << "Failed to register OpenDM native messaging host: "
+                      << reg.error_message << std::endl;
+        }
+        curl_global_cleanup();
+        return reg.ok ? 0 : 1;
     }
 
     // Try communicating with an existing instance if URL or action provided (skip if screenshot requested)
@@ -294,6 +320,16 @@ int main(int argc, char* argv[]) {
 
         auto main_win = std::make_unique<opendm::win32::Win32MainWindow>(GetModuleHandleW(nullptr));
         main_win->present();
+
+        // Silently register browser native messaging manifests once on startup if opendm-native-host.exe is present
+        if (opts.screenshot_path.empty() && !opendm::is_native_host_registered()) {
+            std::filesystem::path host_exe =
+                opendm::sys::path_from_utf8(opendm::sys::get_exe_dir_utf8()) / "opendm-native-host.exe";
+            std::error_code ec;
+            if (std::filesystem::exists(host_exe, ec)) {
+                opendm::register_native_messaging_hosts();
+            }
+        }
 
         ipc_server.set_download_prompt_callback([win = main_win.get()](const opendm::DownloadPromptInfo& info) {
             // Invoked on the IPC server thread: marshal to the UI thread. Creating

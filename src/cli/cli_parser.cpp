@@ -47,6 +47,9 @@ CliOptions CliParser::parse(int argc, char* argv[]) {
         } else if (arg == "--daemon") {
             opts.is_daemon = true;
             opts.show_gui = false;
+        } else if (arg == "--register-native-host") {
+            opts.register_native_host = true;
+            opts.show_gui = false;
         } else if (arg == "--no-gui") {
             opts.show_gui = false;
         } else if (arg == "--screenshot") {
@@ -91,6 +94,7 @@ void CliParser::print_help(const char* program_name) {
               << "  -l, --speed-limit <KB/s> Speed limit in KB/s (0 = unlimited)\n"
               << "  -i, --import <FILE>      Import batch download list (.ef2 or text file)\n"
               << "  --daemon                 Run in background listening for IPC requests\n"
+              << "  --register-native-host   Register Chrome/Edge/Brave/Firefox native host manifests\n"
               << "  --no-gui                 Run in headless command-line mode\n"
               << "  -h, --help               Show this help message\n"
               << "  -v, --version            Display version information\n\n"

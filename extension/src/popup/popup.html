@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>OpenDM Integration</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header class="header">
+    <div class="brand">
+      <img src="../images/logo32.png" alt="OpenDM" width="24" height="24">
+      <div>
+        <h1>OpenDM</h1>
+        <p class="subtitle">Integration Module</p>
+      </div>
+    </div>
+    <button id="btn-launch" class="btn btn-secondary btn-sm" type="button">Launch App</button>
+  </header>
+
+  <section class="status-card" aria-live="polite">
+    <div class="status-row">
+      <span id="host-dot" class="dot dot-warn"></span>
+      <span id="host-status-text" class="status-text">Checking native host...</span>
+    </div>
+    <p id="host-help" class="help-text hidden"></p>
+  </section>
+
+  <section class="controls-card">
+    <label class="toggle-row">
+      <span>Enable Extension</span>
+      <input id="chk-enabled" type="checkbox">
+    </label>
+    <label class="toggle-row">
+      <span>Intercept Browser Downloads</span>
+      <input id="chk-intercept" type="checkbox">
+    </label>
+    <label class="toggle-row">
+      <span>Capture Streaming Media</span>
+      <input id="chk-capture-media" type="checkbox">
+    </label>
+    <label class="toggle-row" id="site-toggle-row">
+      <span id="site-toggle-label">Pause on this site</span>
+      <input id="chk-site-pause" type="checkbox">
+    </label>
+  </section>
+
+  <section class="media-card">
+    <div class="section-header">
+      <h2 id="media-heading">Media on this page</h2>
+      <button id="btn-fetch-yt" class="btn btn-primary btn-xs hidden" type="button">Fetch Formats</button>
+    </div>
+    <div id="media-list" class="media-list">
+      <p class="empty-note">No downloadable streams detected on this tab yet.</p>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <button id="btn-download-all" class="btn btn-primary full-width" type="button">Download All Links on Page</button>
+    <p id="feedback" class="feedback hidden"></p>
+  </footer>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

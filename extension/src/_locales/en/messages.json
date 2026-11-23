@@ -1,0 +1,23 @@
+{
+  "extension_desc": {
+    "message": "Fast multipart download integration and media capture for OpenDM"
+  },
+  "menu_download_link": {
+    "message": "Download with OpenDM"
+  },
+  "menu_download_all": {
+    "message": "Download all links with OpenDM"
+  },
+  "menu_download_selected": {
+    "message": "Download selected links with OpenDM"
+  },
+  "menu_download_video": {
+    "message": "Download this video with OpenDM"
+  },
+  "popup_title": {
+    "message": "OpenDM Integration"
+  },
+  "panel_download_button": {
+    "message": "Download"
+  }
+}

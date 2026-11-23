@@ -4,8 +4,10 @@
 #include "core/download_queue.hpp"
 #include "core/win32_unicode.hpp"
 #include "core/youtube_engine.hpp"
+#include "core/native_host_setup.hpp"
 #include "cli/cli_parser.hpp"
 #include "ipc/ipc_server.hpp"
+#include <nlohmann/json.hpp>
 #include <iostream>
 #include <cassert>
 #include <filesystem>
@@ -556,6 +558,115 @@ int main() {
 
         big_ipc.stop();
         std::cout << "  [PASS] UTF-8 helpers, legacy migration, settings persistence, batch importer & >16KB/multi-line IPC verified." << std::endl;
+    }
+
+    // 15. Clean OpenDM Extension JSON Protocol, "6=" Dispatch Guard, Batch Download & Native Host Setup
+    std::cout << "[Test 15] Clean Extension JSON Protocol, 6= Dispatch Fix, Batch & Native Host Setup..." << std::endl;
+    {
+        opendm::IpcServer ext_ipc("/tmp/opendm_ext_proto_test.sock");
+        opendm::DownloadPromptInfo ext_prompt;
+        bool got_ext_prompt = false;
+        ext_ipc.set_download_prompt_callback([&](const opendm::DownloadPromptInfo& info) {
+            ext_prompt = info;
+            got_ext_prompt = true;
+        });
+        assert(ext_ipc.start());
+
+        // 15a. URL containing "6=" inside query string must NOT trigger legacy Tonec parser
+        std::string q6_req = R"({"action":"download","url":"https://example.com/movie.mkv?token=6=secret","filename":"movie.mkv","file_size":1048576})";
+        std::string q6_resp = opendm::IpcServer::send_command(q6_req, "/tmp/opendm_ext_proto_test.sock");
+        assert(q6_resp.find("\"status\": \"prompting\"") != std::string::npos);
+        assert(got_ext_prompt);
+        assert(ext_prompt.url == "https://example.com/movie.mkv?token=6=secret");
+        assert(ext_prompt.file_size == 1048576);
+
+        // 15b. New intercept_download rejects web HTML and prompts valid binary attachment
+        got_ext_prompt = false;
+        std::string html_intercept = R"({"action":"intercept_download","url":"https://example.com/page.php","content_type":"text/html","status_code":200})";
+        std::string html_resp = opendm::IpcServer::send_command(html_intercept, "/tmp/opendm_ext_proto_test.sock");
+        assert(html_resp.find("\"status\": \"ignored\"") != std::string::npos);
+        assert(!got_ext_prompt);
+
+        std::string bin_intercept = R"({"action":"intercept_download","url":"https://example.com/dl.php","filename":"archive.tar.gz","content_type":"application/octet-stream","is_attachment":true,"file_size":2097152,"referer":"https://example.com/downloads"})";
+        std::string bin_resp = opendm::IpcServer::send_command(bin_intercept, "/tmp/opendm_ext_proto_test.sock");
+        assert(bin_resp.find("\"status\": \"prompting\"") != std::string::npos);
+        assert(got_ext_prompt);
+        assert(ext_prompt.filename == "archive.tar.gz");
+        assert(ext_prompt.file_size == 2097152);
+        assert(ext_prompt.referer == "https://example.com/downloads");
+
+        // 15c. download_batch queues valid HTTP/HTTPS items and skips invalid schemes
+        std::string batch_req = R"({
+            "action": "download_batch",
+            "add_only": "true",
+            "items": [
+                {"url": "https://example.com/a.zip", "filename": "a.zip"},
+                {"url": "blob:https://example.com/invalid"},
+                {"url": "https://example.com/b.iso"}
+            ]
+        })";
+        std::string batch_resp = opendm::IpcServer::send_command(batch_req, "/tmp/opendm_ext_proto_test.sock");
+        auto jbatch = nlohmann::json::parse(batch_resp);
+        assert(jbatch["status"] == "ok");
+        assert(jbatch["queued"] == 2);
+        assert(jbatch["skipped"] == 1);
+        for (const auto& id_val : jbatch["ids"]) {
+            opendm::QueueManager::instance().get_main_queue().remove_session(id_val.get<std::string>());
+        }
+        ext_ipc.stop();
+
+        // 15d. build_youtube_extract_json exposes explicit video_url & audio_url on muxed options
+        opendm::YouTubeVideoInfo yt_info;
+        yt_info.video_id = "dQw4w9WgXcQ";
+        yt_info.title = "Sample";
+        yt_info.best_audio.itag = 140;
+        yt_info.best_audio.container = "m4a";
+        yt_info.best_audio.bitrate = 128000;
+        yt_info.best_audio.url = "https://rr1.googlevideo.com/videoplayback?itag=140";
+        yt_info.audio_formats.push_back(yt_info.best_audio);
+        opendm::YouTubeFormat vf;
+        vf.itag = 137;
+        vf.quality_label = "1080p";
+        vf.container = "mp4";
+        vf.url = "https://rr1.googlevideo.com/videoplayback?itag=137";
+        yt_info.video_formats.push_back(vf);
+        auto jyt = nlohmann::json::parse(opendm::build_youtube_extract_json(yt_info));
+        assert(jyt["options"][0]["is_muxed"] == true);
+        assert(jyt["options"][0]["video_url"] == "https://rr1.googlevideo.com/videoplayback?itag=137");
+        assert(jyt["options"][0]["audio_url"] == "https://rr1.googlevideo.com/videoplayback?itag=140");
+
+        // 15e. CLI flag --register-native-host & manifest generator dry-run
+        const char* reg_argv[] = {"opendm", "--register-native-host"};
+        auto reg_opts = opendm::CliParser::parse(2, const_cast<char**>(reg_argv));
+        assert(reg_opts.register_native_host == true);
+        assert(reg_opts.show_gui == false);
+
+        fs::path tmp_nmh = fs::temp_directory_path() / "opendm_test_nmh_manifests";
+        std::error_code ec;
+        fs::remove_all(tmp_nmh, ec);
+
+        opendm::NativeHostSetupOptions setup_opts;
+        setup_opts.host_executable_path = "/opt/opendm/opendm-native-host";
+        setup_opts.manifest_dir = opendm::sys::path_to_utf8(tmp_nmh);
+        setup_opts.dry_run = true;
+        auto setup_res = opendm::register_native_messaging_hosts(setup_opts);
+        assert(setup_res.ok);
+        assert(fs::exists(setup_res.chrome_manifest_path));
+        assert(fs::exists(setup_res.firefox_manifest_path));
+
+        std::ifstream cfs(setup_res.chrome_manifest_path);
+        auto jchrome = nlohmann::json::parse(cfs);
+        assert(jchrome["name"] == "com.opendm.host");
+        assert(jchrome["allowed_origins"][0] == "chrome-extension://ekehfpkieofbbgakjbmefknbbabjpoog/");
+        cfs.close();
+
+        std::ifstream ffs(setup_res.firefox_manifest_path);
+        auto jff = nlohmann::json::parse(ffs);
+        assert(jff["allowed_extensions"][0] == "extension@opendm.org");
+        ffs.close();
+
+        fs::remove_all(tmp_nmh, ec);
+        std::cout << "  [PASS] Extension JSON protocol, 6= fix, batch download & native host manifests verified." << std::endl;
     }
 
     std::cout << "All Subsystem Integration tests passed!" << std::endl;

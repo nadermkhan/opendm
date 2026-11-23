@@ -1,772 +1,241 @@
-// Unit and integration test for IDM Universal Video/Audio Download Panel
 const assert = require("assert");
 const fs = require("fs");
 const path = require("path");
 
-console.log("=== Testing IDM Universal Media Hover Panel ===");
+console.log("Running OpenDM Universal Media Hover Panel Tests...");
 
-// 1. Build minimal DOM environment
+// Guard: enforce zero innerHTML across extension/src
+function walkFiles(dir) {
+  let results = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const abs = path.join(dir, entry.name);
+    if (entry.isDirectory()) results = results.concat(walkFiles(abs));
+    else if (entry.name.endsWith(".js")) results.push(abs);
+  }
+  return results;
+}
+
+for (const jsFile of walkFiles(path.join(__dirname, "../extension/src"))) {
+  const src = fs.readFileSync(jsFile, "utf8");
+  assert(!src.includes("innerHTML"), `Disallowed innerHTML found in ${jsFile}`);
+}
+console.log("[PASS] Zero innerHTML policy verified across extension/src");
+
+// Mock DOM environment
+const listeners = {};
 class MockNode {
-  constructor(tag, type = 1) {
-    this.tagName = (tag || "").toUpperCase();
-    this.nodeType = type;
-    this.style = {};
+  constructor(tag) {
+    this.tagName = (tag || "DIV").toUpperCase();
+    this.id = "";
+    this.className = "";
+    this.textContent = "";
+    this.style = { display: "", top: "", left: "", right: "" };
     this.children = [];
     this.parentNode = null;
-    this.shadowRoot = null;
-    this.isConnected = true;
-    this.className = "";
-    this.classList = {
-      contains: (cls) => this.className.includes(cls),
-      add: (cls) => { this.className += " " + cls; }
-    };
     this.attributes = {};
+    this._listeners = {};
+    this._rect = { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 };
   }
-  contains(child) {
-    let cur = child;
-    while (cur) {
-      if (cur === this) return true;
-      cur = cur.parentNode;
-    }
-    return false;
-  }
-  setAttribute(k, v) { this.attributes[k] = v; }
-  getAttribute(k) { return this.attributes[k]; }
-  removeAttribute(k) { delete this.attributes[k]; }
   appendChild(child) {
+    if (child.parentNode) {
+      const idx = child.parentNode.children.indexOf(child);
+      if (idx >= 0) child.parentNode.children.splice(idx, 1);
+    }
     child.parentNode = this;
     this.children.push(child);
     return child;
   }
-  replaceChild(newChild, oldChild) {
-    const idx = this.children.indexOf(oldChild);
-    if (idx !== -1) {
-      newChild.parentNode = this;
-      this.children[idx] = newChild;
+  removeChild(child) {
+    const idx = this.children.indexOf(child);
+    if (idx >= 0) {
+      this.children.splice(idx, 1);
+      child.parentNode = null;
     }
-    return oldChild;
+    return child;
   }
-  attachShadow(opts) {
-    this.shadowRoot = new MockNode("#shadow-root", 11);
-    this.shadowRoot.host = this;
+  get firstChild() {
+    return this.children[0] || null;
+  }
+  setAttribute(k, v) {
+    this.attributes[k] = v;
+  }
+  addEventListener(ev, fn) {
+    this._listeners[ev] = this._listeners[ev] || [];
+    this._listeners[ev].push(fn);
+  }
+  dispatch(ev, eventObj = {}) {
+    (this._listeners[ev] || []).forEach((fn) => fn(eventObj));
+  }
+  attachShadow() {
+    this.shadowRoot = new MockNode("SHADOW-ROOT");
     return this.shadowRoot;
   }
   getBoundingClientRect() {
-    return this._rect || { top: 100, bottom: 460, left: 200, right: 840, width: 640, height: 360 };
-  }
-  querySelector(sel) {
-    const list = this.querySelectorAll(sel);
-    return list.length > 0 ? list[0] : null;
+    return this._rect;
   }
   querySelectorAll(sel) {
-    const res = [];
-    function search(node) {
+    const tags = sel.split(",").map((s) => s.trim().toLowerCase());
+    const out = [];
+    const walk = (node) => {
       for (const c of node.children) {
-        if (sel === "video, audio" && (c.tagName === "VIDEO" || c.tagName === "AUDIO")) res.push(c);
-        else if (sel === "video" && c.tagName === "VIDEO") res.push(c);
-        else if (sel === "audio" && c.tagName === "AUDIO") res.push(c);
-        else if (sel.includes("shreddit-player") && c.tagName === "SHREDDIT-PLAYER") res.push(c);
-        search(c);
+        if (c.tagName && tags.includes(c.tagName.toLowerCase())) out.push(c);
+        walk(c);
       }
-    }
-    search(this);
-    return res;
-  }
-  addEventListener(event, fn) {
-    this._listeners = this._listeners || {};
-    this._listeners[event] = this._listeners[event] || [];
-    this._listeners[event].push(fn);
-  }
-  dispatch(event, eObj) {
-    if (this._listeners && this._listeners[event]) {
-      this._listeners[event].forEach(fn => fn(eObj));
-    }
+    };
+    walk(this);
+    return out;
   }
 }
 
-// Global window and document mock
-const listeners = {};
-const sentMessages = [];
-const mockDocument = new MockNode("HTML");
-mockDocument.documentElement = mockDocument;
-mockDocument.body = new MockNode("BODY");
-mockDocument.documentElement.appendChild(mockDocument.body);
-
-mockDocument.createElement = (tag) => new MockNode(tag);
-mockDocument.getElementsByTagName = (tag) => {
-  const res = [];
-  function search(node) {
-    if (!node || !node.children) return;
-    for (const c of node.children) {
-      if (c.tagName && c.tagName.toLowerCase() === tag.toLowerCase()) res.push(c);
-      search(c);
-    }
-  }
-  search(mockDocument);
-  return res;
-};
-mockDocument.addEventListener = (ev, fn) => {
-  listeners[ev] = listeners[ev] || [];
-  listeners[ev].push(fn);
-};
-
-const mockWindow = {
-  innerWidth: 1920,
-  innerHeight: 1080,
-  scrollX: 0,
-  scrollY: 0,
-  location: { href: "https://twitter.com/test/status/123", hostname: "twitter.com" },
-  document: mockDocument,
+const mockDoc = {
+  title: "Sample Page",
+  fullscreenElement: null,
+  documentElement: new MockNode("HTML"),
+  body: new MockNode("BODY"),
+  createElement: (tag) => new MockNode(tag),
+  querySelectorAll: (sel) => mockDoc.body.querySelectorAll(sel),
+  elementsFromPoint: () => [],
   addEventListener: (ev, fn) => {
     listeners[ev] = listeners[ev] || [];
     listeners[ev].push(fn);
-  }
+  },
+  dispatch(ev, obj = {}) {
+    (listeners[ev] || []).forEach((fn) => fn(obj));
+  },
+};
+mockDoc.documentElement.appendChild(mockDoc.body);
+
+const mockWin = {
+  innerWidth: 1920,
+  innerHeight: 1080,
+  location: { href: "https://twitter.com/user/status/123", hostname: "twitter.com" },
 };
 
-let currentMockStreams = [
-  { url: "https://video.twimg.com/ext_tw_video/test_1080.mp4", mime: "video/mp4", size: 15420000 },
-  { url: "https://video.twimg.com/ext_tw_video/test_720.mp4", mime: "video/mp4", size: 8200000 }
+const sentMessages = [];
+let mockMedia = [
+  { url: "https://video.twimg.com/ext_tw_video/test_1080.mp4", ext: "mp4", size: 15420000 },
+  { url: "https://video.twimg.com/ext_tw_video/test_720.mp4", ext: "mp4", size: 8200000 },
+];
+let mockYtOptions = [
+  {
+    label: "1080p (MP4) [Video + 128k Audio] - 42 MB",
+    quality: "1080p",
+    container: "mp4",
+    video_url: "https://rr1.googlevideo.com/videoplayback?itag=137",
+    audio_url: "https://rr1.googlevideo.com/videoplayback?itag=140",
+    size_str: "42 MB",
+    is_audio: false,
+    is_muxed: true,
+  },
 ];
 
-let mockYtData = null;
-let mockEngineData = null;
-
-const mockBrowser = {
+const mockExt = {
   runtime: {
-    getURL: (p) => "chrome-extension://idm-test/" + p,
+    getURL: (p) => "chrome-extension://ekehfpkieofbbgakjbmefknbbabjpoog/" + p,
     sendMessage: (msg, cb) => {
       sentMessages.push(msg);
-      if (msg.action === "get_tab_media") {
-        const hasSabr = currentMockStreams.some(s => s.url && (s.url.includes("sabr=1") || s.url.includes("sabr=2")));
-        cb && cb({
-          streams: currentMockStreams,
-          hasSabr: hasSabr,
-          ytData: mockYtData,
-          engineData: mockEngineData
-        });
-      } else if (msg.action === "download_media") {
-        cb && cb({ status: "ok" });
+      let resp = { status: "ok" };
+      if (msg.type === "OPENDM_GET_PANEL_DATA") {
+        resp = { enabled: true, captureMedia: true, siteDisabled: false, media: mockMedia };
+      } else if (msg.type === "OPENDM_EXTRACT_YOUTUBE") {
+        resp = { status: "ok", title: "Big Buck Bunny", options: mockYtOptions };
       }
-    }
-  }
+      if (cb) cb(resp);
+      return Promise.resolve(resp);
+    },
+    onMessage: { addListener: () => {} },
+  },
 };
 
-global.window = mockWindow;
-global.document = mockDocument;
-global.location = mockWindow.location;
-global.browser = mockBrowser;
-global.chrome = mockBrowser;
-global.MutationObserver = class {
-  constructor(cb) { this.cb = cb; }
-  observe() {}
-  disconnect() {}
-};
+global.window = mockWin;
+global.document = mockDoc;
+global.location = mockWin.location;
+global.browser = mockExt;
+global.chrome = mockExt;
 
-// 2. Load and execute content.js code
-const contentJsPath = path.join(__dirname, "../extension_extracted/content.js");
-const contentCode = fs.readFileSync(contentJsPath, "utf8");
+const panelPath = path.join(__dirname, "../extension/src/content/media_panel.js");
+eval(fs.readFileSync(panelPath, "utf8"));
 
-// Isolate and evaluate only the universal panel IIFE from content.js
-const panelStart = contentCode.indexOf("/* OpenDM / IDM Authentic In-Browser Universal Media Hover Panel */");
-assert(panelStart !== -1, "Panel code must exist in content.js");
-const panelCode = contentCode.slice(panelStart);
+assert.strictEqual(global.__opendmMediaPanelInitialized, true, "Panel must initialize");
+const host = mockDoc.body.children.find((c) => c.id === "__opendm_media_panel_host__");
+assert(host && host.shadowRoot, "Host container with Shadow DOM must exist");
+const panel = host.shadowRoot.children.find((c) => c.id === "opendm-panel");
+const bar = panel.children.find((c) => c.id === "opendm-bar");
+const menu = panel.children.find((c) => c.id === "opendm-menu");
+assert(panel && bar && menu, "Panel, bar, and menu must be present inside Shadow DOM");
 
-eval(panelCode);
-
-// Verify initialization
-assert(mockWindow.__idm_universal_panel_initialized__ === true, "Universal panel must be initialized");
-const host = mockDocument.body.children.find(c => c.id === "__idm_universal_panel_host__");
-assert(host, "Host container must be appended to body");
-assert(host.shadowRoot, "Host must have open Shadow DOM");
-
-const panel = host.shadowRoot.children.find(c => c.id === "idm-panel");
-assert(panel, "Panel element must exist inside Shadow DOM");
-const bar = panel.children.find(c => c.id === "idm-bar");
-assert(bar, "Button bar must exist");
-const label = bar.children.find(c => c.className === "idm-label");
-assert(label, "Label element must exist");
-const menu = panel.children.find(c => c.id === "idm-menu");
-assert(menu, "Menu element must exist inside panel");
-const helpBtn = bar.children.find(c => c.className === "idm-help-btn");
-assert(helpBtn, "Help button must exist");
-assert.strictEqual(helpBtn.textContent, "?", "Help button text must be '?'");
-assert.strictEqual(helpBtn.title, "About this panel", "Help button title must be 'About this panel'");
-
-console.log("[PASS] Universal Panel Host and Shadow DOM structure verified");
-
-// Test Case 1: Reddit <shreddit-player> with Shadow DOM (Tier 1: composedPath)
+// Tier 1: Shadow DOM <shreddit-player> composedPath detection
 const redditPlayer = new MockNode("SHREDDIT-PLAYER");
-redditPlayer._rect = { top: 50, bottom: 450, left: 100, right: 900, width: 800, height: 400 };
 const redditShadow = redditPlayer.attachShadow();
 const redditVideo = new MockNode("VIDEO");
-redditVideo.currentSrc = "blob:https://www.reddit.com/abcd-1234";
-redditVideo._rect = { top: 50, bottom: 450, left: 100, right: 900, width: 800, height: 400 };
+redditVideo.currentSrc = "blob:https://www.reddit.com/video1";
+redditVideo._rect = { top: 60, bottom: 460, left: 100, right: 900, width: 800, height: 400 };
 redditShadow.appendChild(redditVideo);
-mockDocument.body.appendChild(redditPlayer);
+mockDoc.body.appendChild(redditPlayer);
 
-// Dispatch mousemove over reddit video
-const mouseMoveListeners = listeners["mousemove"] || [];
-assert(mouseMoveListeners.length > 0, "Mousemove listener must be registered");
-
-const redditEvent = {
+mockDoc.dispatch("mousemove", {
   clientX: 300,
   clientY: 200,
-  composedPath: () => [redditVideo, redditShadow, redditPlayer, mockDocument.body, mockDocument.documentElement]
-};
-mouseMoveListeners.forEach(fn => fn(redditEvent));
-
-assert.strictEqual(panel.style.display, "block", "Panel must be visible when hovering over Reddit player");
-assert.strictEqual(label.textContent, "Download this video", "Label must be 'Download this video'");
-assert.strictEqual(panel.style.top, "58px", "Panel top must be rect.top + 8 = 58px");
-console.log("[PASS] Tier 1: Reddit Shadow DOM player detected and panel positioned");
-
-// Test Case 2: Twitter/X Click Shield (Tier 2: elementsFromPoint)
-const twitterContainer = new MockNode("DIV");
-const twitterVideo = new MockNode("VIDEO");
-twitterVideo.currentSrc = "blob:https://twitter.com/video/blob123";
-twitterVideo._rect = { top: 120, bottom: 520, left: 300, right: 1020, width: 720, height: 400 };
-const twitterShield = new MockNode("DIV"); // Transparent overlay / play button
-twitterShield.className = "click-shield-overlay";
-
-twitterContainer.appendChild(twitterVideo);
-twitterContainer.appendChild(twitterShield);
-mockDocument.body.appendChild(twitterContainer);
-
-// Mock elementsFromPoint returning overlay on top, video underneath
-mockDocument.elementsFromPoint = (x, y) => [twitterShield, twitterVideo, twitterContainer, mockDocument.body];
-
-const twitterEvent = {
-  clientX: 500,
-  clientY: 250,
-  composedPath: () => [twitterShield, twitterContainer, mockDocument.body]
-};
-mouseMoveListeners.forEach(fn => fn(twitterEvent));
-
-assert.strictEqual(panel.style.display, "block", "Panel must pierce click shield to detect video");
-assert.strictEqual(label.textContent, "Download this video");
-assert.strictEqual(panel.style.top, "128px", "Panel top must be rect.top + 8 = 128px");
-console.log("[PASS] Tier 2: Twitter click shield pierced successfully via elementsFromPoint");
-
-// Test Case 3: Audio element ("Download this audio")
-const audioElem = new MockNode("AUDIO");
-audioElem.src = "https://example.com/audio/podcast.mp3";
-audioElem._rect = { top: 300, bottom: 340, left: 200, right: 600, width: 400, height: 40 };
-mockDocument.body.appendChild(audioElem);
-
-const audioEvent = {
-  clientX: 350,
-  clientY: 320,
-  composedPath: () => [audioElem, mockDocument.body]
-};
-mouseMoveListeners.forEach(fn => fn(audioEvent));
-
-assert.strictEqual(panel.style.display, "block", "Panel must be visible for audio element");
-assert.strictEqual(label.textContent, "Download this audio", "Label must dynamically reflect audio tag");
-console.log("[PASS] Dynamic text: Download this audio verified for <audio>");
-
-// Test Case 4: Click button bar to download direct media
-bar.dispatch("click", {
-  target: bar,
-  stopPropagation: () => {},
-  preventDefault: () => {}
+  composedPath: () => [redditVideo, redditShadow, redditPlayer, mockDoc.body],
 });
+assert.strictEqual(panel.style.display, "block", "Tier 1 Shadow DOM video must show panel");
+assert.strictEqual(panel.style.top, "68px", "Panel top must align to video top + 8px");
+console.log("[PASS] Tier 1 Shadow DOM video detection verified");
+
+// Tier 2: elementsFromPoint piercing click shield overlay
+const shield = new MockNode("DIV");
+const twVideo = new MockNode("VIDEO");
+twVideo.currentSrc = "https://video.twimg.com/direct.mp4";
+twVideo._rect = { top: 120, bottom: 520, left: 200, right: 920, width: 720, height: 400 };
+mockDoc.body.appendChild(twVideo);
+mockDoc.body.appendChild(shield);
+mockDoc.elementsFromPoint = () => [shield, twVideo, mockDoc.body];
 
 setTimeout(() => {
-  const dlReq = sentMessages.find(m => m.action === "download_media" && m.url === "https://example.com/audio/podcast.mp3");
-  assert(dlReq, "Direct audio download request must be sent to background");
-  console.log("[PASS] Case 4: Direct media download verified");
-
-  // Test Case 5: Blob/MSE Video stream resolution
-  mouseMoveListeners.forEach(fn => fn(twitterEvent));
-  assert.strictEqual(panel.style.display, "block", "Panel must be visible for Twitter video");
-  assert.strictEqual(label.textContent, "Download this video");
-
-  bar.dispatch("click", {
-    target: bar,
-    stopPropagation: () => {},
-    preventDefault: () => {}
+  mockDoc.dispatch("mousemove", {
+    clientX: 400,
+    clientY: 250,
+    composedPath: () => [shield, mockDoc.body],
   });
+  assert.strictEqual(panel.style.display, "block", "Tier 2 overlay piercing must show panel");
+
+  // Click bar to populate dropdown menu with captured streams + HTML5 fallback
+  bar.dispatch("click", { stopPropagation: () => {} });
+  assert.strictEqual(menu.style.display, "block", "Menu must open on bar click");
+  assert(menu.children.length >= 2, "Menu must list sniffed stream options");
+  menu.children[0].dispatch("click", { stopPropagation: () => {} });
+  const dlMsg = sentMessages.find((m) => m.type === "OPENDM_DOWNLOAD");
+  assert(dlMsg && dlMsg.url.includes("test_1080.mp4"), "Clicking stream item must emit OPENDM_DOWNLOAD");
+  console.log("[PASS] Stream menu rendering and download dispatch verified");
+
+  // Fullscreen reparenting test
+  const fsBox = new MockNode("DIV");
+  mockDoc.fullscreenElement = fsBox;
+  mockDoc.dispatch("fullscreenchange", {});
+  assert.strictEqual(host.parentNode, fsBox, "Host must reparent into fullscreenElement");
+  mockDoc.fullscreenElement = null;
+  mockDoc.dispatch("fullscreenchange", {});
+  assert.strictEqual(host.parentNode, mockDoc.body, "Host must return to document.body after exiting fullscreen");
+  console.log("[PASS] Fullscreen reparenting verified");
+
+  // YouTube extract_youtube quality menu + direct URL fallback test
+  mockWin.location.hostname = "www.youtube.com";
+  mockWin.location.href = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+  mockDoc.title = "Rick Astley - YouTube";
+  menu.style.display = "none";
+  bar.dispatch("click", { stopPropagation: () => {} });
 
   setTimeout(() => {
-    const blobResolvedDl = sentMessages.find(m => m.action === "download_media" && m.url === "https://video.twimg.com/ext_tw_video/test_1080.mp4");
-    assert(blobResolvedDl, "MSE/blob: video must resolve to captured HTTP stream from background.js");
-    console.log("[PASS] Case 5: MSE/Blob video stream resolution verified");
+    const ytReq = sentMessages.find((m) => m.type === "OPENDM_EXTRACT_YOUTUBE");
+    assert(ytReq && ytReq.url.includes("watch?v=dQw4w9WgXcQ"), "YouTube bar click must invoke OPENDM_EXTRACT_YOUTUBE");
+    const itemsText = menu.children.map((c) => c.children[0]?.textContent || "");
+    assert(itemsText.some((t) => t.includes("1080p")), "YouTube menu must display extracted format");
+    assert(itemsText.some((t) => t.includes("Open video in OpenDM")), "YouTube menu must include direct fallback");
 
-    // Test Case 6: Dropdown menu toggle and format stream selection
-    const dropdownBtn = bar.children.find(c => c.className === "idm-dropdown-btn");
-    assert(dropdownBtn, "Dropdown button must exist");
-    dropdownBtn.dispatch("click", {
-      target: dropdownBtn,
-      stopPropagation: () => {},
-      preventDefault: () => {}
-    });
-
-    setTimeout(() => {
-      assert.strictEqual(menu.style.display, "flex", "Menu must open on dropdown click");
-      assert(menu.children.length >= 2, "Menu must contain stream options");
-      console.log("[PASS] Case 6: Dropdown stream options populated successfully");
-
-      // Test Case 7: Close button dismisses panel and displays authentic glyph
-      const closeBtn = bar.children.find(c => c.className === "idm-close-btn");
-      assert(closeBtn, "Close button must exist");
-      assert.strictEqual(closeBtn.textContent, "✕", "Close button must display authentic ✕ glyph, not escaped string");
-      closeBtn.dispatch("click", {
-        target: closeBtn,
-        stopPropagation: () => {},
-        preventDefault: () => {}
-      });
-
-      assert.strictEqual(panel.style.display, "none", "Panel must hide when close button is clicked");
-      console.log("[PASS] Case 7: Close button glyph and dismiss panel verified");
-
-      // Test Case 8: YouTube DASH Dual-Stream Pairing & Range Stripping
-      const ytVideo = new MockNode("VIDEO");
-      ytVideo.src = "blob:https://www.youtube.com/watch-blob-id";
-      ytVideo._rect = { top: 50, bottom: 450, left: 100, right: 900, width: 800, height: 400 };
-      mockDocument.body.appendChild(ytVideo);
-
-      currentMockStreams = [
-        {
-          url: "https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?expire=123&itag=137&mime=video%2Fmp4&range=0-1048576&rn=1",
-          type: "video",
-          mime: "video/mp4",
-          size: 50000000
-        },
-        {
-          url: "https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?expire=123&itag=140&mime=audio%2Fmp4&range=0-1048576&rn=1",
-          type: "audio",
-          mime: "audio/mp4",
-          size: 5000000
-        }
-      ];
-
-      const ytEvent = {
-        clientX: 200,
-        clientY: 100,
-        composedPath: () => [ytVideo, mockDocument.body]
-      };
-      mockDocument.elementsFromPoint = (x, y) => [ytVideo, mockDocument.body];
-      mouseMoveListeners.forEach(fn => fn(ytEvent));
-
-      assert.strictEqual(panel.style.display, "block", "Panel must appear for YouTube video");
-      assert.strictEqual(label.textContent, "Download this video");
-
-      bar.dispatch("click", {
-        target: bar,
-        stopPropagation: () => {},
-        preventDefault: () => {}
-      });
-
-      setTimeout(() => {
-        const ytDl = sentMessages.find(m => m.action === "download_media" && m.url.includes("googlevideo.com"));
-        assert(ytDl, "YouTube direct stream URL must be sent for download");
-        assert(!ytDl.url.startsWith("yta2toidm://"), "Scheme must be clean direct HTTP/HTTPS");
-        assert(!ytDl.url.includes("##"), "URL must not contain dual stream delimiter ##");
-        assert(!ytDl.url.includes("range="), "range parameter must be stripped from stream");
-        assert(ytDl.url.includes("itag=137"), "Video stream with itag=137 must be present");
-        console.log("[PASS] Case 8: YouTube direct stream selection and query parameter range stripping verified 100%");
-
-        // Test Case 9: YouTube Dropdown resolution options
-        dropdownBtn.dispatch("click", {
-          target: dropdownBtn,
-          stopPropagation: () => {},
-          preventDefault: () => {}
-        });
-
-        setTimeout(() => {
-          assert.strictEqual(menu.style.display, "flex", "Menu must open on dropdown click");
-          const menuText = menu.children.map(c => c.textContent || "").join(" | ");
-          assert(menuText.includes("Download all"), "Menu must contain 'Download all'");
-          assert(menuText.includes("quality 1080p HD"), "Menu must list authentic IDM quality 1080p HD");
-          assert(menuText.includes("quality 128 kbps"), "Menu must list authentic IDM audio quality 128 kbps");
-          console.log("[PASS] Case 9: YouTube dropdown resolution and audio options populated successfully");
-
-          // Test Case 10: Strict rejection of SABR URLs and failure.mp3
-          currentMockStreams = [
-            {
-              url: "https://rr1---sn.googlevideo.com/videoplayback?expire=123&sabr=1&ump=1",
-              type: "video",
-              mime: "application/vnd.yt-ump",
-              size: 31
-            },
-            {
-              url: "https://www.youtube.com/s/search/audio/failure.mp3",
-              type: "audio",
-              mime: "audio/mp3",
-              size: 6529
-            },
-            {
-              url: "https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?expire=123&itag=136&mime=video%2Fmp4",
-              type: "video",
-              mime: "video/mp4",
-              size: 25000000
-            },
-            {
-              url: "https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?expire=123&itag=140&mime=audio%2Fmp4",
-              type: "audio",
-              mime: "audio/mp4",
-              size: 3500000
-            }
-          ];
-
-          sentMessages.length = 0;
-          bar.dispatch("click", {
-            target: bar,
-            stopPropagation: () => {},
-            preventDefault: () => {}
-          });
-
-          setTimeout(() => {
-            const rejectedDl = sentMessages.find(m => m.action === "download_media" && (m.url.includes("sabr=1") || m.url.includes("failure.mp3")));
-            assert(!rejectedDl, "SABR and failure.mp3 must be strictly rejected and never sent to download");
-            const validDl = sentMessages.find(m => m.action === "download_media" && m.url.includes("itag=136"));
-            assert(validDl, "Valid stream with itag 136 must be selected");
-            assert(!validDl.url.includes("##"), "URL must not contain dual stream delimiter ##");
-            console.log("[PASS] Case 10: SABR control URL and failure.mp3 rejection verified");
-
-            // Test Case 11: YouTube DOM metadata resolution list extraction & IDM exact format parity
-            const ytScript = new MockNode("SCRIPT");
-            ytScript.textContent = `var ytInitialPlayerResponse = ${JSON.stringify({
-              videoDetails: { title: "Streets of Rage 2 Stage 1" },
-              streamingData: {
-                formats: [
-                  { itag: 18, mimeType: "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"" },
-                  { itag: 22, mimeType: "video/mp4; codecs=\"avc1.64001F, mp4a.40.2\"" }
-                ],
-                adaptiveFormats: [
-                  { itag: 160, qualityLabel: "144p", contentLength: "8000000", mimeType: "video/mp4; codecs=\"avc1.4d400c\"" },
-                  { itag: 133, qualityLabel: "240p", contentLength: "15000000", mimeType: "video/mp4; codecs=\"avc1.4d4015\"" },
-                  { itag: 134, qualityLabel: "360p", contentLength: "25000000", mimeType: "video/mp4; codecs=\"avc1.4d401e\"" },
-                  { itag: 135, qualityLabel: "480p", contentLength: "40000000", mimeType: "video/mp4; codecs=\"avc1.4d401f\"" },
-                  { itag: 136, qualityLabel: "720p", contentLength: "80000000", mimeType: "video/mp4; codecs=\"avc1.4d401f\"" },
-                  { itag: 137, qualityLabel: "1080p", contentLength: "120000000", mimeType: "video/mp4; codecs=\"avc1.640028\"" },
-                  { itag: 140, mimeType: "audio/mp4; codecs=\"mp4a.40.2\"", contentLength: "4000000" }
-                ]
-              }
-            })};`;
-            mockDocument.body.appendChild(ytScript);
-
-            // Close and re-open dropdown menu
-            menu.style.display = "none";
-            dropdownBtn.dispatch("click", {
-              target: dropdownBtn,
-              stopPropagation: () => {},
-              preventDefault: () => {}
-            });
-
-            setTimeout(() => {
-              assert.strictEqual(menu.style.display, "flex", "Menu must open on dropdown click");
-              const fullMenuText = menu.children.map(c => c.textContent || "").join(" | ");
-              assert(fullMenuText.includes("Download all"), "Download all must be at top of menu");
-              assert(fullMenuText.includes("1. Streets of Rage 2 Stage 1, MP4 file, quality 360p"), "Format 1 must match progressive itag 18");
-              assert(fullMenuText.includes("2. Streets of Rage 2 Stage 1, MP4 file, quality 720p HD"), "Format 2 must match progressive itag 22");
-              assert(fullMenuText.includes("3. Streets of Rage 2 Stage 1, MP4 file, quality 144p"), "Format 3 must match adaptive itag 160");
-              assert(fullMenuText.includes("4. Streets of Rage 2 Stage 1, MP4 file, quality 240p"), "Format 4 must match adaptive itag 133");
-              assert(fullMenuText.includes("5. Streets of Rage 2 Stage 1, MP4 file, quality 480p"), "Format 5 must match adaptive itag 135 (360p duplicate skipped)");
-              assert(fullMenuText.includes("quality 1080p HD"), "DOM extracted 1080p must be in menu");
-              assert(fullMenuText.includes("quality 128 kbps"), "DOM extracted audio must be in menu");
-              console.log("[PASS] Case 11: YouTube DOM metadata resolution list extraction verified 100%");
-
-              // Test Case 12: YouTube streams containing alr=yes must be captured and accepted
-              currentMockStreams = [
-                {
-                  url: "https://rr2---sn-4g5ednks.googlevideo.com/videoplayback?expire=456&itag=137&mime=video%2Fmp4&alr=yes&cpn=xyz123",
-                  type: "video",
-                  mime: "video/mp4",
-                  size: 60000000
-                },
-                {
-                  url: "https://rr2---sn-4g5ednks.googlevideo.com/videoplayback?expire=456&itag=140&mime=audio%2Fmp4&alr=yes&cpn=xyz123",
-                  type: "audio",
-                  mime: "audio/mp4",
-                  size: 6000000
-                }
-              ];
-
-              sentMessages.length = 0;
-              bar.dispatch("click", {
-                target: bar,
-                stopPropagation: () => {},
-                preventDefault: () => {}
-              });
-
-              setTimeout(() => {
-                const alrDl = sentMessages.find(m => m.action === "download_media" && m.url.includes("googlevideo.com"));
-                assert(alrDl, "YouTube requests with alr=yes must NOT be discarded");
-                assert(!alrDl.url.startsWith("yta2toidm://"), "Scheme must be clean direct HTTP/HTTPS");
-                assert(!alrDl.url.includes("##"), "URL must not contain dual stream delimiter ##");
-                assert(alrDl.url.includes("itag=137"), "Video with itag=137 must be present in alr request");
-                console.log("[PASS] Case 12: YouTube streams containing alr=yes captured and accepted 100%");
-
-                // Test Case 13: "Download all" action dispatches downloads for all formats
-                sentMessages.length = 0;
-                const downloadAllBtn = menu.children.find(c => c.className && c.className.includes("idm-menu-item-all"));
-                assert(downloadAllBtn, "Download all button must exist in menu");
-                downloadAllBtn.dispatch("click", {
-                  stopPropagation: () => {},
-                  preventDefault: () => {}
-                });
-
-                setTimeout(() => {
-                  assert(sentMessages.length > 0, "Download all must dispatch download requests");
-                  console.log("[PASS] Case 13: Download all action functionality verified 100%");
-
-                  // Test Case 14: Direct streams without itag in query string matched via itag property, and sabr=1 strictly rejected
-                  currentMockStreams = [
-                    {
-                      url: "https://rr2---sn-wngz.googlevideo.com/videoplayback?expire=789&sabr=1&alr=yes&cpn=abc",
-                      itag: 137,
-                      type: "video",
-                      mime: "application/vnd.yt-ump",
-                      size: 45000000
-                    },
-                    {
-                      url: "https://rr2---sn-wngz.googlevideo.com/videoplayback?expire=789&alr=yes&cpn=abc",
-                      itag: 137,
-                      type: "video",
-                      mime: "video/mp4",
-                      size: 45000000
-                    },
-                    {
-                      url: "https://rr2---sn-wngz.googlevideo.com/videoplayback?expire=789&alr=yes&cpn=abc&itag=140",
-                      itag: 140,
-                      type: "audio",
-                      mime: "audio/mp4",
-                      size: 5000000
-                    }
-                  ];
-                  sentMessages.length = 0;
-                  bar.dispatch("click", {
-                    target: bar,
-                    stopPropagation: () => {},
-                    preventDefault: () => {}
-                  });
-
-                  setTimeout(() => {
-                    const dl = sentMessages.find(m => m.action === "download_media" && m.url.includes("googlevideo.com"));
-                    assert(dl, "Direct stream with itag property must be matched and downloaded");
-                    assert(!dl.url.includes("sabr=1"), "SABR stream URL must be strictly rejected");
-                    assert(!dl.url.startsWith("yta2toidm://"), "Scheme must be clean direct HTTP/HTTPS");
-                    assert(!dl.url.includes("##"), "URL must not contain dual stream delimiter ##");
-                    assert(dl.url.includes("rr2---sn-wngz.googlevideo.com"), "Direct video stream URL must be preserved");
-                    console.log("[PASS] Case 14: Direct stream matching and SABR rejection verified 100%");
-
-                    // Test Case 15: Dropdown click fallback to active video stream
-                    sentMessages.length = 0;
-                    const formatItems = menu.children.filter(c => c.className === "idm-menu-item");
-                    assert(formatItems.length > 0, "Format items must exist in menu");
-                    formatItems[0].dispatch("click", {
-                      stopPropagation: () => {},
-                      preventDefault: () => {}
-                    });
-
-                    setTimeout(() => {
-                      assert(sentMessages.length > 0, "Clicking dropdown item must dispatch download without getting stuck");
-                      console.log("[PASS] Case 15: Dropdown resolution selection with active stream verified 100%");
-
-                      // Test Case 16: Background InnerTube direct format fallback and ranking verification
-                      currentMockStreams = [
-                        {
-                          url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&sabr=1&sparams=sabr",
-                          type: "video",
-                          mime: "application/vnd.yt-ump",
-                          size: 0
-                        }
-                      ];
-                      mockYtData = {
-                        clientUsed: "ANDROID_VR",
-                        userAgent: "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
-                        videoDetails: { videoId: "mockVid123", title: "VR Video" },
-                        streamingData: {
-                          formats: [],
-                          adaptiveFormats: [
-                            {
-                              itag: 137,
-                              mimeType: "video/mp4; codecs=\"avc1.640028\"",
-                              qualityLabel: "1080p HD",
-                              height: 1080,
-                              bitrate: 4500000,
-                              url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=137&c=ANDROID_VR",
-                              userAgent: "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
-                            },
-                            {
-                              itag: 136,
-                              mimeType: "video/mp4; codecs=\"avc1.4d401f\"",
-                              qualityLabel: "720p HD",
-                              height: 720,
-                              bitrate: 2500000,
-                              url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=136&c=ANDROID_VR",
-                              userAgent: "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
-                            },
-                            {
-                              itag: 140,
-                              mimeType: "audio/mp4; codecs=\"mp4a.40.2\"",
-                              qualityLabel: "128 kbps",
-                              bitrate: 128000,
-                              url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=140&c=ANDROID_VR",
-                              userAgent: "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip"
-                            }
-                          ]
-                        }
-                      };
-
-                      sentMessages.length = 0;
-                      bar.dispatch("click", {
-                        target: bar,
-                        stopPropagation: () => {},
-                        preventDefault: () => {}
-                      });
-
-                      setTimeout(() => {
-                        const bgDl = sentMessages.find(m => m.action === "download_media" && m.url.includes("googlevideo.com"));
-                        assert(bgDl, "Background ytData format must be selected when network streams are SABR");
-                        assert(bgDl.url.includes("itag=137"), "Highest quality ranked video format (1080p itag 137) must be prioritized");
-                        assert(bgDl.url.includes("c=ANDROID_VR"), "Mobile client URL parameter must be preserved");
-                        console.log("[PASS] Case 16: Background InnerTube direct format fallback and ranking verified 100%");
-
-                        // Case 17: Verify rejection of c=WEB with n=... challenge and acceptance of svpuc=1 signed streams
-                        currentMockStreams = [
-                          {
-                            url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=18&c=WEB&n=CwQoQruJ8cUxbsUDox2",
-                            type: "video",
-                            size: 34000000
-                          }
-                        ];
-                        mockYtData = {
-                          streamingData: {
-                            formats: [
-                              {
-                                itag: 18,
-                                mimeType: "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"",
-                                url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=18&c=WEB&n=CwQoQruJ8cUxbsUDox2"
-                              },
-                              {
-                                itag: 18,
-                                mimeType: "video/mp4; codecs=\"avc1.42001E, mp4a.40.2\"",
-                                url: "https://rr1---sn-wngz.googlevideo.com/videoplayback?expire=999&itag=18&c=ANDROID_VR&svpuc=1"
-                              }
-                            ]
-                          }
-                        };
-                        sentMessages.length = 0;
-                        bar.dispatch("click", {
-                          target: bar,
-                          stopPropagation: () => {},
-                          preventDefault: () => {}
-                        });
-
-                        setTimeout(() => {
-                          const dl = sentMessages.find(m => m.action === "download_media");
-                          assert(dl, "Valid stream with svpuc=1 must be dispatched to download_media");
-                          assert(!dl.url.includes("n="), "c=WEB with n=... challenge must NEVER be dispatched to download_media");
-                          assert(dl.url.includes("svpuc=1"), "Stream with svpuc=1 must be dispatched to download_media");
-                          console.log("[PASS] Case 17: Rejection of c=WEB with n=... cipher and acceptance of svpuc=1 signed streams verified 100%");
-
-                          // Case 18: YouTube video URL direct delegation to OpenDM engine
-                          global.location.hostname = "www.youtube.com";
-                          global.location.search = "?v=dQw4w9WgXcQ";
-                          global.location.pathname = "/watch";
-                          sentMessages.length = 0;
-                          bar.dispatch("click", {
-                            target: bar,
-                            stopPropagation: () => {},
-                            preventDefault: () => {}
-                          });
-
-                          setTimeout(() => {
-                            const ytDl = sentMessages.find(m => m.action === "download_media");
-                            assert(ytDl, "YouTube video URL must be dispatched to download_media");
-                            assert.strictEqual(ytDl.url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "Exact canonical YouTube video URL must be sent to OpenDM");
-                            console.log("[PASS] Case 18: YouTube video URL direct delegation to OpenDM engine verified 100%");
-
-                            // Case 19: OpenDM engine parsed options dynamically populated in dropdown menu
-                            mockEngineData = {
-                              status: "ok",
-                              title: "Rick Astley - Never Gonna Give You Up",
-                              options: [
-                                {
-                                  label: "1080p60 (60fps, MP4) [Video + 130 kbps Audio] - 51.16 MB",
-                                  quality: "1080p60 (60fps)",
-                                  container: "MP4",
-                                  size: 53645800,
-                                  size_str: "51.16 MB",
-                                  url: "yta2toidm://https://rr1.googlevideo.com/videoplayback?itag=299##https://rr1.googlevideo.com/videoplayback?itag=140",
-                                  user_agent: "Mozilla/5.0 (VisionOS)",
-                                  is_audio: false
-                                },
-                                {
-                                  label: "720p60 (60fps, MP4) [Video + 130 kbps Audio] - 31.84 MB",
-                                  quality: "720p60 (60fps)",
-                                  container: "MP4",
-                                  size: 33385800,
-                                  size_str: "31.84 MB",
-                                  url: "yta2toidm://https://rr1.googlevideo.com/videoplayback?itag=298##https://rr1.googlevideo.com/videoplayback?itag=140",
-                                  user_agent: "Mozilla/5.0 (VisionOS)",
-                                  is_audio: false
-                                },
-                                {
-                                  label: "Audio Only - M4A (130 kbps) - 3.52 MB",
-                                  quality: "130 kbps",
-                                  container: "M4A",
-                                  size: 3690987,
-                                  size_str: "3.52 MB",
-                                  url: "https://rr1.googlevideo.com/videoplayback?itag=140",
-                                  user_agent: "Mozilla/5.0 (VisionOS)",
-                                  is_audio: true
-                                }
-                              ]
-                            };
-
-                            menu.style.display = "none";
-                            dropdownBtn.dispatch("click", {
-                              target: dropdownBtn,
-                              stopPropagation: () => {},
-                              preventDefault: () => {}
-                            });
-
-                            setTimeout(() => {
-                              assert.strictEqual(menu.style.display, "flex", "Menu must open on dropdown click");
-                              const fullText = menu.children.map(c => c.textContent || "").join(" | ");
-                              assert(fullText.includes("Download all"), "Menu must contain Download all");
-                              assert(fullText.includes("1080p60 (60fps, MP4) [Video + 130 kbps Audio] - 51.16 MB"), "Menu must render OpenDM engine 1080p60 option");
-                              assert(fullText.includes("720p60 (60fps, MP4) [Video + 130 kbps Audio] - 31.84 MB"), "Menu must render OpenDM engine 720p60 option");
-                              assert(fullText.includes("Audio Only - M4A (130 kbps) - 3.52 MB"), "Menu must render OpenDM engine Audio Only option");
-                              console.log("[PASS] Case 19: OpenDM engine parsed options dynamically populated in dropdown menu verified 100%");
-
-                              // Case 20: Direct format selection from dropdown dispatches yta2toidm stream to downloadMedia
-                              sentMessages.length = 0;
-                              const row1080 = menu.children.find(c => c.textContent && c.textContent.includes("1080p60"));
-                              assert(row1080, "1080p60 row element must exist in dropdown menu");
-                              row1080.dispatch("click", {
-                                target: row1080,
-                                stopPropagation: () => {},
-                                preventDefault: () => {}
-                              });
-
-                              setTimeout(() => {
-                                const selDl = sentMessages.find(m => m.action === "download_media");
-                                assert(selDl, "Selected format must dispatch download_media");
-                                assert(selDl.url.startsWith("yta2toidm://"), "Selected format must preserve dual stream yta2toidm:// scheme");
-                                assert(selDl.url.includes("itag=299"), "Selected format must contain 1080p60 itag 299");
-                                assert(selDl.url.includes("##"), "Selected format must contain audio pairing delimiter ##");
-                                assert.strictEqual(selDl.userAgent, "Mozilla/5.0 (VisionOS)", "InnerTube client userAgent must be passed with stream");
-                                console.log("[PASS] Case 20: Direct format selection from dropdown dispatches yta2toidm stream to OpenDM verified 100%");
-                                console.log("=== All Universal Media Hover Panel Tests Passed 100% ===");
-                              }, 50);
-                            }, 50);
-                          }, 50);
-                        }, 50);
-                      }, 50);
-                    }, 1700);
-                  }, 50);
-                }, 300);
-              }, 50);
-            }, 50);
-          }, 50);
-        }, 50);
-      }, 50);
-    }, 50);
-  }, 50);
-}, 50);
-
-
+    menu.children[0].dispatch("click", { stopPropagation: () => {} });
+    const ytDl = sentMessages.filter((m) => m.type === "OPENDM_DOWNLOAD").pop();
+    assert(ytDl && ytDl.audioUrl && ytDl.audioUrl.includes("itag=140"), "Muxed YT option must pass clean separate audioUrl");
+    console.log("[PASS] YouTube native extraction dropdown & dual-stream dispatch verified");
+    console.log("All OpenDM Media Hover Panel tests passed!");
+  }, 20);
+}, 75);

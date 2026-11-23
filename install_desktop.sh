@@ -1,57 +1,74 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
+# OpenDM Desktop Installer for Linux
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN_DIR="${HOME}/.local/bin"
-APP_DIR="${HOME}/.local/share/applications"
-ICON_DIR="${HOME}/.local/share/icons/hicolor/scalable/apps"
 
-mkdir -p "${BIN_DIR}" "${APP_DIR}" "${ICON_DIR}"
-
-# 1. Install executables
-if [ -f "${SCRIPT_DIR}/build/opendm" ]; then
-    cp -f "${SCRIPT_DIR}/build/opendm" "${BIN_DIR}/opendm"
-    chmod +x "${BIN_DIR}/opendm"
-    echo "Installed opendm binary to ${BIN_DIR}/opendm"
+# Detect binary location (tarball root or ./build directory)
+if [ -x "$SCRIPT_DIR/opendm" ]; then
+    BIN_SRC_DIR="$SCRIPT_DIR"
+elif [ -x "$SCRIPT_DIR/build/opendm" ]; then
+    BIN_SRC_DIR="$SCRIPT_DIR/build"
+else
+    echo "Error: opendm binary not found in $SCRIPT_DIR or $SCRIPT_DIR/build" >&2
+    exit 1
 fi
 
-if [ -f "${SCRIPT_DIR}/build/opendm-native-host" ]; then
-    cp -f "${SCRIPT_DIR}/build/opendm-native-host" "${BIN_DIR}/opendm-native-host"
-    chmod +x "${BIN_DIR}/opendm-native-host"
-    echo "Installed opendm-native-host binary to ${BIN_DIR}/opendm-native-host"
+echo "Installing OpenDM from $BIN_SRC_DIR..."
+
+mkdir -p "$HOME/.local/bin"
+mkdir -p "$HOME/.local/share/applications"
+mkdir -p "$HOME/.local/share/icons/hicolor"
+mkdir -p "$HOME/.local/share/opendm/ui_assets"
+
+cp "$BIN_SRC_DIR/opendm" "$HOME/.local/bin/opendm"
+chmod +x "$HOME/.local/bin/opendm"
+
+if [ -x "$BIN_SRC_DIR/opendm-native-host" ]; then
+    cp "$BIN_SRC_DIR/opendm-native-host" "$HOME/.local/bin/opendm-native-host"
+    chmod +x "$HOME/.local/bin/opendm-native-host"
 fi
 
-# 2. Install application icon
-cp -f "${SCRIPT_DIR}/data/icons/opendm.svg" "${ICON_DIR}/opendm.svg"
-echo "Installed icon to ${ICON_DIR}/opendm.svg"
-
-# 3. Install desktop entry
-cp -f "${SCRIPT_DIR}/data/opendm.desktop" "${APP_DIR}/opendm.desktop"
-echo "Installed desktop entry to ${APP_DIR}/opendm.desktop"
-
-# 4. Install authentic IDM UI assets, extension & stylesheet
-SHARE_DIR="${HOME}/.local/share/opendm"
-mkdir -p "${SHARE_DIR}/ui_assets"
-cp -rf "${SCRIPT_DIR}/data/ui_assets/"* "${SHARE_DIR}/ui_assets/"
-cp -f "${SCRIPT_DIR}/src/ui/style.css" "${SHARE_DIR}/style.css"
-if [ -f "${SCRIPT_DIR}/opendm_extension.xpi" ]; then
-    cp -f "${SCRIPT_DIR}/opendm_extension.xpi" "${SHARE_DIR}/opendm_extension.xpi"
+if [ -d "$SCRIPT_DIR/data/icons/hicolor" ]; then
+    cp -r "$SCRIPT_DIR/data/icons/hicolor/"* "$HOME/.local/share/icons/hicolor/"
 fi
-cp -rf "${SCRIPT_DIR}/extension_extracted" "${SHARE_DIR}/extension"
-echo "Installed authentic IDM assets, extension, and stylesheet to ${SHARE_DIR}"
+if [ -d "$SCRIPT_DIR/data/ui_assets" ]; then
+    cp -r "$SCRIPT_DIR/data/ui_assets/"* "$HOME/.local/share/opendm/ui_assets/"
+fi
+if [ -f "$SCRIPT_DIR/src/ui/style.css" ]; then
+    cp "$SCRIPT_DIR/src/ui/style.css" "$HOME/.local/share/opendm/style.css"
+elif [ -f "$SCRIPT_DIR/data/style.css" ]; then
+    cp "$SCRIPT_DIR/data/style.css" "$HOME/.local/share/opendm/style.css"
+fi
 
-# 4. Update desktop database & icon cache if available
+for ext_src in "$SCRIPT_DIR/dist/extension" "$SCRIPT_DIR/extension"; do
+    if [ -d "$ext_src/chromium" ] || [ -d "$ext_src/firefox" ]; then
+        mkdir -p "$HOME/.local/share/opendm/extension"
+        cp -r "$ext_src/"* "$HOME/.local/share/opendm/extension/"
+        break
+    fi
+done
+for pkg in "$SCRIPT_DIR/opendm_extension.xpi" "$SCRIPT_DIR/dist/opendm_extension.xpi" \
+           "$SCRIPT_DIR/opendm-extension-chromium.zip" "$SCRIPT_DIR/dist/opendm-extension-chromium.zip"; do
+    if [ -f "$pkg" ]; then
+        cp "$pkg" "$HOME/.local/share/opendm/"
+    fi
+done
+
+if [ -f "$SCRIPT_DIR/data/opendm.desktop" ]; then
+    sed "s|^Exec=.*|Exec=$HOME/.local/bin/opendm %u|" \
+        "$SCRIPT_DIR/data/opendm.desktop" > "$HOME/.local/share/applications/opendm.desktop"
+fi
+
+if [ -x "$HOME/.local/bin/opendm-native-host" ]; then
+    "$SCRIPT_DIR/install_native_host.sh" "$HOME/.local/bin/opendm-native-host" || true
+fi
+
 if command -v update-desktop-database >/dev/null 2>&1; then
-    update-desktop-database "${APP_DIR}" 2>/dev/null || true
+    update-desktop-database "$HOME/.local/share/applications" || true
 fi
-
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache -f -t "${HOME}/.local/share/icons/hicolor" 2>/dev/null || true
+    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" || true
 fi
 
-# 5. Register native messaging hosts
-"${SCRIPT_DIR}/install_native_host.sh"
-
-echo ""
-echo "=== OpenDM Linux Desktop Installation Completed ==="
-echo "You can now launch OpenDM from your system Application Menu or run 'opendm'."
+echo "Done! You can now launch OpenDM from your applications menu or run 'opendm'."

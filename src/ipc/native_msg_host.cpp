@@ -1,15 +1,19 @@
 #include "ipc_server.hpp"
-#include "../core/youtube_engine.hpp"
 #include "../core/win32_unicode.hpp"
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <cstdint>
+#include <csignal>
+#include <chrono>
+#include <thread>
 #include <filesystem>
 
 #ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #ifdef ERROR
 #undef ERROR
@@ -27,123 +31,219 @@ namespace opendm {
 
 using json = nlohmann::json;
 
-// Reads a 32-bit length-prefixed native message from stdin
+namespace {
+
+// Chrome Native Messaging caps host -> extension messages at 1 MiB; stay safely below.
+constexpr size_t kMaxNativeResponseBytes = 950 * 1024;
+
 bool read_native_message(std::string& out_msg) {
     uint32_t length = 0;
-    if (std::cin.read(reinterpret_cast<char*>(&length), sizeof(length))) {
-        if (length == 0 || length > 10 * 1024 * 1024) { // 10MB safety cap
-            return false;
-        }
-        std::vector<char> buffer(length);
-        if (std::cin.read(buffer.data(), length)) {
-            out_msg.assign(buffer.data(), length);
-            return true;
+    if (!std::cin.read(reinterpret_cast<char*>(&length), sizeof(length))) {
+        return false;
+    }
+    if (length == 0 || length > 10 * 1024 * 1024) {
+        return false;
+    }
+    out_msg.resize(length);
+    if (!std::cin.read(&out_msg[0], length)) {
+        return false;
+    }
+    return true;
+}
+
+void write_native_frame(const std::string& serialized) {
+    std::string payload = serialized;
+    if (payload.size() > kMaxNativeResponseBytes) {
+        try {
+            json parsed = json::parse(payload);
+            if (parsed.is_object() && parsed.contains("options") && parsed["options"].is_array()) {
+                auto& opts = parsed["options"];
+                while (!opts.empty() && payload.size() > kMaxNativeResponseBytes) {
+                    opts.erase(opts.end() - 1);
+                    payload = parsed.dump();
+                }
+            }
+        } catch (...) {}
+
+        if (payload.size() > kMaxNativeResponseBytes) {
+            payload = json({
+                {"status", "error"},
+                {"message", "Native host response exceeded 950 KB limit"}
+            }).dump();
         }
     }
-    return false;
+
+    uint32_t length = static_cast<uint32_t>(payload.size());
+    std::cout.write(reinterpret_cast<const char*>(&length), sizeof(length));
+    std::cout.write(payload.data(), static_cast<std::streamsize>(length));
+    std::cout.flush();
 }
 
-// Writes a 32-bit length-prefixed JSON string to stdout
 void write_native_json_string(const std::string& raw_msg) {
-    std::string json_str = json(raw_msg).dump();
-    uint32_t length = static_cast<uint32_t>(json_str.length());
-    std::cout.write(reinterpret_cast<const char*>(&length), sizeof(length));
-    std::cout.write(json_str.data(), length);
-    std::cout.flush();
+    write_native_frame(json(raw_msg).dump());
 }
 
-// Writes raw JSON to stdout (for standard JSON messages)
 void write_native_raw_json(const std::string& json_obj) {
-    uint32_t length = static_cast<uint32_t>(json_obj.length());
-    std::cout.write(reinterpret_cast<const char*>(&length), sizeof(length));
-    std::cout.write(json_obj.data(), length);
-    std::cout.flush();
+    write_native_frame(json_obj);
 }
 
-// Helper to strip surrounding JSON quotes and unescape
 std::string unquote_json_string(const std::string& input) {
-    try {
-        json j = json::parse(input);
-        if (j.is_string()) return j.get<std::string>();
-    } catch (...) {}
+    if (!input.empty() && input.front() == '"' && input.back() == '"') {
+        try {
+            json j = json::parse(input);
+            if (j.is_string()) {
+                return j.get<std::string>();
+            }
+        } catch (...) {}
+    }
     return input;
 }
 
-void ensure_opendm_running() {
-    std::string test_resp = IpcServer::send_command("{\"action\": \"ping\"}");
-    if (test_resp.find("Could not connect") == std::string::npos) {
-        return; // Already running
+std::string redact_for_log(const std::string& input) {
+    if (input.size() > 2048) {
+        return "[truncated:" + std::to_string(input.size()) + "B]";
+    }
+    try {
+        json j = json::parse(input);
+        if (j.is_string()) {
+            j = json::parse(j.get<std::string>());
+        }
+        if (j.is_object()) {
+            for (const char* key : {"cookies", "cookie", "password", "authorization", "custom_headers", "token"}) {
+                if (j.contains(key) && !j[key].is_null() && !j[key].empty()) {
+                    j[key] = "[REDACTED]";
+                }
+            }
+            if (j.contains("items") && j["items"].is_array()) {
+                j["items"] = "[array:" + std::to_string(j["items"].size()) + "]";
+            }
+            return j.dump();
+        }
+    } catch (...) {}
+
+    if (input.rfind("MSG#", 0) == 0) {
+        return "MSG#<redacted>";
+    }
+    return input;
+}
+
+bool is_ipc_connect_error(const std::string& resp) {
+    return resp.empty() || resp.find("Could not connect") != std::string::npos;
+}
+
+bool ping_running_app() {
+    std::string resp = IpcServer::send_command(
+        "{\"action\":\"ping\"}",
+        IpcServer::DEFAULT_SOCKET_PATH,
+        1);
+    return !is_ipc_connect_error(resp) && resp.find("\"pong\"") != std::string::npos;
+}
+
+bool ensure_opendm_running() {
+    if (ping_running_app()) {
+        return true;
     }
 
 #ifdef _WIN32
     std::string exe_dir = sys::get_exe_dir_utf8();
-    if (!exe_dir.empty()) {
-        std::filesystem::path exe_path = sys::path_from_utf8(exe_dir) / "opendm.exe";
-        std::wstring wexe = exe_path.wstring();
-        STARTUPINFOW si = {sizeof(si)};
-        PROCESS_INFORMATION pi = {};
-        if (CreateProcessW(wexe.c_str(), nullptr, nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
+    std::filesystem::path app_exe = sys::path_from_utf8(exe_dir) / "opendm.exe";
+    std::error_code ec;
+    if (!std::filesystem::exists(app_exe, ec)) {
+        return false;
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    std::wstring wexe = app_exe.wstring();
+    if (!CreateProcessW(
+            wexe.c_str(),
+            nullptr,
+            nullptr,
+            nullptr,
+            FALSE,
+            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+            nullptr,
+            nullptr,
+            &si,
+            &pi)) {
+        return false;
+    }
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    for (int i = 0; i < 40; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (ping_running_app()) {
+            return true;
         }
     }
-    for (int i = 0; i < 30; ++i) {
-        Sleep(100);
-        std::string check = IpcServer::send_command("{\"action\": \"ping\"}");
-        if (check.find("Could not connect") == std::string::npos) {
-            break;
-        }
-    }
+    return false;
 #else
-    std::string opendm_bin = "opendm";
-    const char* home = getenv("HOME");
-    if (home) {
-        std::string local_bin = std::string(home) + "/.local/bin/opendm";
-        if (access(local_bin.c_str(), X_OK) == 0) {
-            opendm_bin = local_bin;
-        }
+    std::string exe_dir = sys::get_exe_dir_utf8();
+    std::vector<std::string> candidates;
+    if (!exe_dir.empty()) {
+        candidates.push_back(exe_dir + "/opendm");
     }
-    if (opendm_bin == "opendm") {
-        if (access("/usr/bin/opendm", X_OK) == 0) {
-            opendm_bin = "/usr/bin/opendm";
-        } else if (access("/usr/local/bin/opendm", X_OK) == 0) {
-            opendm_bin = "/usr/local/bin/opendm";
+    std::string home = sys::get_env_utf8("HOME");
+    if (!home.empty()) {
+        candidates.push_back(home + "/.local/bin/opendm");
+    }
+    candidates.push_back("/usr/local/bin/opendm");
+    candidates.push_back("/usr/bin/opendm");
+
+    std::string opendm_bin = "opendm";
+    std::error_code ec;
+    for (const auto& c : candidates) {
+        if (std::filesystem::exists(c, ec)) {
+            opendm_bin = c;
+            break;
         }
     }
 
     pid_t pid = fork();
+    if (pid < 0) {
+        return false;
+    }
     if (pid == 0) {
+        setsid();
+        // Detach stdio from Chromium/Firefox native-messaging pipes cleanly
         int devnull = open("/dev/null", O_RDWR);
         if (devnull >= 0) {
             dup2(devnull, STDIN_FILENO);
             dup2(devnull, STDOUT_FILENO);
             dup2(devnull, STDERR_FILENO);
-            if (devnull > 2) close(devnull);
+            if (devnull > STDERR_FILENO) close(devnull);
         }
-        setsid();
-        if (opendm_bin.find('/') != std::string::npos) {
-            execl(opendm_bin.c_str(), opendm_bin.c_str(), nullptr);
-        } else {
-            execlp(opendm_bin.c_str(), opendm_bin.c_str(), nullptr);
-        }
-        _exit(1);
-    } else if (pid > 0) {
-        // Poll for OpenDM IPC socket to become ready (up to 3 seconds)
-        for (int i = 0; i < 30; ++i) {
-            usleep(100000); // 100ms
-            std::string check = IpcServer::send_command("{\"action\": \"ping\"}");
-            if (check.find("Could not connect") == std::string::npos) {
-                break; // Socket is up and responding
-            }
+        const char* argv[] = {opendm_bin.c_str(), nullptr};
+        execvp(opendm_bin.c_str(), const_cast<char* const*>(argv));
+        _exit(127);
+    }
+
+    for (int i = 0; i < 40; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (ping_running_app()) {
+            return true;
         }
     }
+    return false;
 #endif
 }
 
-} // namespace opendm
+std::string send_command_spawning_if_needed(const std::string& payload) {
+    std::string resp = IpcServer::send_command(payload, IpcServer::DEFAULT_SOCKET_PATH, 1);
+    if (!is_ipc_connect_error(resp)) {
+        return resp;
+    }
+    if (ensure_opendm_running()) {
+        return IpcServer::send_command(payload, IpcServer::DEFAULT_SOCKET_PATH, 5);
+    }
+    return resp;
+}
 
-#include <fstream>
-#include <csignal>
+} // namespace
+
+} // namespace opendm
 
 int main(int argc, char* argv[]) {
     curl_global_init(CURL_GLOBAL_ALL);
@@ -155,92 +255,48 @@ int main(int argc, char* argv[]) {
         ? std::filesystem::path("opendm_native_host.log")
         : (opendm::sys::path_from_utf8(tmp_dir) / "opendm_native_host.log");
 #else
-    signal(SIGCHLD, SIG_IGN); // Prevent zombie processes
+    signal(SIGCHLD, SIG_IGN);
     std::filesystem::path log_path = "/tmp/opendm_native_host.log";
 #endif
     std::ios_base::sync_with_stdio(false);
 
     std::ofstream log(log_path, std::ios::app);
     std::vector<std::string> args = opendm::sys::get_cli_args_utf8(argc, argv);
-    log << "[NATIVE_HOST] Started. argc=" << args.size() << std::endl;
-    for (size_t i = 0; i < args.size(); ++i) {
-        log << "  argv[" << i << "] = " << args[i] << std::endl;
-    }
+    log << "[NATIVE_HOST] Started. argc=" << args.size() << "\n";
     log.flush();
 
     std::string incoming;
     while (opendm::read_native_message(incoming)) {
         if (incoming.empty()) continue;
-        log << "[NATIVE_HOST] incoming: " << incoming << std::endl;
+        log << "[NATIVE_HOST] incoming: " << opendm::redact_for_log(incoming) << "\n";
         log.flush();
+
         std::string raw = opendm::unquote_json_string(incoming);
 
+        // Legacy Tonec MSG# handshake & interception support (kept ONLY for legacy callers)
         if (raw.rfind("MSG#", 0) == 0) {
             opendm::MsgHeader hdr = opendm::parse_msg_header(raw);
-            log << "[NATIVE_HOST] parsed MSG header: id=" << hdr.id << " type=" << hdr.type << " subtype=" << hdr.subtype << std::endl;
-            log.flush();
-
-            // 1. Handshake request (type == 2)
             if (hdr.type == 2) {
-                log << "[NATIVE_HOST] Sending handshake responses (Type 3 & Type 4)" << std::endl;
-                log.flush();
-                // Packet 1: Handshake confirmation (Type 3)
                 opendm::write_native_json_string("MSG#1#3#0#0:113:0:0:0:96:103481600:0:0:100;");
-
-                // Packet 2: Configuration & activation (Type 4) matching IDM defaults
                 opendm::write_native_json_string(
                     "MSG#2#4#0#1918:0:0:0:0,12=2:.*,1=245:ZIP|EXE|7Z|RAR|TAR|GZ|BZ2|ISO|DMG|DEB|RPM|PKG|MP4|MKV|AVI|MP3|FLAC|WAV|PDF|EPUB|DOC|DOCX|XLS|XLSX|PPT|PPTX|APK|TORRENT|3GP|AAC|ACE|AIF|ARJ|ASF|BIN|M4A|M4V|MOV|MPA|MPE|MPEG|MPG|MSI|MSU|OGG|OGV|PLJ|PPS|QT|R0*|R1*|RA|SEA|SIT|SITX|TIF|TIFF|WMA|WMV|Z,2=55:CSS|JS|JSON|CRL|OCSP|APNG|GIF|ICO|JPEG|JPG|PNG|SVG|WEBP,3=97:3GP|ASF|AVI|F4V|FLV|M4A|M4V|MKV|MOV|MP3|MP4|MPEG|MPG|OGG|OGV|QT|RA|RM|TS|TSA|TSV|WAV|WEBM|WMA|WMV,4=30:JSON|GZ|Z|BZ2|BIN|ZIP|GZIP|LZH,10=117:application/download|application/force-download|application/x-msdownload|application/octet-stream|binary/octet-stream,20=80:TXT|HTM|HTML|PHP|ASP|ASPX|CGI|JSP|JSPX|CSS|JS|APNG|GIF|ICO|JPEG|JPG|PNG|SVG|WEBP,21=16:/*-internal-*/**;"
                 );
                 continue;
             }
-
-            // 2. Download interception request (type == 13, type == 14, or has 6= url)
-            if (hdr.type == 13 || hdr.type == 14 || raw.find("6=") != std::string::npos) {
-                std::vector<std::string> pos_args = opendm::parse_tonec_pos_args(raw);
-                uint32_t action_code = 0;
-                uint32_t status_code = 0;
-                if (pos_args.size() > 5) {
-                    try {
-                        action_code = std::stoul(pos_args[5]);
-                        status_code = std::stoul(pos_args[3]);
-                    } catch (...) {}
-                }
-
-                log << "[NATIVE_HOST] Interception message received: id=" << hdr.id
-                    << " type=" << hdr.type << " action=" << action_code << " status=" << status_code << std::endl;
-                log.flush();
-
-                // Non-download notifications:
-                // Action 6 = HTTP 3xx redirect notification
-                // Action 5 = HTML page frame navigation notification
-                // Action 4 = Media response started / panel tracking
+            if (hdr.type == 5 || hdr.type == 14) {
+                std::vector<std::string> pos = opendm::parse_tonec_pos_args(raw);
+                uint32_t status_code = (pos.size() > 3) ? static_cast<uint32_t>(std::strtoul(pos[3].c_str(), nullptr, 10)) : 0;
+                uint32_t action_code = (pos.size() > 5) ? static_cast<uint32_t>(std::strtoul(pos[5].c_str(), nullptr, 10)) : 0;
                 if (action_code == 6 || action_code == 5 || action_code == 4 || (status_code >= 300 && status_code < 400)) {
-                    log << "[NATIVE_HOST] Acknowledging non-download notification without cancel (action=" << action_code << ")" << std::endl;
-                    log.flush();
                     opendm::write_native_json_string("MSG#" + std::to_string(hdr.id) + "#1#2#0:" + std::to_string(hdr.id) + ":0;");
                     continue;
                 }
-
-                opendm::ensure_opendm_running();
-                std::string resp = opendm::IpcServer::send_command(raw);
-                if (resp.find("Could not connect") != std::string::npos) {
-                    opendm::ensure_opendm_running();
-                    resp = opendm::IpcServer::send_command(raw);
-                }
-
-                log << "[NATIVE_HOST] IPC server response: " << resp << std::endl;
-                log.flush();
-
-                // Only instruct browser to cancel internal download (e[1]=3) if IPC server accepted the download.
-                // If ignored (web resource, HTML/PHP, image without attachment), send e[1]=0 so browser continues.
+                std::string resp = opendm::send_command_spawning_if_needed(raw);
                 std::string status;
                 try {
-                    auto jresp = nlohmann::json::parse(resp);
-                    if (jresp.is_object() && jresp.contains("status") && jresp["status"].is_string()) {
-                        status = jresp["status"].get<std::string>();
-                    }
+                    auto jresp = opendm::json::parse(resp);
+                    status = jresp.value("status", "");
                 } catch (...) {}
-
                 if (status == "prompting" || status == "downloading" || status == "started" || status == "ok") {
                     opendm::write_native_json_string("MSG#" + std::to_string(hdr.id) + "#1#2#0:" + std::to_string(hdr.id) + ":3;");
                 } else {
@@ -248,40 +304,76 @@ int main(int argc, char* argv[]) {
                 }
                 continue;
             }
-
-            // 3. Ping / keep-alive (type == 0) or any other message
             opendm::write_native_json_string("MSG#" + std::to_string(hdr.id) + "#1#2#0:" + std::to_string(hdr.id) + ";");
             continue;
         }
 
-        // Standard JSON messaging
-        opendm::ensure_opendm_running();
-        std::string response = opendm::IpcServer::send_command(incoming);
-        if (response.find("Could not connect") != std::string::npos) {
-            try {
-                auto jreq = nlohmann::json::parse(incoming);
-                if (jreq.is_object() && jreq.value("action", "") == "extract_youtube") {
-                    std::string url = jreq.value("url", "");
-                    if (url.empty()) {
-                        std::string vid = jreq.value("videoId", "");
-                        if (!vid.empty()) {
-                            url = "https://www.youtube.com/watch?v=" + vid;
-                        }
-                    }
-                    if (!url.empty()) {
-                        opendm::YouTubeVideoInfo info;
-                        std::string err;
-                        if (opendm::YouTubeEngine::extract_video_info(url, info, &err) && info.has_playable_formats()) {
-                            response = opendm::build_youtube_extract_json(info);
-                        }
-                    }
-                }
-            } catch (...) {}
+        // Standard OpenDM JSON Protocol
+        opendm::json jreq;
+        try {
+            jreq = opendm::json::parse(raw);
+        } catch (...) {
+            opendm::write_native_raw_json(opendm::json({
+                {"status", "error"},
+                {"message", "Invalid JSON request"}
+            }).dump());
+            continue;
+        }
+
+        if (!jreq.is_object()) {
+            opendm::write_native_raw_json(opendm::json({
+                {"status", "error"},
+                {"message", "JSON request must be an object"}
+            }).dump());
+            continue;
+        }
+
+        const std::string action = jreq.value("action", "");
+
+        if (action == "host_ping") {
+            const bool running = opendm::ping_running_app();
+            opendm::write_native_raw_json(opendm::json({
+                {"status", "ok"},
+                {"host_version", "1.0.0"},
+                {"app_running", running}
+            }).dump());
+            continue;
+        }
+
+        if (action == "launch_app") {
+            const bool launched = opendm::ensure_opendm_running();
+            opendm::write_native_raw_json(opendm::json({
+                {"status", launched ? "ok" : "error"},
+                {"app_running", launched},
+                {"message", launched ? "OpenDM is running" : "Could not launch OpenDM"}
+            }).dump());
+            continue;
+        }
+
+        if (action == "extract_youtube") {
+            std::string url = jreq.value("url", "");
+            std::string vid = jreq.value("videoId", "");
+            // Try running daemon first without spawning GUI, else run in-process extractor
+            std::string response = opendm::IpcServer::send_command(raw, opendm::IpcServer::DEFAULT_SOCKET_PATH, 1);
+            if (opendm::is_ipc_connect_error(response)) {
+                response = opendm::IpcServer::extract_youtube_json(url, vid);
+            }
+            opendm::write_native_raw_json(response);
+            continue;
+        }
+
+        // Downloads, intercept_download, download_batch, ping, status, queue controls
+        std::string response = opendm::send_command_spawning_if_needed(raw);
+        if (opendm::is_ipc_connect_error(response)) {
+            response = opendm::json({
+                {"status", "error"},
+                {"message", "Could not connect to or start OpenDM"}
+            }).dump();
         }
         opendm::write_native_raw_json(response);
     }
 
-    log << "[NATIVE_HOST] Exiting." << std::endl;
+    log << "[NATIVE_HOST] Exiting.\n";
     log.flush();
     curl_global_cleanup();
     return 0;
