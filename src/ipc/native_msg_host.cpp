@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <iostream>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -35,6 +36,19 @@ namespace {
 
 // Chrome Native Messaging caps host -> extension messages at 1 MiB; stay safely below.
 constexpr size_t kMaxNativeResponseBytes = 950 * 1024;
+
+std::mutex g_log_mutex;
+std::filesystem::path g_log_path;
+
+void write_host_log(const std::string& line) {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    if (g_log_path.empty()) return;
+    std::ofstream log(g_log_path, std::ios::app);
+    if (log.is_open()) {
+        log << line << "\n";
+        log.flush();
+    }
+}
 
 bool read_native_message(std::string& out_msg) {
     uint32_t length = 0;
@@ -87,104 +101,119 @@ void write_native_raw_json(const std::string& json_obj) {
     write_native_frame(json_obj);
 }
 
-std::string unquote_json_string(const std::string& input) {
-    if (!input.empty() && input.front() == '"' && input.back() == '"') {
-        try {
-            json j = json::parse(input);
-            if (j.is_string()) {
-                return j.get<std::string>();
-            }
-        } catch (...) {}
-    }
-    return input;
-}
-
-std::string redact_for_log(const std::string& input) {
-    if (input.size() > 2048) {
-        return "[truncated:" + std::to_string(input.size()) + "B]";
-    }
-    try {
-        json j = json::parse(input);
-        if (j.is_string()) {
-            j = json::parse(j.get<std::string>());
-        }
-        if (j.is_object()) {
-            for (const char* key : {"cookies", "cookie", "password", "authorization", "custom_headers", "token"}) {
-                if (j.contains(key) && !j[key].is_null() && !j[key].empty()) {
-                    j[key] = "[REDACTED]";
-                }
-            }
-            if (j.contains("items") && j["items"].is_array()) {
-                j["items"] = "[array:" + std::to_string(j["items"].size()) + "]";
-            }
-            return j.dump();
-        }
-    } catch (...) {}
-
-    if (input.rfind("MSG#", 0) == 0) {
-        return "MSG#<redacted>";
-    }
-    return input;
-}
-
 bool is_ipc_connect_error(const std::string& resp) {
     return resp.empty() || resp.find("Could not connect") != std::string::npos;
 }
 
-bool ping_running_app() {
+bool ping_running_app(bool require_ui_ready = false) {
     std::string resp = IpcServer::send_command(
         "{\"action\":\"ping\"}",
         IpcServer::DEFAULT_SOCKET_PATH,
         1);
-    return !is_ipc_connect_error(resp) && resp.find("\"pong\"") != std::string::npos;
+    if (is_ipc_connect_error(resp)) {
+        return false;
+    }
+    try {
+        json j = json::parse(resp);
+        if (j.value("status", "") != "ok") return false;
+        if (require_ui_ready && j.contains("ui_ready")) {
+            return j.value("ui_ready", true);
+        }
+        return true;
+    } catch (...) {
+        return resp.find("\"pong\"") != std::string::npos;
+    }
 }
 
 bool ensure_opendm_running() {
-    if (ping_running_app()) {
+    if (ping_running_app(true)) {
         return true;
     }
 
 #ifdef _WIN32
+    struct LaunchMutexGuard {
+        HANDLE h{nullptr};
+        bool owned{false};
+        ~LaunchMutexGuard() {
+            if (owned && h) ReleaseMutex(h);
+            if (h) CloseHandle(h);
+        }
+    } mutex_guard;
+
+    mutex_guard.h = CreateMutexW(nullptr, FALSE, L"Local\\OpenDM_LaunchMutex");
+    if (mutex_guard.h) {
+        DWORD wait_rc = WaitForSingleObject(mutex_guard.h, 8000);
+        if (wait_rc == WAIT_OBJECT_0 || wait_rc == WAIT_ABANDONED) {
+            mutex_guard.owned = true;
+        } else if (wait_rc == WAIT_TIMEOUT) {
+            write_host_log("[NATIVE_HOST] ensure_opendm_running: launch_mutex_timeout");
+            return ping_running_app(true);
+        }
+    } else {
+        write_host_log("[NATIVE_HOST] CreateMutexW(OpenDM_LaunchMutex) failed err=" + std::to_string(GetLastError()));
+    }
+
+    if (ping_running_app(true)) {
+        return true;
+    }
+
     std::string exe_dir = sys::get_exe_dir_utf8();
     std::filesystem::path app_exe = sys::path_from_utf8(exe_dir) / "opendm.exe";
     std::error_code ec;
     if (!std::filesystem::exists(app_exe, ec)) {
+        write_host_log("[NATIVE_HOST] opendm.exe missing at " + sys::path_to_utf8(app_exe));
         return false;
     }
 
-    AllowSetForegroundWindow(ASFW_ANY);
+    sys::DetachedLaunchOptions launch_opts;
+    launch_opts.exe_path = sys::path_to_utf8(app_exe);
+    launch_opts.arguments = "--background";
+    launch_opts.working_dir = exe_dir;
+    launch_opts.show_cmd = SW_SHOWMINNOACTIVE;
+    launch_opts.allow_foreground = true;
 
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_SHOWMINNOACTIVE;
-    PROCESS_INFORMATION pi{};
-    std::wstring cmdline = L"\"" + app_exe.wstring() + L"\" --background";
-    std::vector<wchar_t> cmd_buf(cmdline.begin(), cmdline.end());
-    cmd_buf.push_back(L'\0');
-    if (!CreateProcessW(
-            app_exe.c_str(),
-            cmd_buf.data(),
-            nullptr,
-            nullptr,
-            FALSE,
-            DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-            nullptr,
-            nullptr,
-            &si,
-            &pi)) {
+    void* raw_child_handle = nullptr;
+    auto launch_res = sys::launch_detached_gui_process(launch_opts, &raw_child_handle);
+    HANDLE hChild = static_cast<HANDLE>(raw_child_handle);
+
+    const uint32_t il_rid = sys::get_process_integrity_rid();
+    write_host_log(
+        "[NATIVE_HOST] launch attempt method=" + launch_res.method +
+        " ok=" + std::string(launch_res.ok ? "true" : "false") +
+        " in_job=" + std::string(launch_res.in_job ? "true" : "false") +
+        " breakaway_ok=" + std::string(launch_res.breakaway_allowed ? "true" : "false") +
+        " il_rid=0x" + ([&]() {
+            std::ostringstream oss;
+            oss << std::hex << il_rid;
+            return oss.str();
+        })() +
+        " err=" + std::to_string(launch_res.win32_error) +
+        (launch_res.error_message.empty() ? "" : (" msg=" + launch_res.error_message)));
+
+    if (!launch_res.ok) {
+        if (hChild) CloseHandle(hChild);
         return false;
     }
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
 
-    for (int i = 0; i < 40; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        if (ping_running_app()) {
-            return true;
+    bool ready = false;
+    for (int i = 0; i < 120; ++i) {
+        if (hChild && WaitForSingleObject(hChild, 0) == WAIT_OBJECT_0) {
+            DWORD code = 0;
+            GetExitCodeProcess(hChild, &code);
+            write_host_log("[NATIVE_HOST] spawned_process_exited_early code=" + std::to_string(code));
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (ping_running_app(true)) {
+            ready = true;
+            break;
         }
     }
-    return false;
+    if (hChild) CloseHandle(hChild);
+    if (!ready) {
+        write_host_log("[NATIVE_HOST] ensure_opendm_running: ready ping timeout after 6000ms");
+    }
+    return ready;
 #else
     std::string exe_dir = sys::get_exe_dir_utf8();
     std::vector<std::string> candidates;
@@ -209,6 +238,7 @@ bool ensure_opendm_running() {
 
     pid_t pid = fork();
     if (pid < 0) {
+        write_host_log("[NATIVE_HOST] fork() failed");
         return false;
     }
     if (pid == 0) {
@@ -226,12 +256,13 @@ bool ensure_opendm_running() {
         _exit(127);
     }
 
-    for (int i = 0; i < 40; ++i) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        if (ping_running_app()) {
+    for (int i = 0; i < 120; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (ping_running_app(true)) {
             return true;
         }
     }
+    write_host_log("[NATIVE_HOST] POSIX ensure_opendm_running timeout");
     return false;
 #endif
 }
@@ -240,7 +271,7 @@ std::string send_command_spawning_if_needed(const std::string& payload) {
 #ifdef _WIN32
     AllowSetForegroundWindow(ASFW_ANY);
 #endif
-    std::string resp = IpcServer::send_command(payload, IpcServer::DEFAULT_SOCKET_PATH, 1);
+    std::string resp = IpcServer::send_command(payload, IpcServer::DEFAULT_SOCKET_PATH, 3);
     if (!is_ipc_connect_error(resp)) {
         return resp;
     }
@@ -263,25 +294,22 @@ int main(int argc, char* argv[]) {
     _setmode(_fileno(stdin), _O_BINARY);
     _setmode(_fileno(stdout), _O_BINARY);
     std::string tmp_dir = opendm::sys::get_env_utf8("TEMP");
-    std::filesystem::path log_path = tmp_dir.empty()
+    opendm::g_log_path = tmp_dir.empty()
         ? std::filesystem::path("opendm_native_host.log")
         : (opendm::sys::path_from_utf8(tmp_dir) / "opendm_native_host.log");
 #else
     signal(SIGCHLD, SIG_IGN);
-    std::filesystem::path log_path = "/tmp/opendm_native_host.log";
+    opendm::g_log_path = "/tmp/opendm_native_host.log";
 #endif
     std::ios_base::sync_with_stdio(false);
 
-    std::ofstream log(log_path, std::ios::app);
     std::vector<std::string> args = opendm::sys::get_cli_args_utf8(argc, argv);
-    log << "[NATIVE_HOST] Started. argc=" << args.size() << "\n";
-    log.flush();
+    opendm::write_host_log("[NATIVE_HOST] Started. argc=" + std::to_string(args.size()));
 
     std::string incoming;
     while (opendm::read_native_message(incoming)) {
         if (incoming.empty()) continue;
-        log << "[NATIVE_HOST] incoming: " << opendm::redact_for_log(incoming) << "\n";
-        log.flush();
+        opendm::write_host_log("[NATIVE_HOST] incoming: " + opendm::redact_for_log(incoming));
 
         std::string raw = opendm::unquote_json_string(incoming);
 
@@ -343,7 +371,7 @@ int main(int argc, char* argv[]) {
         const std::string action = jreq.value("action", "");
 
         if (action == "host_ping") {
-            const bool running = opendm::ping_running_app();
+            const bool running = opendm::ping_running_app(false);
             opendm::write_native_raw_json(opendm::json({
                 {"status", "ok"},
                 {"host_version", "1.0.0"},
@@ -354,6 +382,10 @@ int main(int argc, char* argv[]) {
 
         if (action == "launch_app") {
             const bool launched = opendm::ensure_opendm_running();
+            if (launched) {
+                opendm::IpcServer::send_command("{\"action\":\"present\"}", opendm::IpcServer::DEFAULT_SOCKET_PATH, 3);
+            }
+            opendm::write_host_log("[NATIVE_HOST] launch_app app_running=" + std::string(launched ? "true" : "false"));
             opendm::write_native_raw_json(opendm::json({
                 {"status", launched ? "ok" : "error"},
                 {"app_running", launched},
@@ -382,11 +414,14 @@ int main(int argc, char* argv[]) {
                 {"message", "Could not connect to or start OpenDM"}
             }).dump();
         }
+        try {
+            auto jresp = opendm::json::parse(response);
+            opendm::write_host_log("[NATIVE_HOST] action=" + action + " resp_status=" + jresp.value("status", "unknown"));
+        } catch (...) {}
         opendm::write_native_raw_json(response);
     }
 
-    log << "[NATIVE_HOST] Exiting.\n";
-    log.flush();
+    opendm::write_host_log("[NATIVE_HOST] Exiting.");
     curl_global_cleanup();
     return 0;
 }

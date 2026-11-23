@@ -668,7 +668,7 @@ bool IpcServer::is_running() const {
 void IpcServer::server_loop() {
 #ifdef _WIN32
     std::wstring wpipe = sys::utf8_to_wide(socket_path_);
-    constexpr size_t PENDING_LISTENERS = 2;
+    constexpr size_t PENDING_LISTENERS = 8;
     struct PendingPipe {
         HANDLE hPipe{INVALID_HANDLE_VALUE};
         HANDLE hEvent{nullptr};
@@ -853,12 +853,111 @@ void IpcServer::set_gui_mode(bool gui_mode) {
 void IpcServer::set_download_prompt_callback(DownloadPromptCallback cb) {
     std::lock_guard<std::mutex> lock(prompt_mutex_);
     prompt_callback_ = cb;
+    prompt_cb_bound_ = static_cast<bool>(prompt_callback_);
     if (prompt_callback_) {
         for (const auto& p : pending_prompts_) {
             prompt_callback_(p);
         }
         pending_prompts_.clear();
     }
+}
+
+void IpcServer::set_present_callback(PresentCallback cb) {
+    std::lock_guard<std::mutex> lock(prompt_mutex_);
+    present_callback_ = cb;
+}
+
+bool IpcServer::is_ui_ready() const {
+    if (!running_) return false;
+    return gui_mode_ ? prompt_cb_bound_.load() : true;
+}
+
+std::string unquote_json_string(const std::string& input) {
+    if (input.size() >= 2 && input.front() == '"' && input.back() == '"') {
+        try {
+            json j = json::parse(input);
+            if (j.is_string()) {
+                return j.get<std::string>();
+            }
+        } catch (...) {}
+    }
+    return input;
+}
+
+static void redact_json_fields_in_place(json& obj) {
+    if (!obj.is_object()) return;
+    for (const char* key : {"cookies", "cookie", "password", "authorization", "custom_headers", "token", "post_data"}) {
+        if (obj.contains(key) && !obj[key].is_null() && !obj[key].empty()) {
+            obj[key] = "[REDACTED]";
+        }
+    }
+    if (obj.contains("resp_headers") && obj["resp_headers"].is_string()) {
+        const auto& rh = obj["resp_headers"].get_ref<const std::string&>();
+        if (!rh.empty()) {
+            obj["resp_headers"] = "[headers:" + std::to_string(rh.size()) + "B]";
+        }
+    }
+    for (const auto& [k, v] : obj.items()) {
+        if (!v.is_string()) continue;
+        const auto& s = v.get_ref<const std::string&>();
+        if (k == "url" || k == "audio_url") {
+            if (s.size() > 512) obj[k] = s.substr(0, 512) + "...";
+        } else if (k != "action" && k != "filename" && k != "resp_headers" && s.size() > 128) {
+            obj[k] = s.substr(0, 128) + "...";
+        }
+    }
+}
+
+std::string redact_for_log(const std::string& input) {
+    if (input.rfind("MSG#", 0) == 0) {
+        return "MSG#<redacted:" + std::to_string(input.size()) + "B>";
+    }
+    std::string unquoted = unquote_json_string(input);
+    if (unquoted.rfind("MSG#", 0) == 0) {
+        return "MSG#<redacted:" + std::to_string(unquoted.size()) + "B>";
+    }
+    if (input.size() > 262144) {
+        return "[oversized:" + std::to_string(input.size()) + "B]";
+    }
+
+    try {
+        json j = json::parse(unquoted);
+        if (j.is_string()) {
+            const std::string& inner = j.get_ref<const std::string&>();
+            if (inner.rfind("MSG#", 0) == 0) {
+                return "MSG#<redacted:" + std::to_string(inner.size()) + "B>";
+            }
+            j = json::parse(inner);
+        }
+        if (j.is_object()) {
+            redact_json_fields_in_place(j);
+            if (j.contains("items") && j["items"].is_array()) {
+                const size_t count = j["items"].size();
+                json summary = json::array();
+                for (size_t i = 0; i < count && i < 3; ++i) {
+                    if (j["items"][i].is_object()) {
+                        json item_copy = j["items"][i];
+                        redact_json_fields_in_place(item_copy);
+                        summary.push_back(std::move(item_copy));
+                    }
+                }
+                if (count > 3) {
+                    summary.push_back("[+" + std::to_string(count - 3) + " more]");
+                }
+                j["items"] = std::move(summary);
+            }
+            std::string serialized = j.dump();
+            if (serialized.size() > 2048) {
+                return serialized.substr(0, 2048) + "...[truncated:" + std::to_string(serialized.size()) + "B]";
+            }
+            return serialized;
+        }
+    } catch (...) {}
+
+    if (input.size() > 1024) {
+        return input.substr(0, 1024) + "...[truncated:" + std::to_string(input.size()) + "B]";
+    }
+    return input;
 }
 
 static std::string format_file_size(uint64_t bytes) {
@@ -1319,7 +1418,24 @@ std::string IpcServer::handle_request(const std::string& request) {
 
     std::string action = json_get_str(jreq, "action");
     if (action == "ping") {
-        return json({{"status", "ok"}, {"message", "pong"}}).dump(2);
+        return json({
+            {"status", "ok"},
+            {"message", "pong"},
+            {"gui_mode", gui_mode_.load()},
+            {"ui_ready", is_ui_ready()}
+        }).dump(2);
+    }
+    if (action == "present") {
+        PresentCallback cb;
+        {
+            std::lock_guard<std::mutex> lock(prompt_mutex_);
+            cb = present_callback_;
+        }
+        if (cb) {
+            cb();
+            return json({{"status", "ok"}, {"message", "presented"}}).dump(2);
+        }
+        return json({{"status", "ignored"}, {"reason", "no_gui_window"}}).dump(2);
     }
 
     if (action == "intercept_download" || action == "download") {
@@ -1519,7 +1635,14 @@ std::string IpcServer::send_command(const std::string& json_request,
     HANDLE hPipe = INVALID_HANDLE_VALUE;
     int attempts = std::max(1, max_connect_attempts);
     for (int retry = 0; retry < attempts; ++retry) {
-        hPipe = CreateFileW(wpipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        hPipe = CreateFileW(
+            wpipe.c_str(),
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_FLAG_OVERLAPPED,
+            nullptr);
         if (hPipe != INVALID_HANDLE_VALUE) break;
         DWORD err = GetLastError();
         if (retry + 1 >= attempts) break;
@@ -1537,12 +1660,40 @@ std::string IpcServer::send_command(const std::string& json_request,
     DWORD mode = PIPE_READMODE_MESSAGE;
     SetNamedPipeHandleState(hPipe, &mode, nullptr, nullptr);
 
+    HANDLE hIoEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!hIoEvent) {
+        CloseHandle(hPipe);
+        return json({{"status", "error"}, {"message", "Failed to create pipe event"}}).dump(2);
+    }
+
+    auto wait_overlapped = [&](OVERLAPPED& ov, DWORD timeout_ms, DWORD& transferred) -> DWORD {
+        DWORD wait_rc = WaitForSingleObject(hIoEvent, timeout_ms);
+        if (wait_rc != WAIT_OBJECT_0) {
+            CancelIoEx(hPipe, &ov);
+            GetOverlappedResult(hPipe, &ov, &transferred, TRUE);
+            return WAIT_TIMEOUT;
+        }
+        if (!GetOverlappedResult(hPipe, &ov, &transferred, FALSE)) {
+            return GetLastError();
+        }
+        return ERROR_SUCCESS;
+    };
+
     std::string req = json_request + "\n";
     DWORD total_written = 0;
     while (total_written < req.size()) {
+        ResetEvent(hIoEvent);
+        OVERLAPPED ov{};
+        ov.hEvent = hIoEvent;
         DWORD chunk_written = 0;
-        if (!WriteFile(hPipe, req.data() + total_written,
-                       static_cast<DWORD>(req.size() - total_written), &chunk_written, nullptr)) {
+        BOOL ok = WriteFile(hPipe, req.data() + total_written,
+                            static_cast<DWORD>(req.size() - total_written), &chunk_written, &ov);
+        DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+        if (!ok && err == ERROR_IO_PENDING) {
+            err = wait_overlapped(ov, 15000, chunk_written);
+        }
+        if (err != ERROR_SUCCESS) {
+            CloseHandle(hIoEvent);
             CloseHandle(hPipe);
             return json({{"status", "error"}, {"message", "Failed writing to OpenDM pipe"}}).dump(2);
         }
@@ -1552,17 +1703,29 @@ std::string IpcServer::send_command(const std::string& json_request,
     std::string response;
     std::vector<char> chunk(PIPE_IO_BUF_SIZE);
     while (response.size() < MAX_IPC_MSG_BYTES) {
+        ResetEvent(hIoEvent);
+        OVERLAPPED ov{};
+        ov.hEvent = hIoEvent;
         DWORD bytesRead = 0;
-        BOOL ok = ReadFile(hPipe, chunk.data(), PIPE_IO_BUF_SIZE, &bytesRead, nullptr);
+        BOOL ok = ReadFile(hPipe, chunk.data(), PIPE_IO_BUF_SIZE, &bytesRead, &ov);
         DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+        if (!ok && err == ERROR_IO_PENDING) {
+            err = wait_overlapped(ov, 15000, bytesRead);
+        }
         if (bytesRead > 0) {
             response.append(chunk.data(), bytesRead);
         }
-        if (ok || err != ERROR_MORE_DATA) {
+        if (err == WAIT_TIMEOUT) {
+            CloseHandle(hIoEvent);
+            CloseHandle(hPipe);
+            return json({{"status", "error"}, {"message", "Timed out waiting for OpenDM response"}}).dump(2);
+        }
+        if (err != ERROR_MORE_DATA) {
             break;
         }
     }
 
+    CloseHandle(hIoEvent);
     CloseHandle(hPipe);
     if (response.empty()) {
         return json({{"status", "error"}, {"message", "Empty response from OpenDM pipe"}}).dump(2);

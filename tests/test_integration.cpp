@@ -12,10 +12,72 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#ifdef ERROR
+#undef ERROR
+#endif
+#include <chrono>
+#include <thread>
+#endif
 
 namespace fs = std::filesystem;
 
-int main() {
+#ifdef _WIN32
+namespace {
+int run_win32_job_test_child(const std::string& result_path, const std::string& noop_marker_path) {
+    bool breakaway_allowed = true;
+    bool silent_breakaway = true;
+    uint32_t err = 0;
+    const bool in_job = opendm::sys::is_current_process_in_job(breakaway_allowed, silent_breakaway, &err);
+
+    wchar_t self_exe[MAX_PATH * 4]{};
+    DWORD nlen = GetModuleFileNameW(nullptr, self_exe, static_cast<DWORD>(std::size(self_exe)));
+    std::string self_utf8 = (nlen > 0) ? opendm::sys::wide_to_utf8(std::wstring_view(self_exe, nlen)) : "";
+
+    opendm::sys::DetachedLaunchOptions opts;
+    opts.exe_path = self_utf8;
+    opts.arguments = "--win32-noop-child \"" + noop_marker_path + "\"";
+    opts.working_dir = opendm::sys::path_to_utf8(opendm::sys::path_from_utf8(self_utf8).parent_path());
+    opts.show_cmd = SW_HIDE;
+    opts.allow_foreground = false;
+
+    auto cp_breakaway = opendm::sys::launch_via_create_process(opts, true);
+    auto detached = opendm::sys::launch_detached_gui_process(opts);
+
+    nlohmann::json report = {
+        {"in_job", in_job},
+        {"breakaway_allowed", breakaway_allowed},
+        {"silent_breakaway", silent_breakaway},
+        {"cp_ok", cp_breakaway.ok},
+        {"cp_err", cp_breakaway.win32_error},
+        {"detached_ok", detached.ok},
+        {"detached_method", detached.method},
+        {"detached_err", detached.win32_error}
+    };
+    std::ofstream ofs(opendm::sys::path_from_utf8(result_path), std::ios::binary | std::ios::trunc);
+    ofs << report.dump();
+    ofs.close();
+    return 0;
+}
+} // namespace
+#endif
+
+int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    if (argc >= 3 && std::string(argv[1]) == "--win32-noop-child") {
+        std::ofstream ofs(opendm::sys::path_from_utf8(argv[2]), std::ios::binary | std::ios::trunc);
+        ofs << "alive";
+        return 0;
+    }
+    if (argc >= 4 && std::string(argv[1]) == "--win32-job-test-child") {
+        return run_win32_job_test_child(argv[2], argv[3]);
+    }
+#else
+    (void)argc;
+    (void)argv;
+#endif
     std::cout << "=== Running OpenDM Subsystem Integration Tests ===" << std::endl;
 
     // Isolate QueueManager storage path so tests never overwrite the user's real downloads.json
@@ -90,7 +152,7 @@ int main() {
 
     // 3. Test CLI Parser
     std::cout << "[Test 3] IDM Command Line Compatibility..." << std::endl;
-    const char* argv[] = {
+    const char* cli_argv[] = {
         "opendm",
         "-d", "https://downloads.example.org/setup.tar.gz",
         "-p", "/home/nader/custom_dir",
@@ -100,9 +162,9 @@ int main() {
         "-n",
         "-a"
     };
-    int argc = sizeof(argv) / sizeof(argv[0]);
+    int cli_argc = sizeof(cli_argv) / sizeof(cli_argv[0]);
 
-    opendm::CliOptions opts = opendm::CliParser::parse(argc, const_cast<char**>(argv));
+    opendm::CliOptions opts = opendm::CliParser::parse(cli_argc, const_cast<char**>(cli_argv));
     assert(opts.url == "https://downloads.example.org/setup.tar.gz");
     assert(opts.path == "/home/nader/custom_dir");
     assert(opts.filename == "archive.tar.gz");
@@ -667,6 +729,110 @@ int main() {
 
         fs::remove_all(tmp_nmh, ec);
         std::cout << "  [PASS] Extension JSON protocol, 6= fix, batch download & native host manifests verified." << std::endl;
+    }
+
+    // 16. Log Redaction Ordering & Windows Job-Object Escape
+    std::cout << "[Test 16] Log Redaction Ordering & Windows Job-Object Escape..." << std::endl;
+    {
+        std::string long_cookie(2500, 'c');
+        std::string long_url = "https://cdn.example.com/files/movie.mkv?sig=" + std::string(200, 's');
+        nlohmann::json big_req = {
+            {"action", "intercept_download"},
+            {"cookies", long_cookie},
+            {"resp_headers", "Set-Cookie: session=secret\r\nContent-Length: 100"},
+            {"filename", "movie.mkv"},
+            {"url", long_url}
+        };
+        std::string redacted = opendm::redact_for_log(big_req.dump());
+        assert(redacted.find("intercept_download") != std::string::npos);
+        assert(redacted.find("https://cdn.example.com/files/movie.mkv") != std::string::npos);
+        assert(redacted.find(long_cookie.substr(0, 32)) == std::string::npos);
+        assert(redacted.find("[REDACTED]") != std::string::npos);
+        assert(redacted.find("session=secret") == std::string::npos);
+
+        // download_batch nested items[].cookies redaction
+        nlohmann::json batch_log_req = {
+            {"action", "download_batch"},
+            {"items", {{{"url", "https://example.com/a.zip"}, {"cookies", "secret_token=xyz"}}}}
+        };
+        std::string batch_redacted = opendm::redact_for_log(batch_log_req.dump());
+        assert(batch_redacted.find("download_batch") != std::string::npos);
+        assert(batch_redacted.find("secret_token=xyz") == std::string::npos);
+        assert(batch_redacted.find("[REDACTED]") != std::string::npos);
+
+        // Both raw MSG# and JSON-quoted "\"MSG#...\"" must be redacted
+        std::string raw_tonec = "MSG#1#5#0:0,51=12:cookie=secret;";
+        std::string quoted_tonec = nlohmann::json(raw_tonec).dump();
+        assert(opendm::redact_for_log(raw_tonec).find("cookie=secret") == std::string::npos);
+        assert(opendm::redact_for_log(quoted_tonec).find("cookie=secret") == std::string::npos);
+
+        // >260 KB non-JSON fast short-circuit
+        std::string huge_non_json(270000, 'x');
+        assert(opendm::redact_for_log(huge_non_json).rfind("[oversized:", 0) == 0);
+
+#ifdef _WIN32
+        fs::path tmp_job_dir = fs::temp_directory_path() / "opendm_job_escape_test";
+        std::error_code ec;
+        fs::remove_all(tmp_job_dir, ec);
+        fs::create_directories(tmp_job_dir, ec);
+        fs::path result_file = tmp_job_dir / "result.json";
+        fs::path noop_marker = tmp_job_dir / "noop_alive.txt";
+
+        HANDLE hJob = CreateJobObjectW(nullptr, nullptr);
+        assert(hJob != nullptr);
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+        jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        assert(SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli)) != FALSE);
+
+        wchar_t self_exe[MAX_PATH * 4]{};
+        DWORD nlen = GetModuleFileNameW(nullptr, self_exe, static_cast<DWORD>(std::size(self_exe)));
+        assert(nlen > 0);
+        std::wstring cmdline = L"\"" + std::wstring(self_exe, nlen) + L"\" --win32-job-test-child \"" +
+                               result_file.wstring() + L"\" \"" + noop_marker.wstring() + L"\"";
+        std::vector<wchar_t> cmd_buf(cmdline.begin(), cmdline.end());
+        cmd_buf.push_back(L'\0');
+
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        BOOL created = CreateProcessW(self_exe, cmd_buf.data(), nullptr, nullptr, FALSE,
+                                      CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+        assert(created != FALSE);
+        assert(AssignProcessToJobObject(hJob, pi.hProcess) != FALSE);
+        ResumeThread(pi.hThread);
+        DWORD wait_rc = WaitForSingleObject(pi.hProcess, 5000);
+        if (wait_rc != WAIT_OBJECT_0) {
+            TerminateProcess(pi.hProcess, 1);
+            assert(false && "Job test child timed out");
+        }
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        CloseHandle(hJob);
+
+        assert(fs::exists(result_file));
+        std::ifstream rfs(result_file);
+        auto jrep = nlohmann::json::parse(rfs);
+        rfs.close();
+
+        assert(jrep["in_job"] == true);
+        assert(jrep["breakaway_allowed"] == false);
+        assert(jrep["cp_ok"] == false);
+        assert(jrep["cp_err"] == ERROR_ACCESS_DENIED);
+        assert(jrep["detached_method"] == "shell_com");
+        if (jrep["detached_ok"] == true) {
+            bool marker_ok = false;
+            for (int w = 0; w < 30; ++w) {
+                if (fs::exists(noop_marker)) { marker_ok = true; break; }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            assert(marker_ok);
+        } else {
+            // Headless session without explorer.exe: must fail closed cleanly
+            assert(jrep["detached_err"] != 0);
+        }
+        fs::remove_all(tmp_job_dir, ec);
+#endif
+        std::cout << "  [PASS] Log redaction ordering & Win32 Job-Object fail-closed/escape verified." << std::endl;
     }
 
     std::cout << "All Subsystem Integration tests passed!" << std::endl;

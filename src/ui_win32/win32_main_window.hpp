@@ -21,6 +21,7 @@ public:
     ~Win32MainWindow();
 
     void present();
+    void restore_and_present();
     HWND get_hwnd() const { return hwnd_; }
 
     void add_download_url(const std::string& url, const std::string& path = "",
@@ -28,6 +29,8 @@ public:
     void prompt_download(const DownloadPromptInfo& info);
     // Thread-safe: queues a download prompt to be shown on the UI thread.
     void post_prompt_download(const DownloadPromptInfo& info);
+    // Thread-safe: restores and brings main window to foreground on the UI thread.
+    void post_present();
 
     bool save_snapshot(const std::string& filename);
 
@@ -103,7 +106,9 @@ private:
     bool delete_in_progress_{false};
     bool refreshing_list_{false};
     bool completion_modal_active_{false};
+    bool prompt_in_progress_{false};
     bool closing_{false};
+    std::deque<DownloadPromptInfo> prompt_queue_;
     std::deque<std::pair<std::string, uint64_t>> completed_notices_;
     std::unordered_set<std::string> completed_notified_ids_;
     // Last text rendered per row/column, to avoid redundant ListView updates

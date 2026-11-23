@@ -40,6 +40,13 @@ struct DownloadPromptInfo {
 };
 
 using DownloadPromptCallback = std::function<void(const DownloadPromptInfo& info)>;
+using PresentCallback = std::function<void()>;
+
+// Unquotes a JSON-encoded string literal if applicable; returns input untouched otherwise.
+std::string unquote_json_string(const std::string& input);
+
+// Produces a bounded, secret-free representation of IPC / native-host payloads safe for logs.
+std::string redact_for_log(const std::string& input);
 
 class IpcServer {
 public:
@@ -58,6 +65,8 @@ public:
 
     void set_gui_mode(bool gui_mode);
     void set_download_prompt_callback(DownloadPromptCallback cb);
+    void set_present_callback(PresentCallback cb);
+    bool is_ui_ready() const;
 
     // Send a command to a running OpenDM instance via UNIX socket / Named Pipe (client mode)
     static std::string send_command(const std::string& json_request,
@@ -107,7 +116,9 @@ private:
 
     std::mutex prompt_mutex_;
     DownloadPromptCallback prompt_callback_;
+    PresentCallback present_callback_;
     std::vector<DownloadPromptInfo> pending_prompts_;
+    std::atomic<bool> prompt_cb_bound_{false};
 
     std::mutex workers_mutex_;
     std::condition_variable workers_cv_;

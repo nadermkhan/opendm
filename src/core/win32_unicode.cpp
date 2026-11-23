@@ -12,6 +12,12 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <exdisp.h>
+#include <shldisp.h>
+#include <servprov.h>
+#include <oleauto.h>
+#include <objbase.h>
+#include <future>
 #ifdef ERROR
 #undef ERROR
 #endif
@@ -635,6 +641,370 @@ bool run_hidden_process(const std::string& exe_utf8,
     int code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
     if (out_exit_code) *out_exit_code = code;
     return !cancelled && WIFEXITED(status) && code == 0;
+#endif
+}
+
+bool is_current_process_in_job(bool& out_breakaway_allowed,
+                               bool& out_silent_breakaway,
+                               uint32_t* out_error) {
+    out_breakaway_allowed = false;
+    out_silent_breakaway = false;
+    if (out_error) *out_error = 0;
+#ifdef _WIN32
+    BOOL in_job = FALSE;
+    if (!IsProcessInJob(GetCurrentProcess(), nullptr, &in_job)) {
+        if (out_error) *out_error = static_cast<uint32_t>(GetLastError());
+        return false;
+    }
+    if (!in_job) {
+        return false;
+    }
+
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+    DWORD returned = 0;
+    if (QueryInformationJobObject(nullptr, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli), &returned)) {
+        DWORD flags = jeli.BasicLimitInformation.LimitFlags;
+        out_breakaway_allowed = (flags & JOB_OBJECT_LIMIT_BREAKAWAY_OK) != 0;
+        out_silent_breakaway = (flags & JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK) != 0;
+    } else if (out_error) {
+        *out_error = static_cast<uint32_t>(GetLastError());
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
+DetachedLaunchResult launch_via_create_process(const DetachedLaunchOptions& opts,
+                                               bool use_breakaway,
+                                               void** out_process_handle) {
+    DetachedLaunchResult res;
+    if (out_process_handle) *out_process_handle = nullptr;
+#ifdef _WIN32
+    if (opts.exe_path.empty()) {
+        res.error_message = "Empty executable path";
+        return res;
+    }
+    if (opts.allow_foreground) {
+        AllowSetForegroundWindow(ASFW_ANY);
+    }
+
+    std::wstring wexe = utf8_to_wide(opts.exe_path);
+    std::wstring wcmd = L"\"" + wexe + L"\"";
+    if (!opts.arguments.empty()) {
+        wcmd += L" " + utf8_to_wide(opts.arguments);
+    }
+    std::vector<wchar_t> cmd_buf(wcmd.begin(), wcmd.end());
+    cmd_buf.push_back(L'\0');
+
+    std::wstring wdir;
+    const wchar_t* cwd_ptr = nullptr;
+    if (!opts.working_dir.empty()) {
+        wdir = utf8_to_wide(opts.working_dir);
+        cwd_ptr = wdir.c_str();
+    }
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = static_cast<WORD>(opts.show_cmd);
+
+    DWORD flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+    if (use_breakaway) {
+        flags |= CREATE_BREAKAWAY_FROM_JOB;
+    }
+
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(
+            wexe.c_str(),
+            cmd_buf.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            flags,
+            nullptr,
+            cwd_ptr,
+            &si,
+            &pi)) {
+        res.win32_error = static_cast<uint32_t>(GetLastError());
+        res.error_message = "CreateProcessW failed with error " + std::to_string(res.win32_error);
+        return res;
+    }
+
+    CloseHandle(pi.hThread);
+    if (out_process_handle) {
+        *out_process_handle = static_cast<void*>(pi.hProcess);
+    } else {
+        CloseHandle(pi.hProcess);
+    }
+    res.ok = true;
+    res.method = use_breakaway ? "breakaway" : "direct";
+    return res;
+#else
+    res.error_message = "Not supported on non-Windows platform";
+    return res;
+#endif
+}
+
+DetachedLaunchResult launch_via_explorer_com(const DetachedLaunchOptions& opts, int timeout_ms) {
+#ifdef _WIN32
+    auto run_com_once = [](DetachedLaunchOptions local_opts) -> DetachedLaunchResult {
+        DetachedLaunchResult r;
+        r.method = "shell_com";
+
+        if (local_opts.allow_foreground) {
+            AllowSetForegroundWindow(ASFW_ANY);
+        }
+
+        HRESULT hr_com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        if (FAILED(hr_com) && hr_com != RPC_E_CHANGED_MODE) {
+            r.win32_error = static_cast<uint32_t>(hr_com);
+            r.error_message = "CoInitializeEx failed";
+            return r;
+        }
+        const bool should_uninit = (hr_com == S_OK || hr_com == S_FALSE);
+
+        struct ComCleanup {
+            bool uninit{false};
+            ~ComCleanup() {
+                if (uninit) CoUninitialize();
+            }
+        } com_guard{should_uninit};
+
+        auto format_hr = [](const char* stage, HRESULT hr) -> std::string {
+            std::ostringstream oss;
+            oss << stage << " failed (0x" << std::hex << static_cast<uint32_t>(hr) << ")";
+            return oss.str();
+        };
+
+        IShellWindows* psw = nullptr;
+        HRESULT hr = CoCreateInstance(__uuidof(ShellWindows), nullptr, CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&psw));
+        if (FAILED(hr) || !psw) {
+            r.win32_error = static_cast<uint32_t>(hr);
+            r.error_message = format_hr("CoCreateInstance(ShellWindows)", hr);
+            return r;
+        }
+
+        struct VariantGuard {
+            VARIANT v{};
+            VariantGuard() { VariantInit(&v); }
+            ~VariantGuard() { VariantClear(&v); }
+        };
+
+        VariantGuard v_empty;
+        VariantGuard v_empty_root;
+        LONG desktop_hwnd = 0;
+        IDispatch* pdisp_shell = nullptr;
+        hr = psw->FindWindowSW(&v_empty.v, &v_empty_root.v, SWC_DESKTOP, &desktop_hwnd, SWFO_NEEDDISPATCH, &pdisp_shell);
+        if (FAILED(hr) || hr == S_FALSE || !pdisp_shell) {
+            psw->Release();
+            r.win32_error = static_cast<uint32_t>(hr == S_FALSE ? ERROR_FILE_NOT_FOUND : hr);
+            r.error_message = (hr == S_FALSE || !pdisp_shell)
+                ? "Explorer desktop shell window not present"
+                : format_hr("FindWindowSW", hr);
+            return r;
+        }
+
+        IServiceProvider* psp = nullptr;
+        hr = pdisp_shell->QueryInterface(IID_PPV_ARGS(&psp));
+        pdisp_shell->Release();
+        psw->Release();
+        if (FAILED(hr) || !psp) {
+            r.win32_error = static_cast<uint32_t>(hr);
+            r.error_message = format_hr("QueryInterface(IServiceProvider)", hr);
+            return r;
+        }
+
+        // Define locally so MinGW builds do not depend on libuuid.a exporting SID_STopLevelBrowser
+        static constexpr GUID kSidTopLevelBrowser = {
+            0x4c96be40, 0x915c, 0x11cf, {0x99, 0xd3, 0x00, 0xaa, 0x00, 0x4a, 0xe8, 0x37}
+        };
+        IShellBrowser* psb = nullptr;
+        hr = psp->QueryService(kSidTopLevelBrowser, IID_PPV_ARGS(&psb));
+        psp->Release();
+        if (FAILED(hr) || !psb) {
+            r.win32_error = static_cast<uint32_t>(hr);
+            r.error_message = format_hr("QueryService(IShellBrowser)", hr);
+            return r;
+        }
+
+        IShellView* psv = nullptr;
+        hr = psb->QueryActiveShellView(&psv);
+        psb->Release();
+        if (FAILED(hr) || !psv) {
+            r.win32_error = static_cast<uint32_t>(hr);
+            r.error_message = format_hr("QueryActiveShellView", hr);
+            return r;
+        }
+
+        IDispatch* pdisp_view = nullptr;
+        hr = psv->GetItemObject(SVGIO_BACKGROUND, IID_PPV_ARGS(&pdisp_view));
+        psv->Release();
+        if (FAILED(hr) || !pdisp_view) {
+            r.win32_error = static_cast<uint32_t>(hr);
+            r.error_message = format_hr("GetItemObject(SVGIO_BACKGROUND)", hr);
+            return r;
+        }
+
+        IShellFolderViewDual* psfv = nullptr;
+        hr = pdisp_view->QueryInterface(IID_PPV_ARGS(&psfv));
+        pdisp_view->Release();
+        if (FAILED(hr) || !psfv) {
+            r.win32_error = static_cast<uint32_t>(hr);
+            r.error_message = format_hr("QueryInterface(IShellFolderViewDual)", hr);
+            return r;
+        }
+
+        IDispatch* pdisp_app = nullptr;
+        hr = psfv->get_Application(&pdisp_app);
+        psfv->Release();
+        if (FAILED(hr) || !pdisp_app) {
+            r.win32_error = static_cast<uint32_t>(hr);
+            r.error_message = format_hr("get_Application", hr);
+            return r;
+        }
+
+        IShellDispatch2* psd = nullptr;
+        hr = pdisp_app->QueryInterface(IID_PPV_ARGS(&psd));
+        pdisp_app->Release();
+        if (FAILED(hr) || !psd) {
+            r.win32_error = static_cast<uint32_t>(hr);
+            r.error_message = format_hr("QueryInterface(IShellDispatch2)", hr);
+            return r;
+        }
+
+        std::wstring wexe = utf8_to_wide(local_opts.exe_path);
+        BSTR bstr_file = SysAllocString(wexe.c_str());
+        if (!bstr_file) {
+            psd->Release();
+            r.win32_error = ERROR_OUTOFMEMORY;
+            r.error_message = "SysAllocString failed";
+            return r;
+        }
+
+        VariantGuard v_args;
+        if (!local_opts.arguments.empty()) {
+            std::wstring wargs = utf8_to_wide(local_opts.arguments);
+            v_args.v.vt = VT_BSTR;
+            v_args.v.bstrVal = SysAllocString(wargs.c_str());
+        }
+
+        VariantGuard v_dir;
+        if (!local_opts.working_dir.empty()) {
+            std::wstring wdir = utf8_to_wide(local_opts.working_dir);
+            v_dir.v.vt = VT_BSTR;
+            v_dir.v.bstrVal = SysAllocString(wdir.c_str());
+        }
+
+        VariantGuard v_op;
+        v_op.v.vt = VT_BSTR;
+        v_op.v.bstrVal = SysAllocString(L"open");
+
+        VariantGuard v_show;
+        v_show.v.vt = VT_I4;
+        v_show.v.lVal = local_opts.show_cmd;
+
+        hr = psd->ShellExecute(bstr_file, v_args.v, v_dir.v, v_op.v, v_show.v);
+        SysFreeString(bstr_file);
+        psd->Release();
+
+        if (FAILED(hr)) {
+            r.win32_error = static_cast<uint32_t>(hr);
+            r.error_message = format_hr("IShellDispatch2::ShellExecute", hr);
+            return r;
+        }
+
+        r.ok = true;
+        return r;
+    };
+
+    auto prom = std::make_shared<std::promise<DetachedLaunchResult>>();
+    std::future<DetachedLaunchResult> fut = prom->get_future();
+    std::thread([opts, prom, run_com_once]() {
+        prom->set_value(run_com_once(opts));
+    }).detach();
+
+    if (fut.wait_for(std::chrono::milliseconds(std::max(100, timeout_ms))) == std::future_status::timeout) {
+        DetachedLaunchResult timeout_res;
+        timeout_res.method = "shell_com";
+        timeout_res.win32_error = WAIT_TIMEOUT;
+        timeout_res.error_message = "Explorer COM ShellExecute timed out";
+        return timeout_res;
+    }
+    return fut.get();
+#else
+    (void)opts;
+    (void)timeout_ms;
+    DetachedLaunchResult res;
+    res.error_message = "Not supported on non-Windows platform";
+    return res;
+#endif
+}
+
+DetachedLaunchResult launch_detached_gui_process(const DetachedLaunchOptions& opts,
+                                                 void** out_process_handle) {
+    if (out_process_handle) *out_process_handle = nullptr;
+#ifdef _WIN32
+    bool breakaway_ok = false;
+    bool silent_breakaway = false;
+    uint32_t job_err = 0;
+    const bool in_job = is_current_process_in_job(breakaway_ok, silent_breakaway, &job_err);
+
+    if (!in_job || breakaway_ok || silent_breakaway) {
+        const bool try_breakaway_flag = in_job && breakaway_ok && !silent_breakaway;
+        DetachedLaunchResult cp = launch_via_create_process(opts, try_breakaway_flag, out_process_handle);
+        cp.in_job = in_job;
+        cp.breakaway_allowed = breakaway_ok;
+        cp.silent_breakaway = silent_breakaway;
+        if (cp.ok) {
+            return cp;
+        }
+        if (!in_job) {
+            return cp;
+        }
+        // Nested Win8+ jobs may report BREAKAWAY_OK locally while an outer job denies it -> fall through to Explorer COM.
+    }
+
+    DetachedLaunchResult com = launch_via_explorer_com(opts, 1500);
+    com.in_job = in_job;
+    com.breakaway_allowed = breakaway_ok;
+    com.silent_breakaway = silent_breakaway;
+    return com;
+#else
+    (void)opts;
+    DetachedLaunchResult res;
+    res.error_message = "Not supported on non-Windows platform";
+    return res;
+#endif
+}
+
+uint32_t get_process_integrity_rid() {
+#ifdef _WIN32
+    HANDLE hToken = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
+        return 0;
+    }
+    DWORD len = 0;
+    GetTokenInformation(hToken, TokenIntegrityLevel, nullptr, 0, &len);
+    if (len == 0) {
+        CloseHandle(hToken);
+        return 0;
+    }
+    std::vector<uint8_t> buf(len);
+    uint32_t rid = 0;
+    if (GetTokenInformation(hToken, TokenIntegrityLevel, buf.data(), len, &len)) {
+        auto* til = reinterpret_cast<TOKEN_MANDATORY_LABEL*>(buf.data());
+        if (til && til->Label.Sid && IsValidSid(til->Label.Sid)) {
+            DWORD count = *GetSidSubAuthorityCount(til->Label.Sid);
+            if (count > 0) {
+                rid = *GetSidSubAuthority(til->Label.Sid, count - 1);
+            }
+        }
+    }
+    CloseHandle(hToken);
+    return rid;
+#else
+    return 0;
 #endif
 }
 

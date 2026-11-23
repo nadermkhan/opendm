@@ -144,7 +144,17 @@ int main(int argc, char* argv[]) {
             req_json["action"] = "start_queue";
         }
 
-        std::string resp = opendm::IpcServer::send_command(req_json.dump());
+        int connect_attempts = 20;
+#ifdef _WIN32
+        if (HANDLE hExisting = OpenMutexW(SYNCHRONIZE, FALSE, L"Local\\OpenDM_MainInstanceMutex")) {
+            CloseHandle(hExisting);
+            connect_attempts = 80;
+        }
+#endif
+        std::string resp = opendm::IpcServer::send_command(
+            req_json.dump(),
+            opendm::IpcServer::DEFAULT_SOCKET_PATH,
+            connect_attempts);
         if (resp.find("Could not connect") == std::string::npos && !resp.empty()) {
 #ifdef _WIN32
             if (!opts.show_gui) ensure_console_attached_if_needed();
@@ -154,6 +164,29 @@ int main(int argc, char* argv[]) {
             return 0;
         }
     }
+
+#ifdef _WIN32
+    struct InstanceMutexGuard {
+        HANDLE handle{nullptr};
+        ~InstanceMutexGuard() {
+            if (handle) CloseHandle(handle);
+        }
+    } instance_mutex;
+
+    if (opts.show_gui && opts.screenshot_path.empty()) {
+        instance_mutex.handle = CreateMutexW(nullptr, FALSE, L"Local\\OpenDM_MainInstanceMutex");
+        if (instance_mutex.handle && GetLastError() == ERROR_ALREADY_EXISTS) {
+            if (!opts.start_background) {
+                opendm::IpcServer::send_command(
+                    "{\"action\":\"present\"}",
+                    opendm::IpcServer::DEFAULT_SOCKET_PATH,
+                    40);
+            }
+            curl_global_cleanup();
+            return 0;
+        }
+    }
+#endif
 
     // Load persisted download state from disk
     opendm::QueueManager::instance().load_from_file();
@@ -192,10 +225,16 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Start background IPC server for incoming downloads
+    // Configure IPC server; Win32 GUI starts listening after HWND and callbacks are bound
     opendm::IpcServer ipc_server;
     ipc_server.set_gui_mode(opts.show_gui);
+#ifdef _WIN32
+    if (!opts.show_gui) {
+        ipc_server.start();
+    }
+#else
     ipc_server.start();
+#endif
 
     // Signal handlers for graceful exit
     std::signal(SIGINT, signal_handler);
@@ -325,6 +364,18 @@ int main(int argc, char* argv[]) {
             main_win->present();
         }
 
+        if (main_win->get_hwnd()) {
+            ipc_server.set_download_prompt_callback([win = main_win.get()](const opendm::DownloadPromptInfo& info) {
+                // Invoked on the IPC server thread: marshal to the UI thread. Creating
+                // windows / modal dialogs from a worker thread freezes and crashes Win32.
+                win->post_prompt_download(info);
+            });
+            ipc_server.set_present_callback([win = main_win.get()]() {
+                win->post_present();
+            });
+        }
+        ipc_server.start();
+
         // Silently register browser native messaging manifests once on startup if opendm-native-host.exe is present
         if (opts.screenshot_path.empty() && !opendm::is_native_host_registered()) {
             std::filesystem::path host_exe =
@@ -334,12 +385,6 @@ int main(int argc, char* argv[]) {
                 opendm::register_native_messaging_hosts();
             }
         }
-
-        ipc_server.set_download_prompt_callback([win = main_win.get()](const opendm::DownloadPromptInfo& info) {
-            // Invoked on the IPC server thread: marshal to the UI thread. Creating
-            // windows / modal dialogs from a worker thread freezes and crashes Win32.
-            win->post_prompt_download(info);
-        });
 
         if (opts.start_queue) {
             opendm::QueueManager::instance().get_main_queue().start_queue();
@@ -479,8 +524,9 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        ipc_server.set_download_prompt_callback(nullptr);
         ipc_server.stop();
+        ipc_server.set_download_prompt_callback(nullptr);
+        ipc_server.set_present_callback(nullptr);
         main_win.reset();
         opendm::win32::Win32Assets::shutdown_gdiplus();
         if (SUCCEEDED(hr_com)) CoUninitialize();

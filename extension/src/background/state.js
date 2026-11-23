@@ -64,6 +64,13 @@ export async function ensureHydrated() {
       } catch {
         // Fresh session map
       }
+      if (ext?.storage?.onChanged?.addListener) {
+        ext.storage.onChanged.addListener((changes, area) => {
+          if (area === "local" && changes?.[LOCAL_SETTINGS_KEY]?.newValue) {
+            cachedSettings = { ...DEFAULT_SETTINGS, ...changes[LOCAL_SETTINGS_KEY].newValue };
+          }
+        });
+      }
     })();
   }
   return hydrationPromise;

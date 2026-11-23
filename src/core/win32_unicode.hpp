@@ -64,6 +64,45 @@ bool run_hidden_process(const std::string& exe_utf8,
                         std::function<bool()> cancel_cb = nullptr,
                         int* out_exit_code = nullptr);
 
+struct DetachedLaunchOptions {
+    std::string exe_path;
+    std::string arguments;
+    std::string working_dir;
+    int show_cmd{7}; // SW_SHOWMINNOACTIVE on Windows
+    bool allow_foreground{true};
+};
+
+struct DetachedLaunchResult {
+    bool ok{false};
+    std::string method;
+    bool in_job{false};
+    bool breakaway_allowed{false};
+    bool silent_breakaway{false};
+    uint32_t win32_error{0};
+    std::string error_message;
+};
+
+// Queries whether current process is assigned to a Windows Job Object and whether breakaway flags allow escape.
+bool is_current_process_in_job(bool& out_breakaway_allowed,
+                               bool& out_silent_breakaway,
+                               uint32_t* out_error = nullptr);
+
+// Launches a Windows GUI process directly via CreateProcessW (with optional CREATE_BREAKAWAY_FROM_JOB).
+DetachedLaunchResult launch_via_create_process(const DetachedLaunchOptions& opts,
+                                               bool use_breakaway,
+                                               void** out_process_handle = nullptr);
+
+// Delegates Windows GUI process creation to the active Explorer desktop shell via COM (IShellWindows / IShellDispatch2).
+DetachedLaunchResult launch_via_explorer_com(const DetachedLaunchOptions& opts,
+                                             int timeout_ms = 1500);
+
+// Launches a Windows GUI child outside any browser Job Object, failing closed if escape is blocked.
+DetachedLaunchResult launch_detached_gui_process(const DetachedLaunchOptions& opts,
+                                                 void** out_process_handle = nullptr);
+
+// Returns current Windows process mandatory integrity RID (e.g. 0x2000 Medium, 0x3000 High), or 0 on POSIX/failure.
+uint32_t get_process_integrity_rid();
+
 // Shared formatting helpers
 std::string format_bytes(int64_t bytes);
 std::string format_speed(uint64_t bytes_per_sec);

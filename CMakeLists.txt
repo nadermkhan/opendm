@@ -76,7 +76,7 @@ if(TARGET nlohmann_json::nlohmann_json)
 endif()
 
 if(WIN32)
-    target_link_libraries(opendm_core PUBLIC ws2_32 shlwapi ole32 advapi32)
+    target_link_libraries(opendm_core PUBLIC ws2_32 shlwapi ole32 advapi32 oleaut32 uuid)
 endif()
 
 # Main executable

@@ -55,7 +55,6 @@ jobs:
 
   build-windows:
     name: Build Windows (Win32 x64)
-    needs: [build-extension]
     runs-on: windows-latest
     defaults:
       run:
@@ -64,11 +63,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download Extension Artifacts
-        uses: actions/download-artifact@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          name: extension-release
-          path: dist
+          node-version: '20'
+
+      - name: Build Extension Packages
+        shell: pwsh
+        run: node extension/scripts/build.mjs
 
       - name: Setup MSYS2 MinGW64
         uses: msys2/setup-msys2@v2
@@ -127,17 +129,18 @@ jobs:
 
   build-linux:
     name: Build Linux (GTK4 x86_64)
-    needs: [build-extension]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download Extension Artifacts
-        uses: actions/download-artifact@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          name: extension-release
-          path: dist
+          node-version: '20'
+
+      - name: Build Extension Packages
+        run: node extension/scripts/build.mjs
 
       - name: Install Build Dependencies
         run: |

@@ -358,6 +358,15 @@
           filename: item.filename || "",
           pageUrl: win.location?.href || "",
           pageTitle: doc.title || "",
+        }).then((resp) => {
+          if (resp && resp.status === "error") {
+            while (menu.firstChild) menu.removeChild(menu.firstChild);
+            const errRow = doc.createElement("div");
+            errRow.className = "opendm-menu-status";
+            errRow.textContent = resp.message || "Could not connect to or start OpenDM";
+            menu.appendChild(errRow);
+            menu.style.display = "block";
+          }
         });
       });
       menu.appendChild(btn);

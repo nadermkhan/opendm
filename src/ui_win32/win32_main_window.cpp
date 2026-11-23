@@ -51,6 +51,7 @@ std::string get_url_domain(const std::string& url) {
 }
 
 constexpr UINT WM_APP_PROMPT_DOWNLOAD    = WM_APP + 41;
+constexpr UINT WM_APP_PRESENT_MAIN       = WM_APP + 42;
 constexpr UINT WM_APP_PROGRESS_COMPLETED = WM_APP + 201;
 constexpr UINT WM_APP_DRAIN_COMPLETIONS  = WM_APP + 202;
 constexpr UINT WM_APP_YT_EXTRACT_DONE    = WM_APP + 203;
@@ -163,6 +164,22 @@ void Win32MainWindow::present() {
         UpdateWindow(hwnd_);
         SetForegroundWindow(hwnd_);
     }
+}
+
+void Win32MainWindow::restore_and_present() {
+    if (!hwnd_ || !IsWindow(hwnd_)) return;
+    if (IsIconic(hwnd_)) {
+        ShowWindow(hwnd_, SW_RESTORE);
+    } else if (!IsWindowVisible(hwnd_)) {
+        ShowWindow(hwnd_, SW_SHOWNORMAL);
+    }
+    UpdateWindow(hwnd_);
+    bring_popup_to_foreground(hwnd_, false);
+}
+
+void Win32MainWindow::post_present() {
+    if (!hwnd_ || !IsWindow(hwnd_)) return;
+    PostMessageW(hwnd_, WM_APP_PRESENT_MAIN, 0, 0);
 }
 
 void Win32MainWindow::setup_ui() {
@@ -785,15 +802,21 @@ bool Win32MainWindow::extract_youtube_with_progress(const std::string& url, YouT
         s_reg = true;
     }
 
+    HWND dialog_owner = (hwnd_ && IsWindow(hwnd_) && IsWindowVisible(hwnd_) &&
+                         !IsIconic(hwnd_) && GetForegroundWindow() == hwnd_)
+        ? hwnd_
+        : nullptr;
+
     int dlg_w = DpiHelper::scale(360, dpi);
     int dlg_h = DpiHelper::scale(145, dpi);
     int x = 0, y = 0;
-    compute_centered_pos(hwnd_, dlg_w, dlg_h, x, y);
+    compute_centered_pos(dialog_owner, dlg_w, dlg_h, x, y);
 
+    DWORD wait_ex = WS_EX_DLGMODALFRAME | (dialog_owner ? 0 : (WS_EX_TOPMOST | WS_EX_APPWINDOW));
     HWND dlg = CreateWindowExW(
-        WS_EX_DLGMODALFRAME, cls, L"OpenDM - Analyzing YouTube Video",
+        wait_ex, cls, L"OpenDM - Analyzing YouTube Video",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-        x, y, dlg_w, dlg_h, hwnd_, nullptr, GetModuleHandleW(nullptr), &state);
+        x, y, dlg_w, dlg_h, dialog_owner, nullptr, GetModuleHandleW(nullptr), &state);
 
     int pad = DpiHelper::scale(16, dpi);
     int cw = dlg_w - pad * 2 - DpiHelper::scale(14, dpi);
@@ -829,7 +852,8 @@ bool Win32MainWindow::extract_youtube_with_progress(const std::string& url, YouT
         }
     }).detach();
 
-    run_modal_loop(dlg, hwnd_, state.done);
+    bring_popup_to_foreground(dlg, dialog_owner == nullptr);
+    run_modal_loop(dlg, dialog_owner, state.done);
     if (state.hFont) DeleteObject(state.hFont);
 
     if (state.cancelled) {
@@ -931,78 +955,121 @@ void Win32MainWindow::add_download_url(const std::string& url, const std::string
 }
 
 void Win32MainWindow::prompt_download(const DownloadPromptInfo& info) {
-    DownloadPromptInfo target_info = info;
-    HWND dialog_owner = (hwnd_ && IsWindow(hwnd_) && IsWindowVisible(hwnd_) &&
-                         !IsIconic(hwnd_) && GetForegroundWindow() == hwnd_)
-        ? hwnd_
-        : nullptr;
+    if (prompt_in_progress_) {
+        prompt_queue_.push_back(info);
+        return;
+    }
 
-    if (YouTubeEngine::is_youtube_url(target_info.url) && target_info.audio_stream_url.empty()) {
-        YouTubeVideoInfo yt_info;
-        std::string err;
-        if (!extract_youtube_with_progress(target_info.url, yt_info, err)) {
-            if (err != "Cancelled") {
-                std::wstring msg = utf8_to_wide(err.empty() ? "Could not extract playable YouTube formats." : ("YouTube extraction failed:\n" + err));
-                MessageBoxW(dialog_owner, msg.c_str(), L"YouTube Error", MB_OK | MB_ICONWARNING);
+    prompt_in_progress_ = true;
+    struct PromptGuard {
+        bool& flag;
+        std::deque<DownloadPromptInfo>& q;
+        ~PromptGuard() {
+            flag = false;
+            q.clear();
+        }
+    } guard{prompt_in_progress_, prompt_queue_};
+
+    std::deque<DownloadPromptInfo> local_batch;
+    local_batch.push_back(info);
+
+    while (!local_batch.empty() && !closing_) {
+        DownloadPromptInfo target_info = std::move(local_batch.front());
+        local_batch.pop_front();
+
+        HWND dialog_owner = (hwnd_ && IsWindow(hwnd_) && IsWindowVisible(hwnd_) &&
+                             !IsIconic(hwnd_) && GetForegroundWindow() == hwnd_)
+            ? hwnd_
+            : nullptr;
+
+        if (YouTubeEngine::is_youtube_url(target_info.url) && target_info.audio_stream_url.empty()) {
+            YouTubeVideoInfo yt_info;
+            std::string err;
+            if (!extract_youtube_with_progress(target_info.url, yt_info, err)) {
+                if (err != "Cancelled") {
+                    std::wstring msg = utf8_to_wide(err.empty() ? "Could not extract playable YouTube formats." : ("YouTube extraction failed:\n" + err));
+                    MessageBoxW(dialog_owner, msg.c_str(), L"YouTube Error", MB_OK | MB_ICONWARNING);
+                }
+                while (!prompt_queue_.empty()) {
+                    local_batch.push_back(std::move(prompt_queue_.front()));
+                    prompt_queue_.pop_front();
+                }
+                continue;
             }
-            return;
+            auto yt_res = Win32YoutubeFormatDialog::show(dialog_owner, yt_info);
+            if (!yt_res.accepted) {
+                while (!prompt_queue_.empty()) {
+                    local_batch.push_back(std::move(prompt_queue_.front()));
+                    prompt_queue_.pop_front();
+                }
+                continue;
+            }
+            target_info.url = yt_res.video_url;
+            target_info.filename = yt_res.filename;
+            target_info.audio_stream_url = yt_res.audio_url;
+            target_info.user_agent = yt_res.user_agent;
+            target_info.is_streaming_media = yt_res.is_muxed;
+            target_info.category = "Video";
+            target_info.referer = "https://www.youtube.com/";
         }
-        auto yt_res = Win32YoutubeFormatDialog::show(dialog_owner, yt_info);
-        if (!yt_res.accepted) {
-            return;
+
+        if (target_info.filename.empty() || target_info.filename == "download.bin") {
+            target_info.filename = DownloadSession::extract_filename_from_url(target_info.url);
         }
-        target_info.url = yt_res.video_url;
-        target_info.filename = yt_res.filename;
-        target_info.audio_stream_url = yt_res.audio_url;
-        target_info.user_agent = yt_res.user_agent;
-        target_info.is_streaming_media = yt_res.is_muxed;
-        target_info.category = "Video";
-        target_info.referer = "https://www.youtube.com/";
-    }
+        if (target_info.category.empty() ||
+            (target_info.category == "General" && QueueManager::detect_category(target_info.filename) != "General")) {
+            target_info.category = QueueManager::detect_category(target_info.filename);
+        }
 
-    if (target_info.filename.empty() || target_info.filename == "download.bin") {
-        target_info.filename = DownloadSession::extract_filename_from_url(target_info.url);
-    }
-    if (target_info.category.empty() ||
-        (target_info.category == "General" && QueueManager::detect_category(target_info.filename) != "General")) {
-        target_info.category = QueueManager::detect_category(target_info.filename);
-    }
+        auto res = Win32DownloadInfoDialog::show(dialog_owner, target_info);
+        if (res.action == DownloadInfoAction::CANCEL) {
+            while (!prompt_queue_.empty()) {
+                local_batch.push_back(std::move(prompt_queue_.front()));
+                prompt_queue_.pop_front();
+            }
+            continue;
+        }
+        if (res.action == DownloadInfoAction::ZIP_PREVIEW) {
+            Win32ZipPreviewDialog::show(dialog_owner, res.info.url);
+            while (!prompt_queue_.empty()) {
+                local_batch.push_back(std::move(prompt_queue_.front()));
+                prompt_queue_.pop_front();
+            }
+            continue;
+        }
 
-    auto res = Win32DownloadInfoDialog::show(dialog_owner, target_info);
-    if (res.action == DownloadInfoAction::CANCEL) {
-        return;
-    }
-    if (res.action == DownloadInfoAction::ZIP_PREVIEW) {
-        Win32ZipPreviewDialog::show(dialog_owner, res.info.url);
-        return;
-    }
+        std::error_code ec;
+        fs::create_directories(sys::path_from_utf8(res.info.save_as_path).parent_path(), ec);
 
-    std::error_code ec;
-    fs::create_directories(sys::path_from_utf8(res.info.save_as_path).parent_path(), ec);
+        static std::atomic<uint64_t> counter{1};
+        std::string sess_id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter.fetch_add(1));
+        auto session = std::make_shared<DownloadSession>(sess_id, res.info.url, res.info.save_as_path);
+        session->set_category(res.info.category);
+        if (!res.info.username.empty()) {
+            session->set_credentials(res.info.username, res.info.password);
+        }
+        if (!res.info.referer.empty()) session->set_header("Referer", res.info.referer);
+        if (!res.info.cookies.empty()) session->set_header("Cookie", res.info.cookies);
+        if (!res.info.user_agent.empty()) session->set_header("User-Agent", res.info.user_agent);
+        if (!res.info.audio_stream_url.empty()) {
+            session->set_audio_stream_url(res.info.audio_stream_url);
+        }
+        SiteLogonManager::instance().apply_to_session(*session, res.info.url);
 
-    static std::atomic<uint64_t> counter{1};
-    std::string sess_id = "task_" + std::to_string(std::time(nullptr)) + "_" + std::to_string(counter.fetch_add(1));
-    auto session = std::make_shared<DownloadSession>(sess_id, res.info.url, res.info.save_as_path);
-    session->set_category(res.info.category);
-    if (!res.info.username.empty()) {
-        session->set_credentials(res.info.username, res.info.password);
+        bool start = (res.action == DownloadInfoAction::START_NOW);
+        QueueManager::instance().get_main_queue().add_session(session, start);
+
+        if (start) {
+            show_progress_dialog(session);
+        }
+
+        refresh_downloads_list();
+
+        while (!prompt_queue_.empty()) {
+            local_batch.push_back(std::move(prompt_queue_.front()));
+            prompt_queue_.pop_front();
+        }
     }
-    if (!res.info.referer.empty()) session->set_header("Referer", res.info.referer);
-    if (!res.info.cookies.empty()) session->set_header("Cookie", res.info.cookies);
-    if (!res.info.user_agent.empty()) session->set_header("User-Agent", res.info.user_agent);
-    if (!res.info.audio_stream_url.empty()) {
-        session->set_audio_stream_url(res.info.audio_stream_url);
-    }
-    SiteLogonManager::instance().apply_to_session(*session, res.info.url);
-
-    bool start = (res.action == DownloadInfoAction::START_NOW);
-    QueueManager::instance().get_main_queue().add_session(session, start);
-
-    if (start) {
-        show_progress_dialog(session);
-    }
-
-    refresh_downloads_list();
 }
 
 void Win32MainWindow::post_prompt_download(const DownloadPromptInfo& info) {
@@ -1361,6 +1428,10 @@ LRESULT CALLBACK Win32MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
         case WM_APP_PROMPT_DOWNLOAD: {
             std::unique_ptr<DownloadPromptInfo> info(reinterpret_cast<DownloadPromptInfo*>(lParam));
             if (self && info) self->prompt_download(*info);
+            return 0;
+        }
+        case WM_APP_PRESENT_MAIN: {
+            if (self) self->restore_and_present();
             return 0;
         }
         case WM_APP_PROGRESS_COMPLETED: {

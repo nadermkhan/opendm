@@ -67,11 +67,16 @@ async function dispatchToNativeOrFallback(details, {
   });
 
   let accepted = false;
-  try {
-    const resp = await sendNativeMessage(NATIVE_HOST_NAME, payload);
-    accepted = isDownloadAccepted(resp);
-  } catch {
-    accepted = false;
+  for (let attempt = 0; attempt < 2 && !accepted; attempt++) {
+    try {
+      const resp = await sendNativeMessage(NATIVE_HOST_NAME, payload);
+      accepted = isDownloadAccepted(resp);
+      if (accepted || resp?.status === "ignored") break;
+    } catch {
+      if (attempt === 0) {
+        await new Promise((r) => setTimeout(r, 150));
+      }
+    }
   }
 
   if (!accepted && ext?.downloads?.download) {
