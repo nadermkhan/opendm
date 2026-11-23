@@ -152,13 +152,19 @@ bool ensure_opendm_running() {
         return false;
     }
 
+    AllowSetForegroundWindow(ASFW_ANY);
+
     STARTUPINFOW si{};
     si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_SHOWMINNOACTIVE;
     PROCESS_INFORMATION pi{};
-    std::wstring wexe = app_exe.wstring();
+    std::wstring cmdline = L"\"" + app_exe.wstring() + L"\" --background";
+    std::vector<wchar_t> cmd_buf(cmdline.begin(), cmdline.end());
+    cmd_buf.push_back(L'\0');
     if (!CreateProcessW(
-            wexe.c_str(),
-            nullptr,
+            app_exe.c_str(),
+            cmd_buf.data(),
             nullptr,
             nullptr,
             FALSE,
@@ -231,11 +237,17 @@ bool ensure_opendm_running() {
 }
 
 std::string send_command_spawning_if_needed(const std::string& payload) {
+#ifdef _WIN32
+    AllowSetForegroundWindow(ASFW_ANY);
+#endif
     std::string resp = IpcServer::send_command(payload, IpcServer::DEFAULT_SOCKET_PATH, 1);
     if (!is_ipc_connect_error(resp)) {
         return resp;
     }
     if (ensure_opendm_running()) {
+#ifdef _WIN32
+        AllowSetForegroundWindow(ASFW_ANY);
+#endif
         return IpcServer::send_command(payload, IpcServer::DEFAULT_SOCKET_PATH, 5);
     }
     return resp;

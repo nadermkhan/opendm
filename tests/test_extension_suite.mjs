@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -44,18 +45,21 @@ function readZipEntryNames(zipPath) {
   return names;
 }
 
-test("Packager generates valid Chromium, Chromium Store, and Firefox targets", () => {
-  const built = buildAllExtensions();
+test("Packager generates valid Chromium, Chromium Store, and Firefox targets", (t) => {
+  const testDistRoot = fs.mkdtempSync(path.join(os.tmpdir(), "opendm-ext-test-"));
+  t.after(() => fs.rmSync(testDistRoot, { recursive: true, force: true }));
+
+  const built = buildAllExtensions(testDistRoot);
   assert.equal(built.length, 3);
 
   const chromiumManifest = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, "dist/extension/chromium/manifest.json"), "utf8")
+    fs.readFileSync(path.join(testDistRoot, "extension/chromium/manifest.json"), "utf8")
   );
   const storeManifest = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, "dist/extension/chromium-store/manifest.json"), "utf8")
+    fs.readFileSync(path.join(testDistRoot, "extension/chromium-store/manifest.json"), "utf8")
   );
   const firefoxManifest = JSON.parse(
-    fs.readFileSync(path.join(repoRoot, "dist/extension/firefox/manifest.json"), "utf8")
+    fs.readFileSync(path.join(testDistRoot, "extension/firefox/manifest.json"), "utf8")
   );
 
   // Chromium dev manifest checks & ID match with native host manifest
@@ -95,7 +99,7 @@ test("Packager generates valid Chromium, Chromium Store, and Firefox targets", (
 
   // Zip/XPI root layout verification
   for (const archiveName of ["opendm-extension-chromium.zip", "opendm-extension-chromium-store.zip", "opendm_extension.xpi"]) {
-    const entries = readZipEntryNames(path.join(repoRoot, "dist", archiveName));
+    const entries = readZipEntryNames(path.join(testDistRoot, archiveName));
     assert(entries.some((e) => e.name === "manifest.json"), `${archiveName} must contain manifest.json at root depth 0`);
     assert(entries.some((e) => e.name === "popup/popup.html"), `${archiveName} must contain popup/popup.html`);
   }

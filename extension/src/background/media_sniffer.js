@@ -61,7 +61,6 @@ export function initMediaSniffer() {
 
   ext.webRequest.onHeadersReceived?.addListener(
     async (details) => {
-      await ensureHydrated();
       if (!details?.url) return;
 
       const contentType = findHeader(details.responseHeaders, "content-type");
@@ -70,6 +69,7 @@ export function initMediaSniffer() {
       const { isAttachment, filename } = parseContentDisposition(contentDisposition);
       const prior = getHeaderMeta(details.url);
 
+      // Record synchronously before any await so Chromium downloads.onCreated never races
       recordHeaderMeta(details.url, {
         statusCode: details.statusCode || 200,
         contentType,
@@ -79,6 +79,8 @@ export function initMediaSniffer() {
         contentLength,
         respHeaders: headersArrayToRaw(details.responseHeaders),
       });
+
+      await ensureHydrated();
 
       const settings = getSettingsSync();
       if (!settings.enabled || !settings.captureMedia || details.tabId == null || details.tabId < 0) {

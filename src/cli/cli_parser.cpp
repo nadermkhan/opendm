@@ -50,6 +50,8 @@ CliOptions CliParser::parse(int argc, char* argv[]) {
         } else if (arg == "--register-native-host") {
             opts.register_native_host = true;
             opts.show_gui = false;
+        } else if (arg == "--background") {
+            opts.start_background = true;
         } else if (arg == "--no-gui") {
             opts.show_gui = false;
         } else if (arg == "--screenshot") {

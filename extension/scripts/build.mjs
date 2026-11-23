@@ -163,11 +163,11 @@ function buildManifest(baseManifest, overlayPath) {
   return merged;
 }
 
-export function buildAllExtensions() {
+export function buildAllExtensions(targetDistRoot = distRoot) {
   const baseManifest = JSON.parse(
     fs.readFileSync(path.join(targetsDir, "manifest.base.json"), "utf8")
   );
-  const extDistDir = path.join(distRoot, "extension");
+  const extDistDir = path.join(targetDistRoot, "extension");
   fs.rmSync(extDistDir, { recursive: true, force: true });
 
   const results = [];
@@ -179,7 +179,7 @@ export function buildAllExtensions() {
     const manifest = buildManifest(baseManifest, path.join(targetsDir, target.overlay));
     fs.writeFileSync(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 
-    const archivePath = path.join(distRoot, target.archive);
+    const archivePath = path.join(targetDistRoot, target.archive);
     createZipArchive(outDir, archivePath);
     const sizeKb = (fs.statSync(archivePath).size / 1024).toFixed(1);
     results.push({ target: target.name, outDir, archivePath, sizeKb });

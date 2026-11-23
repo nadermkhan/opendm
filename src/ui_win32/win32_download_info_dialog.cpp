@@ -295,8 +295,9 @@ DownloadInfoResult Win32DownloadInfoDialog::show(HWND parent, const DownloadProm
     int x = 0, y = 0;
     compute_centered_pos(parent, dlg_w, dlg_h, x, y);
 
+    DWORD ex_style = WS_EX_DLGMODALFRAME | (parent ? 0 : (WS_EX_TOPMOST | WS_EX_APPWINDOW));
     HWND hwnd = CreateWindowExW(
-        WS_EX_DLGMODALFRAME,
+        ex_style,
         className,
         L"Download File Info",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
@@ -518,6 +519,7 @@ DownloadInfoResult Win32DownloadInfoDialog::show(HWND parent, const DownloadProm
         }).detach();
     }
 
+    bring_popup_to_foreground(hwnd, parent == nullptr);
     run_modal_loop(hwnd, parent, state.done);
 
     if (state.hFont) DeleteObject(state.hFont);

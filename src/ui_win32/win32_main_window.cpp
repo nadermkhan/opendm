@@ -862,12 +862,13 @@ void Win32MainWindow::show_progress_dialog(std::shared_ptr<DownloadSession> sess
     std::string id = session->get_id();
     auto it = active_progress_dialogs_.find(id);
     if (it != active_progress_dialogs_.end() && it->second && IsWindow(it->second->get_hwnd())) {
-        ShowWindow(it->second->get_hwnd(), SW_SHOWNORMAL);
-        SetForegroundWindow(it->second->get_hwnd());
+        bring_popup_to_foreground(it->second->get_hwnd(), false);
         return;
     }
-    auto prog_dlg = std::make_shared<Win32ProgressDialog>(session, hwnd_);
+    HWND prog_owner = (hwnd_ && IsWindow(hwnd_) && IsWindowVisible(hwnd_) && !IsIconic(hwnd_)) ? hwnd_ : nullptr;
+    auto prog_dlg = std::make_shared<Win32ProgressDialog>(session, prog_owner);
     prog_dlg->show();
+    bring_popup_to_foreground(prog_dlg->get_hwnd(), false);
     active_progress_dialogs_[id] = prog_dlg;
 }
 
@@ -931,6 +932,10 @@ void Win32MainWindow::add_download_url(const std::string& url, const std::string
 
 void Win32MainWindow::prompt_download(const DownloadPromptInfo& info) {
     DownloadPromptInfo target_info = info;
+    HWND dialog_owner = (hwnd_ && IsWindow(hwnd_) && IsWindowVisible(hwnd_) &&
+                         !IsIconic(hwnd_) && GetForegroundWindow() == hwnd_)
+        ? hwnd_
+        : nullptr;
 
     if (YouTubeEngine::is_youtube_url(target_info.url) && target_info.audio_stream_url.empty()) {
         YouTubeVideoInfo yt_info;
@@ -938,11 +943,11 @@ void Win32MainWindow::prompt_download(const DownloadPromptInfo& info) {
         if (!extract_youtube_with_progress(target_info.url, yt_info, err)) {
             if (err != "Cancelled") {
                 std::wstring msg = utf8_to_wide(err.empty() ? "Could not extract playable YouTube formats." : ("YouTube extraction failed:\n" + err));
-                MessageBoxW(hwnd_, msg.c_str(), L"YouTube Error", MB_OK | MB_ICONWARNING);
+                MessageBoxW(dialog_owner, msg.c_str(), L"YouTube Error", MB_OK | MB_ICONWARNING);
             }
             return;
         }
-        auto yt_res = Win32YoutubeFormatDialog::show(hwnd_, yt_info);
+        auto yt_res = Win32YoutubeFormatDialog::show(dialog_owner, yt_info);
         if (!yt_res.accepted) {
             return;
         }
@@ -963,12 +968,12 @@ void Win32MainWindow::prompt_download(const DownloadPromptInfo& info) {
         target_info.category = QueueManager::detect_category(target_info.filename);
     }
 
-    auto res = Win32DownloadInfoDialog::show(hwnd_, target_info);
+    auto res = Win32DownloadInfoDialog::show(dialog_owner, target_info);
     if (res.action == DownloadInfoAction::CANCEL) {
         return;
     }
     if (res.action == DownloadInfoAction::ZIP_PREVIEW) {
-        Win32ZipPreviewDialog::show(hwnd_, res.info.url);
+        Win32ZipPreviewDialog::show(dialog_owner, res.info.url);
         return;
     }
 
@@ -1611,13 +1616,13 @@ LRESULT CALLBACK Win32MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
                     KillTimer(hwnd, self->timer_id_);
                     self->timer_id_ = 0;
                 }
-                QueueManager::instance().shutdown_all_sessions();
-                // Close any modeless progress windows before the owner goes away
+                // Close any modeless progress windows before main window is destroyed
                 auto dialogs = std::move(self->active_progress_dialogs_);
                 self->active_progress_dialogs_.clear();
                 for (auto& kv : dialogs) {
                     if (kv.second) kv.second->close();
                 }
+                self->hwnd_ = nullptr;
             }
             PostQuitMessage(0);
             return 0;

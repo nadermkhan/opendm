@@ -319,7 +319,11 @@ int main(int argc, char* argv[]) {
         opendm::win32::Win32Assets::init_gdiplus();
 
         auto main_win = std::make_unique<opendm::win32::Win32MainWindow>(GetModuleHandleW(nullptr));
-        main_win->present();
+        if (opts.start_background && main_win->get_hwnd()) {
+            ShowWindow(main_win->get_hwnd(), SW_SHOWMINNOACTIVE);
+        } else {
+            main_win->present();
+        }
 
         // Silently register browser native messaging manifests once on startup if opendm-native-host.exe is present
         if (opts.screenshot_path.empty() && !opendm::is_native_host_registered()) {
@@ -475,6 +479,8 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        ipc_server.set_download_prompt_callback(nullptr);
+        ipc_server.stop();
         main_win.reset();
         opendm::win32::Win32Assets::shutdown_gdiplus();
         if (SUCCEEDED(hr_com)) CoUninitialize();

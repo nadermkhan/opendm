@@ -147,7 +147,7 @@ target_link_libraries(opendm-native-host PRIVATE
     opendm_core
 )
 if(WIN32)
-    target_link_libraries(opendm-native-host PRIVATE shlwapi ws2_32)
+    target_link_libraries(opendm-native-host PRIVATE shlwapi ws2_32 user32)
 endif()
 
 # Test suite
