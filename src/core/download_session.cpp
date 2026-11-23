@@ -2129,8 +2129,15 @@ std::shared_ptr<DownloadSession> DownloadSession::deserialize(const std::string&
         std::lock_guard<std::mutex> lock(session->meta_mutex_);
         session->filename_ = fn;
         session->custom_filename_set_ = custom_fn_set;
-        fs::path parent = sys::path_from_utf8(session->destination_path_).parent_path();
-        session->destination_path_ = parent.empty() ? fn : sys::path_to_utf8(parent / sys::path_from_utf8(fn));
+        const std::string& dp = session->destination_path_;
+        bool ends_with_fn = (dp == fn) ||
+            (dp.size() > fn.size() &&
+             (dp[dp.size() - fn.size() - 1] == '/' || dp[dp.size() - fn.size() - 1] == '\\') &&
+             dp.compare(dp.size() - fn.size(), fn.size(), fn) == 0);
+        if (!ends_with_fn) {
+            fs::path parent = sys::path_from_utf8(dp).parent_path();
+            session->destination_path_ = parent.empty() ? fn : sys::path_to_utf8(parent / sys::path_from_utf8(fn));
+        }
     }
 
     {
