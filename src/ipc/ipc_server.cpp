@@ -53,9 +53,10 @@ std::string get_default_downloads_folder() {
     return sys::get_downloads_dir_utf8();
 }
 
+constexpr size_t MAX_IPC_MSG_BYTES = 16 * 1024 * 1024;
+
 #ifdef _WIN32
 constexpr DWORD PIPE_IO_BUF_SIZE = 65536;
-constexpr size_t MAX_IPC_MSG_BYTES = 16 * 1024 * 1024;
 
 bool overlapped_io_exact(HANDLE hPipe, OVERLAPPED& ov, HANDLE stop_event, bool is_read,
                          void* buf, DWORD len, DWORD* out_transferred, DWORD* out_err) {
